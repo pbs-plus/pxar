@@ -35,8 +35,9 @@ type Entry struct {
 
 	// File-specific fields
 	FileSize       uint64 // valid when Kind == KindFile
-	FileOffset     uint64 // byte offset in archive
+	FileOffset     uint64 // byte offset in archive (start of FILENAME header)
 	PayloadOffset  uint64 // byte offset in payload stream (0 if not split)
+	ContentOffset  uint64 // absolute byte offset where content begins (after PAYLOAD header for files, start of child entries for dirs)
 
 	// Symlink/Hardlink target
 	LinkTarget string

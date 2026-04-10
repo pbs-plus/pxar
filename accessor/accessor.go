@@ -69,7 +69,28 @@ func (a *Accessor) ReadRoot() (*pxar.Entry, error) {
 		Kind:     pxar.KindDirectory,
 	}
 
-	return entry, nil
+	// Skip past the ENTRY content (stat) to find the content area
+	if _, err := a.reader.Seek(int64(h.ContentSize())-40, io.SeekCurrent); err != nil {
+		return nil, err
+	}
+
+	// Scan past directory attributes to find first child FILENAME/GOODBYE
+	for {
+		posBefore, _ := a.reader.Seek(0, io.SeekCurrent)
+		h2, err := a.readHeader()
+		if err != nil {
+			return nil, err
+		}
+		switch h2.Type {
+		case format.PXARFilename, format.PXARGoodbye:
+			entry.ContentOffset = uint64(posBefore)
+			return entry, nil
+		default:
+			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
+				return nil, err
+			}
+		}
+	}
 }
 
 // ListDirectory lists entries in a directory at the given offset.
@@ -99,7 +120,7 @@ func (a *Accessor) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
 
 		// item.Offset is relative to goodbye table start
 		entryOffset := goodbyeOffset - int64(item.Offset)
-		entry, err := a.readEntryAt(entryOffset)
+		entry, err := a.ReadEntryAt(entryOffset)
 		if err != nil {
 			return nil, fmt.Errorf("reading entry at %d: %w", entryOffset, err)
 		}
@@ -172,7 +193,7 @@ func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error)
 
 	// Resolve entry
 	entryOffset := goodbyeOffset - int64(items[idx].Offset)
-	entry, err := a.readEntryAt(entryOffset)
+	entry, err := a.ReadEntryAt(entryOffset)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +393,8 @@ func (a *Accessor) readGoodbyeTable(offset int64) ([]format.GoodbyeItem, error) 
 	return items, nil
 }
 
-func (a *Accessor) readEntryAt(offset int64) (*pxar.Entry, error) {
+// ReadEntryAt reads a pxar entry at the given archive offset.
+func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -435,6 +457,7 @@ func (a *Accessor) readEntryAt(offset int64) (*pxar.Entry, error) {
 
 	// Read attributes
 	for {
+		posBefore, _ := a.reader.Seek(0, io.SeekCurrent)
 		h2, err := a.readHeader()
 		if err != nil {
 			return nil, err
@@ -466,8 +489,10 @@ func (a *Accessor) readEntryAt(offset int64) (*pxar.Entry, error) {
 			return entry, nil
 
 		case format.PXARPayload:
+			posAfter, _ := a.reader.Seek(0, io.SeekCurrent)
 			entry.Kind = pxar.KindFile
 			entry.FileSize = h2.ContentSize()
+			entry.ContentOffset = uint64(posAfter)
 			return entry, nil
 
 		case format.PXARPayloadRef:
@@ -487,6 +512,7 @@ func (a *Accessor) readEntryAt(offset int64) (*pxar.Entry, error) {
 			} else {
 				entry.Kind = pxar.KindDirectory
 			}
+			entry.ContentOffset = uint64(posBefore)
 			return entry, nil
 
 		default:

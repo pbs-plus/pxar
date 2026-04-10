@@ -7,13 +7,19 @@ import (
 	"testing"
 )
 
+// copyChunk copies chunk data out of the chunker's internal buffers.
+func copyChunk(chunk []byte) []byte {
+	cp := make([]byte, len(chunk))
+	copy(cp, chunk)
+	return cp
+}
+
 func TestChunkerBasic(t *testing.T) {
 	config, err := NewConfig(4096)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Generate 100KB of random data
 	data := make([]byte, 100<<10)
 	rand.Read(data)
 
@@ -29,7 +35,7 @@ func TestChunkerBasic(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		chunks = append(chunks, chunk)
+		chunks = append(chunks, copyChunk(chunk))
 		total += len(chunk)
 	}
 
@@ -40,15 +46,12 @@ func TestChunkerBasic(t *testing.T) {
 		t.Error("expected at least one chunk")
 	}
 
-	// Verify all chunks are within bounds
 	for i, chunk := range chunks {
-		size := len(chunk)
-		if size > config.MaxChunkSize {
-			t.Errorf("chunk %d: size %d > max %d", i, size, config.MaxChunkSize)
+		if len(chunk) > config.MaxChunkSize {
+			t.Errorf("chunk %d: size %d > max %d", i, len(chunk), config.MaxChunkSize)
 		}
 	}
 
-	// Verify data integrity
 	var reconstructed bytes.Buffer
 	for _, chunk := range chunks {
 		reconstructed.Write(chunk)
@@ -92,7 +95,6 @@ func TestChunkerDeterminism(t *testing.T) {
 	data := make([]byte, 50<<10)
 	rand.Read(data)
 
-	// Chunk the same data twice
 	chunker1 := NewChunker(bytes.NewReader(data), config)
 	var sizes1 []int
 	for {
@@ -103,7 +105,7 @@ func TestChunkerDeterminism(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sizes1 = append(sizes1, len(chunk))
+		sizes1 = append(sizes1, len(copyChunk(chunk)))
 	}
 
 	chunker2 := NewChunker(bytes.NewReader(data), config)
@@ -116,7 +118,7 @@ func TestChunkerDeterminism(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sizes2 = append(sizes2, len(chunk))
+		sizes2 = append(sizes2, len(copyChunk(chunk)))
 	}
 
 	if len(sizes1) != len(sizes2) {
@@ -170,7 +172,7 @@ func TestChunkerReset(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		total1 += len(chunk)
+		total1 += len(copyChunk(chunk))
 	}
 
 	chunker.Reset(bytes.NewReader(data2))
@@ -183,7 +185,7 @@ func TestChunkerReset(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		total2 += len(chunk)
+		total2 += len(copyChunk(chunk))
 	}
 
 	if total1 != len(data1) {
@@ -195,10 +197,7 @@ func TestChunkerReset(t *testing.T) {
 }
 
 func TestChunkerMaxSize(t *testing.T) {
-	// Use a small config to get more frequent breaks
-	config, _ := NewConfig(64) // avg=64, min=16, max=256
-
-	// Generate 1MB of data
+	config, _ := NewConfig(64)
 	data := make([]byte, 1<<20)
 	rand.Read(data)
 
@@ -214,6 +213,30 @@ func TestChunkerMaxSize(t *testing.T) {
 		if len(chunk) > config.MaxChunkSize {
 			t.Errorf("chunk %d: size %d exceeds max %d", i, len(chunk), config.MaxChunkSize)
 		}
+	}
+}
+
+func TestChunkerZeroAllocs(t *testing.T) {
+	config, _ := NewConfig(4 << 20)
+	data := make([]byte, 1<<20)
+	rand.Read(data)
+
+	r := bytes.NewReader(data)
+	chunker := NewChunker(r, config)
+
+	allocs := testing.AllocsPerRun(10, func() {
+		r.Reset(data)
+		chunker.Reset(r)
+		for {
+			_, err := chunker.Next()
+			if err == io.EOF {
+				break
+			}
+		}
+	})
+
+	if allocs > 0 {
+		t.Errorf("Next() allocated %.1f times, expected 0", allocs)
 	}
 }
 
@@ -245,11 +268,15 @@ func BenchmarkChunkerThroughput(b *testing.B) {
 	data := make([]byte, 1<<20)
 	rand.Read(data)
 
+	r := bytes.NewReader(data)
+	chunker := NewChunker(r, config)
+
 	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		chunker := NewChunker(bytes.NewReader(data), config)
+		r.Reset(data)
+		chunker.Reset(r)
 		for {
 			_, err := chunker.Next()
 			if err == io.EOF {
@@ -267,11 +294,15 @@ func BenchmarkChunkerLargeData(b *testing.B) {
 	data := make([]byte, 10<<20)
 	rand.Read(data)
 
+	r := bytes.NewReader(data)
+	chunker := NewChunker(r, config)
+
 	b.SetBytes(int64(len(data)))
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		chunker := NewChunker(bytes.NewReader(data), config)
+		r.Reset(data)
+		chunker.Reset(r)
 		for {
 			_, err := chunker.Next()
 			if err == io.EOF {
@@ -281,7 +312,6 @@ func BenchmarkChunkerLargeData(b *testing.B) {
 	}
 }
 
-// Sink to prevent compiler optimization
 var sink uint32
 
 func BenchmarkBuzhashTableLookup(b *testing.B) {

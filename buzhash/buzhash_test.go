@@ -26,7 +26,7 @@ func TestBatchInitFormula(t *testing.T) {
 	}
 
 	var expected uint32
-	for i := 0; i < WindowSize; i++ {
+	for i := range WindowSize {
 		expected ^= rotl32(buzhashTable[data[i]], uint32(WindowSize-1-i))
 	}
 

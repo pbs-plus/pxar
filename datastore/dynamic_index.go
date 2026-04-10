@@ -40,7 +40,7 @@ func ReadDynamicIndex(data []byte) (*DynamicIndexReader, error) {
 
 	count := len(remaining) / DynamicEntrySize
 	entries := make([]DynamicEntry, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		off := i * DynamicEntrySize
 		entries[i].EndOffset = binary.LittleEndian.Uint64(remaining[off : off+8])
 		copy(entries[i].Digest[:], remaining[off+8:off+40])

@@ -90,7 +90,7 @@ func TestFixedIndexChunkFromOffset(t *testing.T) {
 
 func TestFixedIndexChunkInfo(t *testing.T) {
 	w := mustFixedWriter(t, 1700000000, 256, 64)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		w.Set(i, sha256.Sum256([]byte{byte(i)}))
 	}
 	raw, _ := w.Finish()

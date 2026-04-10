@@ -82,10 +82,7 @@ func (h *Hasher) BytesProcessed() int {
 func (h *Hasher) InitFromData(data []byte) {
 	h.Reset()
 
-	n := len(data)
-	if n > WindowSize {
-		n = WindowSize
-	}
+	n := min(len(data), WindowSize)
 
 	// Use batch initialization for the first n bytes
 	if n > 0 {
@@ -108,7 +105,7 @@ func rotl32(x uint32, n uint32) uint32 {
 func initWindowScalar(data []byte) uint32 {
 	var h uint32
 	n := uint32(len(data))
-	for i := uint32(0); i < n; i++ {
+	for i := range n {
 		h ^= rotl32(buzhashTable[data[i]], n-1-i)
 	}
 	return h

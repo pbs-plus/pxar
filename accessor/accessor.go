@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/sonroyaalmerol/pxar/binarytree"
-	"github.com/sonroyaalmerol/pxar/format"
-	pxar "github.com/sonroyaalmerol/pxar"
+	"github.com/pbs-plus/pxar/binarytree"
+	"github.com/pbs-plus/pxar/format"
+	pxar "github.com/pbs-plus/pxar"
 )
 
 // Accessor provides random access to entries in a pxar archive.

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"syscall"
 
-	pxar "github.com/sonroyaalmerol/pxar"
-	"github.com/sonroyaalmerol/pxar/accessor"
+	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 )
 
 // Session implements FileSystem over a pxar archive, providing FUSE-compatible

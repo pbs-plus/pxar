@@ -4,7 +4,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/sonroyaalmerol/pxar/format"
+	"github.com/pbs-plus/pxar/format"
 )
 
 const (

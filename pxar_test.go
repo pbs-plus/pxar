@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sonroyaalmerol/pxar"
-	"github.com/sonroyaalmerol/pxar/accessor"
-	"github.com/sonroyaalmerol/pxar/decoder"
-	"github.com/sonroyaalmerol/pxar/encoder"
-	"github.com/sonroyaalmerol/pxar/format"
+	"github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
+	"github.com/pbs-plus/pxar/decoder"
+	"github.com/pbs-plus/pxar/encoder"
+	"github.com/pbs-plus/pxar/format"
 )
 
 func TestMetadataBuilder(t *testing.T) {

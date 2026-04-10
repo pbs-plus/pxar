@@ -7,9 +7,9 @@ import (
 	"io"
 	"sort"
 
-	"github.com/sonroyaalmerol/pxar/binarytree"
-	"github.com/sonroyaalmerol/pxar/format"
-	pxar "github.com/sonroyaalmerol/pxar"
+	"github.com/pbs-plus/pxar/binarytree"
+	"github.com/pbs-plus/pxar/format"
+	pxar "github.com/pbs-plus/pxar"
 )
 
 // LinkOffset represents a file offset usable with AddHardlink.

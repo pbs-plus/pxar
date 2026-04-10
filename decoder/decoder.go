@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/sonroyaalmerol/pxar/format"
-	pxar "github.com/sonroyaalmerol/pxar"
+	"github.com/pbs-plus/pxar/format"
+	pxar "github.com/pbs-plus/pxar"
 )
 
 // Decoder reads pxar archives sequentially.

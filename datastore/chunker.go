@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/sonroyaalmerol/pxar/buzhash"
+	"github.com/pbs-plus/pxar/buzhash"
 )
 
 // ChunkResult describes a single chunk produced by the chunker pipeline.

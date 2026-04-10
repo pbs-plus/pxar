@@ -8,7 +8,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/sonroyaalmerol/pxar/buzhash"
+	"github.com/pbs-plus/pxar/buzhash"
 )
 
 func newTestStoreChunker(t *testing.T, compress bool) (*StoreChunker, *ChunkStore) {

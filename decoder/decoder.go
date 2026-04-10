@@ -608,41 +608,7 @@ func (d *Decoder) resetPath() {
 	}
 }
 
-func unmarshalStat(data []byte) format.Stat {
-	return format.Stat{
-		Mode:  binary.LittleEndian.Uint64(data[0:]),
-		Flags: binary.LittleEndian.Uint64(data[8:]),
-		UID:   binary.LittleEndian.Uint32(data[16:]),
-		GID:   binary.LittleEndian.Uint32(data[20:]),
-		Mtime: format.StatxTimestamp{
-			Secs:  int64(binary.LittleEndian.Uint64(data[24:])),
-			Nanos: binary.LittleEndian.Uint32(data[32:]),
-		},
-	}
-}
-
-func unmarshalStatV1(data []byte) format.StatV1 {
-	return format.StatV1{
-		Mode:  binary.LittleEndian.Uint64(data[0:]),
-		Flags: binary.LittleEndian.Uint64(data[8:]),
-		UID:   binary.LittleEndian.Uint32(data[16:]),
-		GID:   binary.LittleEndian.Uint32(data[20:]),
-		Mtime: binary.LittleEndian.Uint64(data[24:]),
-	}
-}
-
-func unmarshalACLDefault(data []byte) *format.ACLDefault {
-	return &format.ACLDefault{
-		UserObjPermissions:  format.ACLPermissions(binary.LittleEndian.Uint64(data[0:])),
-		GroupObjPermissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
-		OtherPermissions:    format.ACLPermissions(binary.LittleEndian.Uint64(data[16:])),
-		MaskPermissions:     format.ACLPermissions(binary.LittleEndian.Uint64(data[24:])),
-	}
-}
-
-func unmarshalPayloadRef(data []byte) format.PayloadRef {
-	return format.PayloadRef{
-		Offset: binary.LittleEndian.Uint64(data[0:]),
-		Size:   binary.LittleEndian.Uint64(data[8:]),
-	}
-}
+func unmarshalStat(data []byte) format.Stat        { return format.UnmarshalStatBytes(data) }
+func unmarshalStatV1(data []byte) format.StatV1     { return format.UnmarshalStatV1Bytes(data) }
+func unmarshalACLDefault(data []byte) *format.ACLDefault { return format.UnmarshalACLDefaultBytes(data) }
+func unmarshalPayloadRef(data []byte) format.PayloadRef { return format.UnmarshalPayloadRefBytes(data) }

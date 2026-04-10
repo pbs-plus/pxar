@@ -579,53 +579,14 @@ func (e *Encoder) Close() error {
 
 // Marshal helpers
 
-func marshalStat(s format.Stat) []byte {
-	buf := make([]byte, 40)
-	binary.LittleEndian.PutUint64(buf[0:], s.Mode)
-	binary.LittleEndian.PutUint64(buf[8:], s.Flags)
-	binary.LittleEndian.PutUint32(buf[16:], s.UID)
-	binary.LittleEndian.PutUint32(buf[20:], s.GID)
-	binary.LittleEndian.PutUint64(buf[24:], uint64(s.Mtime.Secs))
-	binary.LittleEndian.PutUint32(buf[32:], s.Mtime.Nanos)
-	// bytes 36-39: padding
-	return buf
-}
-
-func marshalDevice(d format.Device) []byte {
-	buf := make([]byte, 16)
-	binary.LittleEndian.PutUint64(buf[0:], d.Major)
-	binary.LittleEndian.PutUint64(buf[8:], d.Minor)
-	return buf
-}
-
-func marshalACLUser(u format.ACLUser) []byte {
-	buf := make([]byte, 16)
-	binary.LittleEndian.PutUint64(buf[0:], u.UID)
-	binary.LittleEndian.PutUint64(buf[8:], uint64(u.Permissions))
-	return buf
-}
-
-func marshalACLGroup(g format.ACLGroup) []byte {
-	buf := make([]byte, 16)
-	binary.LittleEndian.PutUint64(buf[0:], g.GID)
-	binary.LittleEndian.PutUint64(buf[8:], uint64(g.Permissions))
-	return buf
-}
-
+func marshalStat(s format.Stat) []byte         { return format.MarshalStatBytes(s) }
+func marshalDevice(d format.Device) []byte      { return format.MarshalDeviceBytes(d) }
+func marshalACLUser(u format.ACLUser) []byte    { return format.MarshalACLUserBytes(u) }
+func marshalACLGroup(g format.ACLGroup) []byte  { return format.MarshalACLGroupBytes(g) }
 func marshalACLGroupObject(o format.ACLGroupObject) []byte {
-	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf[0:], uint64(o.Permissions))
-	return buf
+	return format.MarshalACLGroupObjectBytes(o)
 }
-
-func marshalACLDefault(d format.ACLDefault) []byte {
-	buf := make([]byte, 32)
-	binary.LittleEndian.PutUint64(buf[0:], uint64(d.UserObjPermissions))
-	binary.LittleEndian.PutUint64(buf[8:], uint64(d.GroupObjPermissions))
-	binary.LittleEndian.PutUint64(buf[16:], uint64(d.OtherPermissions))
-	binary.LittleEndian.PutUint64(buf[24:], uint64(d.MaskPermissions))
-	return buf
-}
+func marshalACLDefault(d format.ACLDefault) []byte { return format.MarshalACLDefaultBytes(d) }
 
 func marshalQuotaProjectID(id uint64) []byte {
 	buf := make([]byte, 8)

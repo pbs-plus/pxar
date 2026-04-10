@@ -6,10 +6,10 @@
 package format
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 )
 
@@ -499,11 +499,109 @@ func CheckFilename(name []byte) error {
 	if len(name) == 0 {
 		return fmt.Errorf("empty filename")
 	}
-	if strings.Contains(string(name), "/") {
+	if bytes.Contains(name, slashBytes) {
 		return fmt.Errorf("invalid filename: %q", name)
 	}
 	if name[0] == '.' && (len(name) == 1 || (len(name) == 2 && name[1] == '.')) {
 		return fmt.Errorf("invalid filename: %q", name)
 	}
 	return nil
+}
+
+var slashBytes = []byte{'/'}
+
+// MarshalStatBytes serializes a Stat into a 40-byte slice.
+func MarshalStatBytes(s Stat) []byte {
+	buf := make([]byte, 40)
+	binary.LittleEndian.PutUint64(buf[0:], s.Mode)
+	binary.LittleEndian.PutUint64(buf[8:], s.Flags)
+	binary.LittleEndian.PutUint32(buf[16:], s.UID)
+	binary.LittleEndian.PutUint32(buf[20:], s.GID)
+	binary.LittleEndian.PutUint64(buf[24:], uint64(s.Mtime.Secs))
+	binary.LittleEndian.PutUint32(buf[32:], s.Mtime.Nanos)
+	return buf
+}
+
+// UnmarshalStatBytes parses a Stat from a 40-byte slice.
+func UnmarshalStatBytes(data []byte) Stat {
+	return Stat{
+		Mode:  binary.LittleEndian.Uint64(data[0:]),
+		Flags: binary.LittleEndian.Uint64(data[8:]),
+		UID:   binary.LittleEndian.Uint32(data[16:]),
+		GID:   binary.LittleEndian.Uint32(data[20:]),
+		Mtime: StatxTimestamp{
+			Secs:  int64(binary.LittleEndian.Uint64(data[24:])),
+			Nanos: binary.LittleEndian.Uint32(data[32:]),
+		},
+	}
+}
+
+// UnmarshalStatV1Bytes parses a StatV1 from a 32-byte slice.
+func UnmarshalStatV1Bytes(data []byte) StatV1 {
+	return StatV1{
+		Mode:  binary.LittleEndian.Uint64(data[0:]),
+		Flags: binary.LittleEndian.Uint64(data[8:]),
+		UID:   binary.LittleEndian.Uint32(data[16:]),
+		GID:   binary.LittleEndian.Uint32(data[20:]),
+		Mtime: binary.LittleEndian.Uint64(data[24:]),
+	}
+}
+
+// MarshalDeviceBytes serializes a Device into a 16-byte slice.
+func MarshalDeviceBytes(d Device) []byte {
+	buf := make([]byte, 16)
+	binary.LittleEndian.PutUint64(buf[0:], d.Major)
+	binary.LittleEndian.PutUint64(buf[8:], d.Minor)
+	return buf
+}
+
+// MarshalACLUserBytes serializes an ACLUser into a 16-byte slice.
+func MarshalACLUserBytes(u ACLUser) []byte {
+	buf := make([]byte, 16)
+	binary.LittleEndian.PutUint64(buf[0:], u.UID)
+	binary.LittleEndian.PutUint64(buf[8:], uint64(u.Permissions))
+	return buf
+}
+
+// MarshalACLGroupBytes serializes an ACLGroup into a 16-byte slice.
+func MarshalACLGroupBytes(g ACLGroup) []byte {
+	buf := make([]byte, 16)
+	binary.LittleEndian.PutUint64(buf[0:], g.GID)
+	binary.LittleEndian.PutUint64(buf[8:], uint64(g.Permissions))
+	return buf
+}
+
+// MarshalACLGroupObjectBytes serializes an ACLGroupObject into an 8-byte slice.
+func MarshalACLGroupObjectBytes(o ACLGroupObject) []byte {
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf[0:], uint64(o.Permissions))
+	return buf
+}
+
+// UnmarshalACLDefaultBytes parses an ACLDefault from a 32-byte slice.
+func UnmarshalACLDefaultBytes(data []byte) *ACLDefault {
+	return &ACLDefault{
+		UserObjPermissions:  ACLPermissions(binary.LittleEndian.Uint64(data[0:])),
+		GroupObjPermissions: ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+		OtherPermissions:    ACLPermissions(binary.LittleEndian.Uint64(data[16:])),
+		MaskPermissions:     ACLPermissions(binary.LittleEndian.Uint64(data[24:])),
+	}
+}
+
+// MarshalACLDefaultBytes serializes an ACLDefault into a 32-byte slice.
+func MarshalACLDefaultBytes(d ACLDefault) []byte {
+	buf := make([]byte, 32)
+	binary.LittleEndian.PutUint64(buf[0:], uint64(d.UserObjPermissions))
+	binary.LittleEndian.PutUint64(buf[8:], uint64(d.GroupObjPermissions))
+	binary.LittleEndian.PutUint64(buf[16:], uint64(d.OtherPermissions))
+	binary.LittleEndian.PutUint64(buf[24:], uint64(d.MaskPermissions))
+	return buf
+}
+
+// UnmarshalPayloadRefBytes parses a PayloadRef from a 16-byte slice.
+func UnmarshalPayloadRefBytes(data []byte) PayloadRef {
+	return PayloadRef{
+		Offset: binary.LittleEndian.Uint64(data[0:]),
+		Size:   binary.LittleEndian.Uint64(data[8:]),
+	}
 }

@@ -157,10 +157,10 @@ func (w *DynamicIndexWriter) Finish() ([]byte, error) {
 	w.header.IndexCsum = csum
 
 	// Generate UUID (simple: sha256 of ctime + entry count)
-	uuidInput := make([]byte, 16)
+	var uuidInput [16]byte
 	binary.LittleEndian.PutUint64(uuidInput[0:8], uint64(w.header.Ctime))
 	binary.LittleEndian.PutUint64(uuidInput[8:16], uint64(len(w.entries)))
-	uuidHash := sha256.Sum256(uuidInput)
+	uuidHash := sha256.Sum256(uuidInput[:])
 	copy(w.header.UUID[:], uuidHash[:16])
 
 	var buf bytes.Buffer

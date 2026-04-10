@@ -602,18 +602,7 @@ func splitPath(path string) []string {
 	return parts
 }
 
-func unmarshalStat(data []byte) format.Stat {
-	return format.Stat{
-		Mode:  binary.LittleEndian.Uint64(data[0:]),
-		Flags: binary.LittleEndian.Uint64(data[8:]),
-		UID:   binary.LittleEndian.Uint32(data[16:]),
-		GID:   binary.LittleEndian.Uint32(data[20:]),
-		Mtime: format.StatxTimestamp{
-			Secs:  int64(binary.LittleEndian.Uint64(data[24:])),
-			Nanos: binary.LittleEndian.Uint32(data[32:]),
-		},
-	}
-}
+func unmarshalStat(data []byte) format.Stat { return format.UnmarshalStatBytes(data) }
 
 // ReadFileContent reads the content of a file entry from the archive.
 func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {

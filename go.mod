@@ -1,4 +1,4 @@
-module github.com/sonroyaalmerol/pxar
+module github.com/pbs-plus/pxar
 
 go 1.26.1
 

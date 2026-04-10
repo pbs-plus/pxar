@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sonroyaalmerol/pxar/encoder"
-	"github.com/sonroyaalmerol/pxar/format"
-	pxar "github.com/sonroyaalmerol/pxar"
+	"github.com/pbs-plus/pxar/encoder"
+	"github.com/pbs-plus/pxar/format"
+	pxar "github.com/pbs-plus/pxar"
 	"syscall"
 )
 

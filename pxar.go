@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sonroyaalmerol/pxar/format"
+	"github.com/pbs-plus/pxar/format"
 )
 
 // EntryKind identifies the type of a pxar archive entry.

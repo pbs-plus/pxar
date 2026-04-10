@@ -36,7 +36,7 @@ func ReadFixedIndex(data []byte) (*FixedIndexReader, error) {
 
 	count := len(remaining) / FixedDigestSize
 	digests := make([][32]byte, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		copy(digests[i][:], remaining[i*FixedDigestSize:(i+1)*FixedDigestSize])
 	}
 
@@ -63,10 +63,7 @@ func (r *FixedIndexReader) ChunkInfo(pos int) (ChunkInfo, bool) {
 		return ChunkInfo{}, false
 	}
 	start := uint64(pos) * r.chunkSize
-	end := start + r.chunkSize
-	if end > r.size {
-		end = r.size
-	}
+	end := min(start+r.chunkSize, r.size)
 	return ChunkInfo{
 		Start:  start,
 		End:    end,

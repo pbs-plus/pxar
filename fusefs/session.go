@@ -6,8 +6,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/sonroyaalmerol/pxar/accessor"
 	pxar "github.com/sonroyaalmerol/pxar"
+	"github.com/sonroyaalmerol/pxar/accessor"
 )
 
 // Session implements FileSystem over a pxar archive, providing FUSE-compatible
@@ -213,10 +213,7 @@ func (s *Session) Read(inode uint64, dest []byte, offset int64) (int, error) {
 	}
 
 	remaining := int64(contentSz) - offset
-	toRead := int64(len(dest))
-	if toRead > remaining {
-		toRead = remaining
-	}
+	toRead := min(int64(len(dest)), remaining)
 
 	if _, err := s.reader.Seek(int64(contentOff)+offset, io.SeekStart); err != nil {
 		return 0, err

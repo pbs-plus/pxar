@@ -106,7 +106,7 @@ func TestChunkStoreTouchChunk(t *testing.T) {
 func TestChunkStoreMultipleChunks(t *testing.T) {
 	cs, _ := newTestChunkStore(t)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		data := []byte{byte(i)}
 		digest := sha256.Sum256(data)
 		_, _, err := cs.InsertChunk(digest, data)

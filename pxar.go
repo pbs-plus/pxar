@@ -2,6 +2,33 @@
 //
 // pxar is a binary archive format for efficient backup and storage of file system
 // metadata and content with support for random access via goodbye tables.
+//
+// # Entry Model
+//
+// An archive is a stream of typed entries (Entry). Each entry has a Kind that
+// identifies it as a directory, file, symlink, device node, socket, FIFO, or
+// goodbye table marker. File entries carry content inline; directory entries
+// contain child entries followed by a goodbye table for O(log n) filename
+// lookups.
+//
+// # Metadata
+//
+// Every filesystem entry carries a Metadata struct with POSIX stat information
+// (format.Stat), extended attributes (XAttr), POSIX ACLs, file capabilities
+// (FCaps), and quota project IDs. Use MetadataBuilder to construct Metadata
+// with a fluent API:
+//
+//	meta := pxar.FileMetadata(0o644).
+//	    Owner(1000, 1000).
+//	    Build()
+//
+// # File Name Validation
+//
+// Use CheckPathComponent to validate path components before encoding:
+//
+//	if !pxar.CheckPathComponent(name) {
+//	    return fmt.Errorf("invalid filename: %s", name)
+//	}
 package pxar
 
 import (

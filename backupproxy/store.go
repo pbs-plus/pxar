@@ -14,6 +14,31 @@ import (
 	"github.com/pbs-plus/pxar/datastore"
 )
 
+// encodeChunkBlob encodes a chunk as a PBS blob, optionally compressing with zstd.
+func encodeChunkBlob(chunk []byte, compress bool) ([]byte, error) {
+	if compress {
+		blob, err := datastore.EncodeCompressedBlob(chunk)
+		if err != nil {
+			return nil, fmt.Errorf("compress chunk: %w", err)
+		}
+		return blob.Bytes(), nil
+	}
+	blob, err := datastore.EncodeBlob(chunk)
+	if err != nil {
+		return nil, fmt.Errorf("encode chunk: %w", err)
+	}
+	return blob.Bytes(), nil
+}
+
+// addFileInfo appends a file entry to the manifest file list.
+func addFileInfo(files *[]datastore.FileInfo, name string, size uint64, digest [32]byte) {
+	*files = append(*files, datastore.FileInfo{
+		Filename: name,
+		Size:     size,
+		CSum:     hex.EncodeToString(digest[:]),
+	})
+}
+
 // RemoteStore abstracts the backup storage backend.
 type RemoteStore interface {
 	StartSession(ctx context.Context, config BackupConfig) (BackupSession, error)
@@ -92,19 +117,9 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 
 		digest := sha256.Sum256(chunk)
 
-		var storeData []byte
-		if s.compress {
-			blob, err := datastore.EncodeCompressedBlob(chunk)
-			if err != nil {
-				return nil, fmt.Errorf("compress: %w", err)
-			}
-			storeData = blob.Bytes()
-		} else {
-			blob, err := datastore.EncodeBlob(chunk)
-			if err != nil {
-				return nil, fmt.Errorf("encode blob: %w", err)
-			}
-			storeData = blob.Bytes()
+		storeData, err := encodeChunkBlob(chunk, s.compress)
+		if err != nil {
+			return nil, err
 		}
 
 		if _, _, err := s.store.InsertChunk(digest, storeData); err != nil {
@@ -133,11 +148,7 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 		Digest:   indexDigest,
 	}
 
-	s.files = append(s.files, datastore.FileInfo{
-		Filename: name,
-		Size:     uint64(len(raw)),
-		CSum:     hex.EncodeToString(indexDigest[:]),
-	})
+	addFileInfo(&s.files, name, uint64(len(raw)), indexDigest)
 
 	return result, nil
 }
@@ -149,11 +160,7 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 	}
 
 	digest := sha256.Sum256(data)
-	s.files = append(s.files, datastore.FileInfo{
-		Filename: name,
-		Size:     uint64(len(data)),
-		CSum:     hex.EncodeToString(digest[:]),
-	})
+	addFileInfo(&s.files, name, uint64(len(data)), digest)
 
 	return nil
 }

@@ -209,6 +209,19 @@ func (c *pbsH2Conn) writeDataFrames(streamID uint32, data []byte) error {
 	return nil
 }
 
+// decodeStatus extracts the :status value from accumulated HPACK header data.
+func (c *pbsH2Conn) decodeStatus(buf *bytes.Buffer) int {
+	headers, _ := c.dec.DecodeFull(buf.Bytes())
+	buf.Reset()
+	for _, hf := range headers {
+		if hf.Name == ":status" {
+			s, _ := strconv.Atoi(hf.Value)
+			return s
+		}
+	}
+	return 0
+}
+
 // readResponse reads H2 frames until the response for streamID is complete.
 func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 	var (
@@ -231,13 +244,7 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 			}
 			hdrBuf.Write(f.HeaderBlockFragment())
 			if f.Flags.Has(http2.FlagHeadersEndHeaders) {
-				headers, _ := c.dec.DecodeFull(hdrBuf.Bytes())
-				hdrBuf.Reset()
-				for _, hf := range headers {
-					if hf.Name == ":status" {
-						status, _ = strconv.Atoi(hf.Value)
-					}
-				}
+				status = c.decodeStatus(&hdrBuf)
 			}
 			if f.StreamEnded() {
 				gotEnd = true
@@ -249,13 +256,7 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 			}
 			hdrBuf.Write(f.HeaderBlockFragment())
 			if f.Flags.Has(http2.FlagHeadersEndHeaders) {
-				headers, _ := c.dec.DecodeFull(hdrBuf.Bytes())
-				hdrBuf.Reset()
-				for _, hf := range headers {
-					if hf.Name == ":status" {
-						status, _ = strconv.Atoi(hf.Value)
-					}
-				}
+				status = c.decodeStatus(&hdrBuf)
 			}
 
 		case *http2.DataFrame:

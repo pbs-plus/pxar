@@ -1,0 +1,109 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go test -v -timeout 60s ./...
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Start PBS container
+        run: |
+          docker run -d \
+            --name pbs \
+            --hostname pbs \
+            -e ROOT_PASSWORD=testpassword \
+            -p 8007:8007 \
+            --tmpfs /run/proxmox-backup:size=64M \
+            -v pbs-config:/etc/proxmox-backup \
+            -v pbs-data:/var/lib/proxmox-backup \
+            -v pbs-logs:/var/log/proxmox-backup \
+            ghcr.io/pbs-plus/proxmox-backup-docker
+
+      - name: Wait for PBS to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sk -X POST https://localhost:8007/api2/json/access/ticket \
+              -d "username=root@pam&password=testpassword" 2>/dev/null | grep -q ticket; then
+              echo "PBS is ready after ~$((i*2))s"
+              exit 0
+            fi
+            echo "Waiting for PBS... ($i/60)"
+            sleep 2
+          done
+          echo "PBS did not start in time"
+          docker logs pbs
+          exit 1
+
+      - name: Configure PBS
+        run: |
+          set -euo pipefail
+
+          # Create datastore
+          docker exec pbs proxmox-backup-manager datastore create test-store /var/lib/proxmox-backup/test-store
+
+          # Authenticate and extract ticket + CSRF token
+          AUTH_RESPONSE=$(curl -sk -X POST https://localhost:8007/api2/json/access/ticket \
+            -d "username=root@pam&password=testpassword")
+          TICKET=$(echo "$AUTH_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['ticket'])")
+          CSRF=$(echo "$AUTH_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['CSRFPreventionToken'])")
+
+          # Create API token
+          TOKEN_RESPONSE=$(curl -sk -X POST \
+            https://localhost:8007/api2/json/access/users/root@pam/token/inttest \
+            -H "CSRFPreventionToken: $CSRF" \
+            -b "PBSAuthCookie=$TICKET")
+
+          # Extract token as "tokenid:secret" format
+          FULL_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)['data']
+          print(f\"{d['tokenid']}:{d['value']}\")
+          ")
+
+          # Mask the token secret from logs
+          echo "::add-mask::${FULL_TOKEN}"
+
+          # Grant the token full permissions
+          docker exec pbs proxmox-backup-manager acl update / Admin --auth-id root@pam!inttest
+
+          # Verify the token works
+          VERIFY_CODE=$(curl -sk -o /dev/null -w "%{http_code}" \
+            -H "Authorization: PBSAPIToken ${FULL_TOKEN}" \
+            https://localhost:8007/api2/json/version)
+          if [ "$VERIFY_CODE" -ne 200 ]; then
+            echo "Token verification failed with HTTP $VERIFY_CODE"
+            exit 1
+          fi
+
+          # Set environment variables for integration tests
+          echo "PBS_URL=https://localhost:8007/api2/json" >> "$GITHUB_ENV"
+          echo "PBS_DATASTORE=test-store" >> "$GITHUB_ENV"
+          echo "PBS_TOKEN=${FULL_TOKEN}" >> "$GITHUB_ENV"
+
+      - name: Run integration tests
+        run: go test -tags=integration -v -timeout 120s ./backupproxy/
+
+      - name: Dump PBS logs on failure
+        if: failure()
+        run: docker logs pbs

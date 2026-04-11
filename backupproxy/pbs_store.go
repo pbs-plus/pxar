@@ -171,11 +171,13 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
 	pbsHash := sha256.New()
 
+	estChunks := 32
+	digests := make([]string, 0, estChunks)
+	offsets := make([]uint64, 0, estChunks)
+
 	var (
 		totalSize  uint64
 		chunkCount int
-		digests    []string
-		offsets    []uint64
 	)
 
 	for {
@@ -189,19 +191,9 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 
 		digest := sha256.Sum256(chunk)
 
-		var blobData []byte
-		if s.compress {
-			blob, err := datastore.EncodeCompressedBlob(chunk)
-			if err != nil {
-				return nil, fmt.Errorf("compress chunk: %w", err)
-			}
-			blobData = blob.Bytes()
-		} else {
-			blob, err := datastore.EncodeBlob(chunk)
-			if err != nil {
-				return nil, fmt.Errorf("encode chunk: %w", err)
-			}
-			blobData = blob.Bytes()
+		blobData, err := encodeChunkBlob(chunk, s.compress)
+		if err != nil {
+			return nil, err
 		}
 
 		chunkOffset := totalSize
@@ -253,11 +245,7 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		Digest:   indexDigest,
 	}
 
-	s.files = append(s.files, datastore.FileInfo{
-		Filename: name,
-		Size:     uint64(len(raw)),
-		CSum:     hex.EncodeToString(indexDigest[:]),
-	})
+	addFileInfo(&s.files, name, uint64(len(raw)), indexDigest)
 
 	return result, nil
 }
@@ -274,11 +262,7 @@ func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) err
 	}
 
 	digest := sha256.Sum256(data)
-	s.files = append(s.files, datastore.FileInfo{
-		Filename: name,
-		Size:     uint64(len(blobData)),
-		CSum:     hex.EncodeToString(digest[:]),
-	})
+	addFileInfo(&s.files, name, uint64(len(blobData)), digest)
 
 	return nil
 }

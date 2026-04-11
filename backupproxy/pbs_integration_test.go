@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -801,6 +802,252 @@ func TestIntegration_ChunkOffsetOrdering(t *testing.T) {
 	// Final offset must equal total data size
 	if prevEnd != uint64(len(data)) {
 		t.Errorf("total indexed bytes = %d, want %d", prevEnd, len(data))
+	}
+}
+
+func TestIntegration_LargeDataRoundTrip(t *testing.T) {
+	store := newIntegrationStore(t)
+	pbsCfg := pbsConfigFromEnv(t)
+	cfg := defaultBackupConfig(t)
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	// 2 MB — well above default H2 maxFrameSize (16 KB) to exercise frame splitting
+	data := make([]byte, 2*1024*1024)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatalf("generate data: %v", err)
+	}
+	origDigest := sha256.Sum256(data)
+
+	sess, err := store.StartSession(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
+		t.Fatalf("UploadArchive: %v", err)
+	}
+	if _, err := sess.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	// Download and parse .didx
+	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
+	reader, err := datastore.ReadDynamicIndex(didxData)
+	if err != nil {
+		t.Fatalf("parse didx: %v", err)
+	}
+
+	t.Logf("Large archive: %d bytes, %d chunks", len(data), reader.Count())
+
+	if reader.IndexBytes() != uint64(len(data)) {
+		t.Errorf("index bytes = %d, want %d", reader.IndexBytes(), len(data))
+	}
+
+	// Reconstruct and verify byte-perfect match
+	var reconstructed bytes.Buffer
+	for i := 0; i < reader.Count(); i++ {
+		info, ok := reader.ChunkInfo(i)
+		if !ok {
+			t.Fatalf("chunk info %d not found", i)
+		}
+		chunk := data[info.Start:info.End]
+		digest := sha256.Sum256(chunk)
+		if digest != info.Digest {
+			t.Errorf("chunk %d digest mismatch", i)
+		}
+		reconstructed.Write(chunk)
+	}
+
+	if !bytes.Equal(reconstructed.Bytes(), data) {
+		t.Errorf("large data reconstruction failed: got %d bytes, want %d", reconstructed.Len(), len(data))
+	}
+
+	reconDigest := sha256.Sum256(reconstructed.Bytes())
+	if reconDigest != origDigest {
+		t.Errorf("large data digest mismatch")
+	}
+}
+
+func TestIntegration_PBSChecksumParity(t *testing.T) {
+	store := newIntegrationStore(t)
+	pbsCfg := pbsConfigFromEnv(t)
+	cfg := defaultBackupConfig(t)
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	data := make([]byte, 50*1024)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatalf("generate data: %v", err)
+	}
+
+	sess, err := store.StartSession(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
+		t.Fatalf("UploadArchive: %v", err)
+	}
+	if _, err := sess.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	// Download PBS-stored index
+	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
+	reader, err := datastore.ReadDynamicIndex(didxData)
+	if err != nil {
+		t.Fatalf("parse didx: %v", err)
+	}
+
+	// Compute PBS-side checksum from the downloaded index
+	pbsCsum, _ := reader.ComputeCsum()
+
+	// Independently compute the expected checksum by re-chunking the same data
+	// using the same chunking config. The PBS checksum is:
+	//   sha256(end_offset_LE || chunk_digest || end_offset_LE || chunk_digest || ...)
+	chunkCfg, _ := buzhash.NewConfig(4096)
+	chunker := buzhash.NewChunker(bytes.NewReader(data), chunkCfg)
+	localHash := sha256.New()
+	var totalSize uint64
+
+	for {
+		chunk, err := chunker.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("re-chunk: %v", err)
+		}
+		digest := sha256.Sum256(chunk)
+		totalSize += uint64(len(chunk))
+
+		var offsetBuf [8]byte
+		binary.LittleEndian.PutUint64(offsetBuf[:], totalSize)
+		localHash.Write(offsetBuf[:])
+		localHash.Write(digest[:])
+	}
+
+	var localCsum [32]byte
+	copy(localCsum[:], localHash.Sum(nil))
+
+	// The two checksums must match — proves our checksum algorithm
+	// matches PBS's expectations (if it didn't, dynamic_close would fail,
+	// but this explicitly verifies the downloaded data)
+	if pbsCsum != localCsum {
+		t.Errorf("PBS csum mismatch:\n  PBS:    %s\n  local:  %s",
+			hex.EncodeToString(pbsCsum[:])[:16], hex.EncodeToString(localCsum[:])[:16])
+	}
+}
+
+func TestIntegration_MultipleArchivesPerSession(t *testing.T) {
+	store := newIntegrationStore(t)
+	pbsCfg := pbsConfigFromEnv(t)
+	cfg := defaultBackupConfig(t)
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	sess, err := store.StartSession(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Upload three different archives with different data
+	archives := []struct {
+		name string
+		data []byte
+	}{
+		{"root.pxar.didx", make([]byte, 20*1024)},
+		{"home.pxar.didx", make([]byte, 30*1024)},
+		{"var.pxar.didx", make([]byte, 15*1024)},
+	}
+	for i := range archives {
+		if _, err := rand.Read(archives[i].data); err != nil {
+			t.Fatalf("generate data for %s: %v", archives[i].name, err)
+		}
+	}
+
+	// Track digests for each archive
+	type archiveInfo struct {
+		digest [32]byte
+		data   []byte
+	}
+	infos := make([]archiveInfo, len(archives))
+
+	for i, a := range archives {
+		result, err := sess.UploadArchive(context.Background(), a.name, bytes.NewReader(a.data))
+		if err != nil {
+			t.Fatalf("UploadArchive %s: %v", a.name, err)
+		}
+		if result.Filename != a.name {
+			t.Errorf("archive %d filename = %q, want %q", i, result.Filename, a.name)
+		}
+		infos[i] = archiveInfo{digest: result.Digest, data: a.data}
+	}
+
+	// Upload a blob too
+	blobData := []byte(`{"multi": true, "archives": 3}`)
+	if err := sess.UploadBlob(context.Background(), "config.blob", blobData); err != nil {
+		t.Fatalf("UploadBlob: %v", err)
+	}
+
+	manifest, err := sess.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	// Manifest should have 4 files (3 archives + 1 blob)
+	if len(manifest.Files) != 4 {
+		t.Fatalf("manifest files = %d, want 4", len(manifest.Files))
+	}
+
+	// Verify each archive via download and reconstruction
+	for _, a := range archives {
+		didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, a.name)
+		reader, err := datastore.ReadDynamicIndex(didxData)
+		if err != nil {
+			t.Fatalf("parse didx %s: %v", a.name, err)
+		}
+
+		// Verify total size
+		if reader.IndexBytes() != uint64(len(a.data)) {
+			t.Errorf("%s: index bytes = %d, want %d", a.name, reader.IndexBytes(), len(a.data))
+		}
+
+		// Reconstruct and verify
+		var reconstructed bytes.Buffer
+		for j := 0; j < reader.Count(); j++ {
+			info, ok := reader.ChunkInfo(j)
+			if !ok {
+				t.Fatalf("%s: chunk info %d not found", a.name, j)
+			}
+			chunk := a.data[info.Start:info.End]
+			digest := sha256.Sum256(chunk)
+			if digest != info.Digest {
+				t.Errorf("%s chunk %d: digest mismatch", a.name, j)
+			}
+			reconstructed.Write(chunk)
+		}
+
+		if !bytes.Equal(reconstructed.Bytes(), a.data) {
+			t.Errorf("%s: reconstruction mismatch (got %d, want %d bytes)", a.name, reconstructed.Len(), len(a.data))
+		}
+	}
+
+	// Verify manifest has correct file entries
+	fileMap := make(map[string]datastore.FileInfo)
+	for _, f := range manifest.Files {
+		fileMap[f.Filename] = f
+	}
+	for _, a := range archives {
+		entry, ok := fileMap[a.name]
+		if !ok {
+			t.Errorf("manifest missing %s", a.name)
+			continue
+		}
+		if entry.CSum == "" {
+			t.Errorf("%s: empty checksum in manifest", a.name)
+		}
+	}
+	if _, ok := fileMap["config.blob"]; !ok {
+		t.Error("manifest missing config.blob")
 	}
 }
 

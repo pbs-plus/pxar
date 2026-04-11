@@ -204,6 +204,7 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 			blobData = blob.Bytes()
 		}
 
+		chunkOffset := totalSize
 		totalSize += uint64(len(chunk))
 		chunkCount++
 
@@ -223,7 +224,7 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		}
 
 		digests = append(digests, digestHex)
-		offsets = append(offsets, totalSize)
+		offsets = append(offsets, chunkOffset)
 	}
 
 	// Finish local index for digest
@@ -233,7 +234,7 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 	}
 	indexDigest := sha256.Sum256(raw)
 
-	// Append chunk references to PBS index
+	// Append chunk references to PBS dynamic index
 	if chunkCount > 0 {
 		if err := s.proto.dynamicIndexAppend(wid, digests, offsets); err != nil {
 			return nil, err
@@ -262,14 +263,20 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 }
 
 func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) error {
-	if err := s.proto.blobUpload(name, len(data), data); err != nil {
+	blob, err := datastore.EncodeBlob(data)
+	if err != nil {
+		return fmt.Errorf("encode blob: %w", err)
+	}
+	blobData := blob.Bytes()
+
+	if err := s.proto.blobUpload(name, len(blobData), blobData); err != nil {
 		return err
 	}
 
 	digest := sha256.Sum256(data)
 	s.files = append(s.files, datastore.FileInfo{
 		Filename: name,
-		Size:     uint64(len(data)),
+		Size:     uint64(len(blobData)),
 		CSum:     hex.EncodeToString(digest[:]),
 	})
 
@@ -282,6 +289,20 @@ func (s *pbsSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 		BackupID:   s.config.BackupID,
 		BackupTime: s.config.BackupTime,
 		Files:      s.files,
+	}
+
+	// Upload manifest blob before finishing
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("marshal manifest: %w", err)
+	}
+	manifestBlob, err := datastore.EncodeBlob(manifestData)
+	if err != nil {
+		return nil, fmt.Errorf("encode manifest blob: %w", err)
+	}
+	manifestBlobBytes := manifestBlob.Bytes()
+	if err := s.proto.blobUpload("index.json.blob", len(manifestBlobBytes), manifestBlobBytes); err != nil {
+		return nil, fmt.Errorf("upload manifest: %w", err)
 	}
 
 	if err := s.proto.finish(); err != nil {

@@ -8,7 +8,7 @@ import (
 // FileInfo describes a file in a backup manifest.
 type FileInfo struct {
 	Filename string `json:"filename"`
-	CryptMode int   `json:"crypt-mode"`
+	CryptMode string `json:"crypt-mode,omitempty"`
 	Size     uint64 `json:"size"`
 	CSum     string `json:"csum"`
 }

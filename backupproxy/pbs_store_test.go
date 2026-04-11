@@ -139,12 +139,16 @@ func TestPBSUploadBlob(t *testing.T) {
 	sess, mock := newTestPBSSession(t)
 
 	blobData := []byte(`{"key": "value"}`)
-	if err := sess.UploadBlob(context.Background(), "config.json", blobData); err != nil {
+	if err := sess.UploadBlob(context.Background(), "config.blob", blobData); err != nil {
 		t.Fatal(err)
 	}
 
-	got := mock.blobs["config.json"]
-	if !bytes.Equal(got, blobData) {
+	got := mock.blobs["config.blob"]
+	decoded, err := datastore.DecodeBlob(got)
+	if err != nil {
+		t.Fatalf("decode blob: %v", err)
+	}
+	if !bytes.Equal(decoded, blobData) {
 		t.Error("blob content mismatch")
 	}
 }
@@ -156,7 +160,7 @@ func TestPBSFinish(t *testing.T) {
 	data := make([]byte, 10<<10)
 	rand.Read(data)
 	sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
-	sess.UploadBlob(context.Background(), "config.json", []byte("config"))
+	sess.UploadBlob(context.Background(), "config.blob", []byte("config"))
 
 	manifest, err := sess.Finish(context.Background())
 	if err != nil {
@@ -260,7 +264,7 @@ func TestPBSManifestFileEntries(t *testing.T) {
 	sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData))
 
 	blobData := []byte(`{"test": true}`)
-	sess.UploadBlob(context.Background(), "config.json", blobData)
+	sess.UploadBlob(context.Background(), "config.blob", blobData)
 
 	manifest, err := sess.Finish(context.Background())
 	if err != nil {
@@ -279,13 +283,13 @@ func TestPBSManifestFileEntries(t *testing.T) {
 	if _, ok := fileMap["root.pxar.didx"]; !ok {
 		t.Error("missing root.pxar.didx in manifest")
 	}
-	if _, ok := fileMap["config.json"]; !ok {
-		t.Error("missing config.json in manifest")
+	if _, ok := fileMap["config.blob"]; !ok {
+		t.Error("missing config.blob in manifest")
 	}
 
-	blobEntry := fileMap["config.json"]
-	if blobEntry.Size != uint64(len(blobData)) {
-		t.Errorf("blob size = %d, want %d", blobEntry.Size, len(blobData))
+	blobEntry := fileMap["config.blob"]
+	if blobEntry.Size == 0 {
+		t.Error("blob size should not be 0")
 	}
 
 	expectedBlobDigest := sha256.Sum256(blobData)

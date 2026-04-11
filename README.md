@@ -248,11 +248,12 @@ func main() {
     // Local storage (testing)
     store, _ := backupproxy.NewLocalStore("/tmp/backup", chunkCfg, false)
 
-    // Or PBS remote storage
+    // Or PBS remote storage (connects via H2 backup protocol)
     // store := backupproxy.NewPBSRemoteStore(backupproxy.PBSConfig{
-    //     BaseURL:   "https://pbs:8007/api2/json",
-    //     Datastore: "my-datastore",
-    //     AuthToken: "TOKENID:SECRET",
+    //     BaseURL:       "https://pbs:8007/api2/json",
+    //     Datastore:     "my-datastore",
+    //     AuthToken:     "TOKENID:SECRET",
+    //     SkipTLSVerify: true,
     // }, chunkCfg, true)
 
     srv := backupproxy.NewServer(client, store)
@@ -429,7 +430,7 @@ func main() {
 - `LocalClient` — Adapts FileSystemAccessor to ClientProvider
 - `RemoteStore` / `BackupSession` — Storage backend interfaces
 - `LocalStore` — Local filesystem storage backend
-- `PBSRemoteStore` — PBS HTTP API storage backend
+- `PBSRemoteStore` — PBS H2 backup protocol storage backend
 - `BackupConfig` / `BackupResult` / `UploadResult` — Configuration and result types
 
 ## Architecture
@@ -464,7 +465,7 @@ Backup Data Flow:
                                              │
                                       RemoteStore
                                       ├── LocalStore (testing)
-                                      └── PBSRemoteStore (PBS API)
+                                      └── PBSRemoteStore (PBS H2 Protocol)
 ```
 
 ## License

@@ -1,18 +1,116 @@
 package backupproxy
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
 )
+
+// pbsBackupProtocol abstracts PBS backup protocol operations for testability.
+type pbsBackupProtocol interface {
+	dynamicIndexCreate(archiveName string) (uint64, error)
+	dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error
+	dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error
+	dynamicIndexClose(wid uint64, chunkCount int, size uint64, csum string) error
+	blobUpload(fileName string, encodedSize int, data []byte) error
+	finish() error
+	close()
+}
+
+// h2Protocol implements pbsBackupProtocol using an H2 connection.
+type h2Protocol struct {
+	conn *pbsH2Conn
+}
+
+func (p *h2Protocol) dynamicIndexCreate(archiveName string) (uint64, error) {
+	params := url.Values{}
+	params.Set("archive-name", archiveName)
+	data, err := p.conn.do("POST", "dynamic_index", params, nil, "")
+	if err != nil {
+		return 0, fmt.Errorf("create dynamic index: %w", err)
+	}
+	var wid uint64
+	if err := json.Unmarshal(data, &wid); err != nil {
+		return 0, fmt.Errorf("parse wid: %w (body: %s)", err, data)
+	}
+	return wid, nil
+}
+
+func (p *h2Protocol) dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error {
+	params := url.Values{}
+	params.Set("wid", strconv.FormatUint(wid, 10))
+	params.Set("digest", digest)
+	params.Set("size", strconv.Itoa(size))
+	params.Set("encoded-size", strconv.Itoa(encodedSize))
+	_, err := p.conn.do("POST", "dynamic_chunk", params, data, "application/octet-stream")
+	if err != nil {
+		return fmt.Errorf("upload chunk: %w", err)
+	}
+	return nil
+}
+
+func (p *h2Protocol) dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error {
+	body := map[string]interface{}{
+		"wid":         wid,
+		"digest-list": digests,
+		"offset-list": offsets,
+	}
+	bodyData, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal append body: %w", err)
+	}
+	_, err = p.conn.do("PUT", "dynamic_index", nil, bodyData, "application/json")
+	if err != nil {
+		return fmt.Errorf("append index: %w", err)
+	}
+	return nil
+}
+
+func (p *h2Protocol) dynamicIndexClose(wid uint64, chunkCount int, size uint64, csum string) error {
+	params := url.Values{}
+	params.Set("wid", strconv.FormatUint(wid, 10))
+	params.Set("chunk-count", strconv.Itoa(chunkCount))
+	params.Set("size", strconv.FormatUint(size, 10))
+	params.Set("csum", csum)
+	_, err := p.conn.do("POST", "dynamic_close", params, nil, "")
+	if err != nil {
+		return fmt.Errorf("close index: %w", err)
+	}
+	return nil
+}
+
+func (p *h2Protocol) blobUpload(fileName string, encodedSize int, data []byte) error {
+	params := url.Values{}
+	params.Set("file-name", fileName)
+	params.Set("encoded-size", strconv.Itoa(encodedSize))
+	_, err := p.conn.do("POST", "blob", params, data, "application/octet-stream")
+	if err != nil {
+		return fmt.Errorf("upload blob: %w", err)
+	}
+	return nil
+}
+
+func (p *h2Protocol) finish() error {
+	_, err := p.conn.do("POST", "finish", nil, nil, "")
+	if err != nil {
+		return fmt.Errorf("finish: %w", err)
+	}
+	return nil
+}
+
+func (p *h2Protocol) close() {
+	p.conn.close()
+}
 
 // PBSConfig holds configuration for connecting to a Proxmox Backup Server.
 type PBSConfig struct {
@@ -22,9 +120,8 @@ type PBSConfig struct {
 	SkipTLSVerify bool   // disable TLS certificate verification
 }
 
-// PBSRemoteStore implements RemoteStore via the PBS HTTP API.
+// PBSRemoteStore implements RemoteStore via the PBS H2 backup protocol.
 type PBSRemoteStore struct {
-	client   *http.Client
 	config   PBSConfig
 	chunkCfg buzhash.Config
 	compress bool
@@ -32,67 +129,54 @@ type PBSRemoteStore struct {
 
 // NewPBSRemoteStore creates a PBS remote store with the given configuration.
 func NewPBSRemoteStore(config PBSConfig, chunkCfg buzhash.Config, compress bool) *PBSRemoteStore {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if config.SkipTLSVerify {
-		transport.TLSClientConfig.InsecureSkipVerify = true
-	}
 	return &PBSRemoteStore{
-		client:   &http.Client{Transport: transport},
 		config:   config,
 		chunkCfg: chunkCfg,
 		compress: compress,
 	}
 }
 
-func (ps *PBSRemoteStore) doRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, ps.config.BaseURL+path, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "PBSAPIToken "+ps.config.AuthToken)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/octet-stream")
-	}
-	return ps.client.Do(req)
-}
-
-// StartSession starts a backup session on PBS.
+// StartSession dials PBS via H2 upgrade and returns a backup session.
 func (ps *PBSRemoteStore) StartSession(ctx context.Context, config BackupConfig) (BackupSession, error) {
-	path := fmt.Sprintf("/admin/datastore/%s/backup?backup-type=%s&backup-id=%s&backup-time=%d",
-		ps.config.Datastore, config.BackupType.String(), config.BackupID, config.BackupTime)
-
-	resp, err := ps.doRequest(ctx, http.MethodPost, path, nil)
+	h2Conn, err := dialPBSH2(ctx, ps.config.BaseURL, ps.config.Datastore, ps.config.AuthToken, config, ps.config.SkipTLSVerify)
 	if err != nil {
-		return nil, fmt.Errorf("start backup: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("start backup: HTTP %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("PBS H2 connect: %w", err)
 	}
 
 	return &pbsSession{
-		store:    ps,
+		proto:    &h2Protocol{conn: h2Conn},
 		config:   config,
 		compress: ps.compress,
+		chunkCfg: ps.chunkCfg,
 		files:    make([]datastore.FileInfo, 0),
 	}, nil
 }
 
 // pbsSession implements BackupSession for PBS.
 type pbsSession struct {
-	store    *PBSRemoteStore
+	proto    pbsBackupProtocol
 	config   BackupConfig
 	compress bool
+	chunkCfg buzhash.Config
 	files    []datastore.FileInfo
 }
 
-func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error) {
-	chunker := buzhash.NewChunker(data, s.store.chunkCfg)
-	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
+func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reader) (*UploadResult, error) {
+	wid, err := s.proto.dynamicIndexCreate(name)
+	if err != nil {
+		return nil, err
+	}
 
-	var totalOffset uint64
+	chunker := buzhash.NewChunker(data, s.chunkCfg)
+	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
+	pbsHash := sha256.New()
+
+	var (
+		totalSize  uint64
+		chunkCount int
+		digests    []string
+		offsets    []uint64
+	)
 
 	for {
 		chunk, err := chunker.Next()
@@ -105,46 +189,62 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 
 		digest := sha256.Sum256(chunk)
 
-		exists, err := s.chunkExists(ctx, digest)
-		if err != nil {
-			return nil, fmt.Errorf("check chunk: %w", err)
+		var blobData []byte
+		if s.compress {
+			blob, err := datastore.EncodeCompressedBlob(chunk)
+			if err != nil {
+				return nil, fmt.Errorf("compress chunk: %w", err)
+			}
+			blobData = blob.Bytes()
+		} else {
+			blob, err := datastore.EncodeBlob(chunk)
+			if err != nil {
+				return nil, fmt.Errorf("encode chunk: %w", err)
+			}
+			blobData = blob.Bytes()
 		}
 
-		if !exists {
-			var blobData []byte
-			if s.compress {
-				blob, err := datastore.EncodeCompressedBlob(chunk)
-				if err != nil {
-					return nil, fmt.Errorf("compress chunk: %w", err)
-				}
-				blobData = blob.Bytes()
-			} else {
-				blob, err := datastore.EncodeBlob(chunk)
-				if err != nil {
-					return nil, fmt.Errorf("encode chunk: %w", err)
-				}
-				blobData = blob.Bytes()
-			}
+		totalSize += uint64(len(chunk))
+		chunkCount++
 
-			if err := s.uploadChunk(ctx, digest, blobData); err != nil {
-				return nil, fmt.Errorf("upload chunk: %w", err)
-			}
+		// Local index for digest computation
+		idx.Add(totalSize, digest)
+
+		// PBS running checksum: end_offset (LE) || digest
+		var offsetBuf [8]byte
+		binary.LittleEndian.PutUint64(offsetBuf[:], totalSize)
+		pbsHash.Write(offsetBuf[:])
+		pbsHash.Write(digest[:])
+
+		// Upload chunk to PBS
+		digestHex := hex.EncodeToString(digest[:])
+		if err := s.proto.dynamicChunkUpload(wid, digestHex, len(chunk), len(blobData), blobData); err != nil {
+			return nil, err
 		}
 
-		totalOffset += uint64(len(chunk))
-		idx.Add(totalOffset, digest)
+		digests = append(digests, digestHex)
+		offsets = append(offsets, totalSize)
 	}
 
+	// Finish local index for digest
 	raw, err := idx.Finish()
 	if err != nil {
 		return nil, fmt.Errorf("finish index: %w", err)
 	}
+	indexDigest := sha256.Sum256(raw)
 
-	if err := s.uploadFile(ctx, name, raw); err != nil {
-		return nil, fmt.Errorf("upload index: %w", err)
+	// Append chunk references to PBS index
+	if chunkCount > 0 {
+		if err := s.proto.dynamicIndexAppend(wid, digests, offsets); err != nil {
+			return nil, err
+		}
 	}
 
-	indexDigest := sha256.Sum256(raw)
+	// Close PBS index
+	pbsChecksum := hex.EncodeToString(pbsHash.Sum(nil))
+	if err := s.proto.dynamicIndexClose(wid, chunkCount, totalSize, pbsChecksum); err != nil {
+		return nil, err
+	}
 
 	result := &UploadResult{
 		Filename: name,
@@ -161,55 +261,9 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 	return result, nil
 }
 
-func (s *pbsSession) chunkExists(ctx context.Context, digest [32]byte) (bool, error) {
-	path := fmt.Sprintf("/admin/datastore/%s/chunk?digest=%s",
-		s.store.config.Datastore, hex.EncodeToString(digest[:]))
-
-	resp, err := s.store.doRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return false, err
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK, nil
-}
-
-func (s *pbsSession) uploadChunk(ctx context.Context, digest [32]byte, data []byte) error {
-	path := fmt.Sprintf("/admin/datastore/%s/chunk?digest=%s&encoded-size=%d",
-		s.store.config.Datastore, hex.EncodeToString(digest[:]), len(data))
-
-	resp, err := s.store.doRequest(ctx, http.MethodPut, path, bytes.NewReader(data))
-	if err != nil {
+func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) error {
+	if err := s.proto.blobUpload(name, len(data), data); err != nil {
 		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
-	}
-	return nil
-}
-
-func (s *pbsSession) uploadFile(ctx context.Context, name string, data []byte) error {
-	path := fmt.Sprintf("/admin/datastore/%s/blob?file=%s",
-		s.store.config.Datastore, name)
-
-	resp, err := s.store.doRequest(ctx, http.MethodPut, path, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("upload %q: HTTP %d: %s", name, resp.StatusCode, body)
-	}
-	return nil
-}
-
-func (s *pbsSession) UploadBlob(ctx context.Context, name string, data []byte) error {
-	if err := s.uploadFile(ctx, name, data); err != nil {
-		return fmt.Errorf("upload blob: %w", err)
 	}
 
 	digest := sha256.Sum256(data)
@@ -222,7 +276,7 @@ func (s *pbsSession) UploadBlob(ctx context.Context, name string, data []byte) e
 	return nil
 }
 
-func (s *pbsSession) Finish(ctx context.Context) (*datastore.Manifest, error) {
+func (s *pbsSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 	manifest := &datastore.Manifest{
 		BackupType: s.config.BackupType.String(),
 		BackupID:   s.config.BackupID,
@@ -230,22 +284,10 @@ func (s *pbsSession) Finish(ctx context.Context) (*datastore.Manifest, error) {
 		Files:      s.files,
 	}
 
-	data, err := manifest.Marshal()
-	if err != nil {
-		return nil, fmt.Errorf("marshal manifest: %w", err)
+	if err := s.proto.finish(); err != nil {
+		return nil, err
 	}
 
-	path := fmt.Sprintf("/admin/datastore/%s/finish", s.store.config.Datastore)
-	resp, err := s.store.doRequest(ctx, http.MethodPost, path, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("finish backup: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("finish backup: HTTP %d: %s", resp.StatusCode, body)
-	}
-
+	s.proto.close()
 	return manifest, nil
 }

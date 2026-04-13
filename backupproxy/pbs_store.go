@@ -3,7 +3,6 @@ package backupproxy
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -170,7 +169,6 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 
 	chunker := buzhash.NewChunker(data, s.chunkCfg)
 	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
-	pbsHash := sha256.New()
 
 	estChunks := 32
 	digests := make([]string, 0, estChunks)
@@ -201,14 +199,7 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		totalSize += uint64(len(chunk))
 		chunkCount++
 
-		// Local index for digest computation
 		idx.Add(totalSize, digest)
-
-		// PBS running checksum: end_offset (LE) || digest
-		var offsetBuf [8]byte
-		binary.LittleEndian.PutUint64(offsetBuf[:], totalSize)
-		pbsHash.Write(offsetBuf[:])
-		pbsHash.Write(digest[:])
 
 		// Upload chunk to PBS
 		digestHex := hex.EncodeToString(digest[:])
@@ -231,12 +222,10 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		}
 	}
 
-	// Close PBS index — pbsHash computes SHA256(end_offset_LE || digest || ...) which
-	// is the same as PBS's compute_csum() and matches what PBS stores in the manifest.
-	pbsChecksumBytes := pbsHash.Sum(nil)
-	var indexDigest [32]byte
-	copy(indexDigest[:], pbsChecksumBytes)
-	pbsChecksum := hex.EncodeToString(pbsChecksumBytes)
+	// Use the index writer's compute_csum which matches PBS's expected format:
+	// SHA256(end_offset_LE || chunk_digest || ...) over all entries.
+	indexDigest := idx.Csum()
+	pbsChecksum := hex.EncodeToString(indexDigest[:])
 	if err := s.proto.dynamicIndexClose(wid, chunkCount, totalSize, pbsChecksum); err != nil {
 		return nil, err
 	}

@@ -1,7 +1,13 @@
 package datastore
 
 import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"io"
 	"testing"
+
+	"github.com/pbs-plus/pxar/buzhash"
 )
 
 func BenchmarkEncodeBlob(b *testing.B) {
@@ -224,5 +230,34 @@ func BenchmarkDynamicIndexReadAndComputeCsum(b *testing.B) {
 			b.Fatal(err)
 		}
 		r.ComputeCsum()
+	}
+}
+
+func BenchmarkInMemoryChunkPipeline(b *testing.B) {
+	data := make([]byte, 1<<20)
+	rand.Read(data)
+
+	config, _ := buzhash.NewConfig(64 << 10)
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		idx := NewDynamicIndexWriter(0)
+		chunker := buzhash.NewChunker(bytes.NewReader(data), config)
+		var offset uint64
+		for {
+			chunk, err := chunker.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				b.Fatal(err)
+			}
+			digest := sha256.Sum256(chunk)
+			offset += uint64(len(chunk))
+			idx.Add(offset, digest)
+		}
+		_, _ = idx.Finish()
 	}
 }

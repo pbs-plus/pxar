@@ -32,8 +32,9 @@ func (cs *ChunkStore) chunkDir() string {
 
 // ChunkPath returns the filesystem path for a chunk identified by digest.
 func (cs *ChunkStore) ChunkPath(digest [32]byte) string {
-	h := fmtDigest(digest)
-	return filepath.Join(cs.chunkDir(), h[:2], h)
+	var buf [64]byte
+	hex.Encode(buf[:], digest[:])
+	return filepath.Join(cs.chunkDir(), string(buf[:2]), string(buf[:]))
 }
 
 // InsertChunk stores a chunk. Returns (exists, size, error).
@@ -71,7 +72,9 @@ func (cs *ChunkStore) LoadChunk(digest [32]byte) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("chunk not found: %s", fmtDigest(digest)[:16])
+			var buf [64]byte
+			hex.Encode(buf[:], digest[:])
+			return nil, fmt.Errorf("chunk not found: %s", string(buf[:16]))
 		}
 		return nil, fmt.Errorf("read chunk: %w", err)
 	}
@@ -83,9 +86,4 @@ func (cs *ChunkStore) TouchChunk(digest [32]byte) error {
 	path := cs.ChunkPath(digest)
 	now := time.Now()
 	return os.Chtimes(path, now, now)
-}
-
-// fmtDigest returns the lowercase hex encoding of a 32-byte digest.
-func fmtDigest(digest [32]byte) string {
-	return hex.EncodeToString(digest[:])
 }

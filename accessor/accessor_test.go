@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
-	pxar "github.com/pbs-plus/pxar"
 )
 
 func TestAccessorReadRoot(t *testing.T) {
@@ -375,13 +375,15 @@ func TestAccessorMultipleLookups(t *testing.T) {
 }
 
 func TestAccessorV2Archive(t *testing.T) {
+	content := []byte("Hello from split archive v2!")
 	var archiveBuf bytes.Buffer
 	var payloadBuf bytes.Buffer
 	enc := encoder.NewEncoder(&archiveBuf, &payloadBuf, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", []byte("content"))
+	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", content)
 	enc.Close()
 
-	acc := NewAccessor(bytes.NewReader(archiveBuf.Bytes()))
+	// For split archives, provide both archive and payload readers
+	acc := NewAccessor(bytes.NewReader(archiveBuf.Bytes()), bytes.NewReader(payloadBuf.Bytes()))
 
 	root, err := acc.ReadRoot()
 	if err != nil {
@@ -397,6 +399,44 @@ func TestAccessorV2Archive(t *testing.T) {
 	}
 	if !entry.IsRegularFile() {
 		t.Errorf("kind = %v, want file", entry.Kind)
+	}
+	if entry.FileSize != uint64(len(content)) {
+		t.Errorf("file size = %d, want %d", entry.FileSize, len(content))
+	}
+	if entry.PayloadOffset == 0 {
+		t.Error("PayloadOffset should be set for split archive files")
+	}
+
+	// Test reading file content from payload stream
+	data, err := acc.ReadFileContent(entry)
+	if err != nil {
+		t.Fatalf("ReadFileContent: %v", err)
+	}
+	if string(data) != string(content) {
+		t.Errorf("content = %q, want %q", data, content)
+	}
+}
+
+func TestAccessorV2ArchiveWithoutPayloadReader(t *testing.T) {
+	content := []byte("Hello from split archive v2!")
+	var archiveBuf bytes.Buffer
+	var payloadBuf bytes.Buffer
+	enc := encoder.NewEncoder(&archiveBuf, &payloadBuf, dirMetadata(0o755), nil)
+	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", content)
+	enc.Close()
+
+	// Try to read without providing payload reader - should fail
+	acc := NewAccessor(bytes.NewReader(archiveBuf.Bytes()))
+
+	entry, err := acc.Lookup("/file.txt")
+	if err != nil {
+		t.Fatalf("Lookup /file.txt: %v", err)
+	}
+
+	// Reading content should fail because payload reader is not provided
+	_, err = acc.ReadFileContent(entry)
+	if err == nil {
+		t.Error("ReadFileContent should fail without payload reader for split archives")
 	}
 }
 

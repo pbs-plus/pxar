@@ -111,6 +111,10 @@ func (s *Server) RunBackup(ctx context.Context, root string, config BackupConfig
 }
 
 // RunSplitBackup executes a full pull backup using the split archive format (v2, data mode).
+// The encoder writes metadata and payload to buffers first, then uploads them
+// sequentially via UploadSplitArchive. This avoids the io.Pipe deadlock that
+// occurs when UploadSplitArchive reads one stream at a time while the encoder
+// writes both simultaneously.
 func (s *Server) RunSplitBackup(ctx context.Context, root string, config BackupConfig) (*BackupResult, error) {
 	start := time.Now()
 
@@ -124,53 +128,28 @@ func (s *Server) RunSplitBackup(ctx context.Context, root string, config BackupC
 		return nil, fmt.Errorf("stat root: %w", err)
 	}
 
-	metaReader, metaWriter := io.Pipe()
-	payloadReader, payloadWriter := io.Pipe()
-
-	metaUploadErrCh := make(chan uploadResult, 1)
-	go func() {
-		result, err := sess.UploadArchive(ctx, "root.mpxar.didx", metaReader)
-		metaUploadErrCh <- uploadResult{result: result, err: err}
-	}()
-
-	payloadUploadErrCh := make(chan uploadResult, 1)
-	go func() {
-		result, err := sess.UploadArchive(ctx, "root.ppxar.didx", payloadReader)
-		payloadUploadErrCh <- uploadResult{result: result, err: err}
-	}()
-
+	var metaBuf, payloadBuf bytes.Buffer
 	rootMeta := &pxar.Metadata{Stat: rootStat}
-	enc := encoder.NewEncoder(metaWriter, payloadWriter, rootMeta, nil)
+	enc := encoder.NewEncoder(&metaBuf, &payloadBuf, rootMeta, nil)
 
 	result := &BackupResult{}
 	if err := s.walkDir(ctx, root, enc, nil, result); err != nil {
-		metaWriter.CloseWithError(err)
-		payloadWriter.CloseWithError(err)
-		<-metaUploadErrCh
-		<-payloadUploadErrCh
 		return nil, err
 	}
 
 	if err := enc.Close(); err != nil {
-		metaWriter.CloseWithError(err)
-		payloadWriter.CloseWithError(err)
-		<-metaUploadErrCh
-		<-payloadUploadErrCh
 		return nil, fmt.Errorf("close encoder: %w", err)
 	}
-	metaWriter.Close()
-	payloadWriter.Close()
 
-	metaUpload := <-metaUploadErrCh
-	if metaUpload.err != nil {
-		return nil, fmt.Errorf("upload metadata archive: %w", metaUpload.err)
-	}
-	payloadUpload := <-payloadUploadErrCh
-	if payloadUpload.err != nil {
-		return nil, fmt.Errorf("upload payload archive: %w", payloadUpload.err)
+	splitResult, err := sess.UploadSplitArchive(ctx,
+		"root.mpxar.didx", &metaBuf,
+		"root.ppxar.didx", &payloadBuf,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upload split archive: %w", err)
 	}
 
-	result.TotalBytes = int64(metaUpload.result.Size + payloadUpload.result.Size)
+	result.TotalBytes = int64(splitResult.MetadataResult.Size + splitResult.PayloadResult.Size)
 
 	manifest, err := sess.Finish(ctx)
 	if err != nil {
@@ -246,23 +225,9 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 		return nil, fmt.Errorf("stat root: %w", err)
 	}
 
-	metaReader, metaWriter := io.Pipe()
-	payloadReader, payloadWriter := io.Pipe()
-
-	metaUploadErrCh := make(chan uploadResult, 1)
-	go func() {
-		result, err := sess.UploadArchive(ctx, "root.mpxar.didx", metaReader)
-		metaUploadErrCh <- uploadResult{result: result, err: err}
-	}()
-
-	payloadUploadErrCh := make(chan uploadResult, 1)
-	go func() {
-		result, err := sess.UploadArchive(ctx, "root.ppxar.didx", payloadReader)
-		payloadUploadErrCh <- uploadResult{result: result, err: err}
-	}()
-
+	var metaBuf, payloadBuf bytes.Buffer
 	rootMeta := &pxar.Metadata{Stat: rootStat}
-	enc := encoder.NewEncoder(metaWriter, payloadWriter, rootMeta, nil)
+	enc := encoder.NewEncoder(&metaBuf, &payloadBuf, rootMeta, nil)
 
 	result := &BackupResult{}
 	mw := &metadataWalker{
@@ -273,33 +238,22 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 		ctx:        ctx,
 	}
 	if err := s.walkDir(ctx, root, enc, mw, result); err != nil {
-		metaWriter.CloseWithError(err)
-		payloadWriter.CloseWithError(err)
-		<-metaUploadErrCh
-		<-payloadUploadErrCh
 		return nil, err
 	}
 
 	if err := enc.Close(); err != nil {
-		metaWriter.CloseWithError(err)
-		payloadWriter.CloseWithError(err)
-		<-metaUploadErrCh
-		<-payloadUploadErrCh
 		return nil, fmt.Errorf("close encoder: %w", err)
 	}
-	metaWriter.Close()
-	payloadWriter.Close()
 
-	metaUpload := <-metaUploadErrCh
-	if metaUpload.err != nil {
-		return nil, fmt.Errorf("upload metadata archive: %w", metaUpload.err)
-	}
-	payloadUpload := <-payloadUploadErrCh
-	if payloadUpload.err != nil {
-		return nil, fmt.Errorf("upload payload archive: %w", payloadUpload.err)
+	splitResult, err := sess.UploadSplitArchive(ctx,
+		"root.mpxar.didx", &metaBuf,
+		"root.ppxar.didx", &payloadBuf,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upload split archive: %w", err)
 	}
 
-	result.TotalBytes = int64(metaUpload.result.Size + payloadUpload.result.Size)
+	result.TotalBytes = int64(splitResult.MetadataResult.Size + splitResult.PayloadResult.Size)
 
 	manifest, err := sess.Finish(ctx)
 	if err != nil {

@@ -170,10 +170,10 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 	chunker := buzhash.NewChunker(data, s.chunkCfg)
 	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
 
-	estChunks := 32
-	digests := make([]string, 0, estChunks)
-	offsets := make([]uint64, 0, estChunks)
+	digests := make([]string, 0, 64)
+	offsets := make([]uint64, 0, 64)
 
+	var hexBuf [64]byte
 	var (
 		totalSize  uint64
 		chunkCount int
@@ -201,13 +201,12 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 
 		idx.Add(totalSize, digest)
 
-		// Upload chunk to PBS
-		digestHex := hex.EncodeToString(digest[:])
-		if err := s.proto.dynamicChunkUpload(wid, digestHex, len(chunk), len(blobData), blobData); err != nil {
+		hex.Encode(hexBuf[:], digest[:])
+		if err := s.proto.dynamicChunkUpload(wid, string(hexBuf[:]), len(chunk), len(blobData), blobData); err != nil {
 			return nil, err
 		}
 
-		digests = append(digests, digestHex)
+		digests = append(digests, string(hexBuf[:]))
 		offsets = append(offsets, chunkOffset)
 	}
 

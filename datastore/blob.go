@@ -3,9 +3,30 @@ package datastore
 import (
 	"fmt"
 	"hash/crc32"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
+
+var zstdEncoderPool = sync.Pool{
+	New: func() interface{} {
+		enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
+		if err != nil {
+			panic(fmt.Sprintf("zstd encoder init: %v", err))
+		}
+		return enc
+	},
+}
+
+var zstdDecoderPool = sync.Pool{
+	New: func() interface{} {
+		dec, err := zstd.NewReader(nil)
+		if err != nil {
+			panic(fmt.Sprintf("zstd decoder init: %v", err))
+		}
+		return dec
+	},
+}
 
 // DataBlob represents a stored data blob with optional compression.
 // The raw data contains the magic, CRC, and payload.
@@ -34,7 +55,6 @@ func EncodeCompressedBlob(data []byte) (*DataBlob, error) {
 		return nil, fmt.Errorf("blob data too large: %d > %d", len(data), MaxBlobSize)
 	}
 
-	// Don't bother compressing tiny payloads
 	if len(data) < 32 {
 		return EncodeBlob(data)
 	}
@@ -44,7 +64,6 @@ func EncodeCompressedBlob(data []byte) (*DataBlob, error) {
 		return nil, fmt.Errorf("zstd compress: %w", err)
 	}
 
-	// Only use compressed if it's actually smaller
 	if len(compressed) >= len(data) {
 		return EncodeBlob(data)
 	}
@@ -128,22 +147,15 @@ func validateBlobMagic(magic [8]byte) error {
 	}
 }
 
-// zstdCompress compresses data using zstd level 1.
 func zstdCompress(data []byte) ([]byte, error) {
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
-	if err != nil {
-		return nil, err
-	}
-	compressed := enc.EncodeAll(data, nil)
-	return compressed, nil
+	enc := zstdEncoderPool.Get().(*zstd.Encoder)
+	defer zstdEncoderPool.Put(enc)
+	return enc.EncodeAll(data, nil), nil
 }
 
-// zstdDecompress decompresses zstd data.
 func zstdDecompress(data []byte) ([]byte, error) {
-	dec, err := zstd.NewReader(nil)
-	if err != nil {
-		return nil, err
-	}
+	dec := zstdDecoderPool.Get().(*zstd.Decoder)
+	defer zstdDecoderPool.Put(dec)
 	return dec.DecodeAll(data, nil)
 }
 

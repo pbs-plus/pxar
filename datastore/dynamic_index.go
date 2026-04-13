@@ -114,8 +114,8 @@ func (r *DynamicIndexReader) IndexDigest(pos int) ([32]byte, bool) {
 // ComputeCsum computes the SHA-256 checksum over all entry data.
 func (r *DynamicIndexReader) ComputeCsum() ([32]byte, uint64) {
 	h := sha256.New()
+	var buf [DynamicEntrySize]byte
 	for _, e := range r.entries {
-		var buf [DynamicEntrySize]byte
 		binary.LittleEndian.PutUint64(buf[0:8], e.EndOffset)
 		copy(buf[8:40], e.Digest[:])
 		h.Write(buf[:])
@@ -129,7 +129,8 @@ func (r *DynamicIndexReader) ComputeCsum() ([32]byte, uint64) {
 type DynamicIndexWriter struct {
 	header  DynamicIndexHeader
 	entries []DynamicEntry
-	buf     bytes.Buffer
+	cached  bool
+	csum    [32]byte
 }
 
 // NewDynamicIndexWriter creates a new writer with the given creation time.
@@ -139,6 +140,7 @@ func NewDynamicIndexWriter(ctime int64) *DynamicIndexWriter {
 			Magic: MagicDynamicChunkIndex,
 			Ctime: ctime,
 		},
+		entries: make([]DynamicEntry, 0, 64),
 	}
 }
 
@@ -148,37 +150,36 @@ func (w *DynamicIndexWriter) Add(endOffset uint64, digest [32]byte) {
 		EndOffset: endOffset,
 		Digest:    digest,
 	})
+	w.cached = false
 }
 
 // Csum returns the SHA-256 checksum over all entry data (end_offset || digest pairs).
 // This matches PBS's compute_csum() and is the checksum stored in the manifest.
+// The result is cached and invalidated by Add().
 func (w *DynamicIndexWriter) Csum() [32]byte {
-	csum, _ := w.computeCsum()
-	return csum
+	if !w.cached {
+		w.csum, _ = w.computeCsum()
+		w.cached = true
+	}
+	return w.csum
 }
 
 // Finish writes the complete index and returns the raw bytes.
 func (w *DynamicIndexWriter) Finish() ([]byte, error) {
-	// Compute index checksum
-	csum, _ := w.computeCsum()
-	w.header.IndexCsum = csum
+	w.header.IndexCsum = w.Csum()
 
-	// Generate UUID (simple: sha256 of ctime + entry count)
 	var uuidInput [16]byte
 	binary.LittleEndian.PutUint64(uuidInput[0:8], uint64(w.header.Ctime))
 	binary.LittleEndian.PutUint64(uuidInput[8:16], uint64(len(w.entries)))
 	uuidHash := sha256.Sum256(uuidInput[:])
 	copy(w.header.UUID[:], uuidHash[:16])
 
-	var buf bytes.Buffer
-	buf.Grow(IndexHeaderSize + len(w.entries)*DynamicEntrySize)
+	buf := bytes.NewBuffer(make([]byte, 0, IndexHeaderSize+len(w.entries)*DynamicEntrySize))
 
-	// Write header
 	var hdr [IndexHeaderSize]byte
 	w.header.MarshalTo(hdr[:])
 	buf.Write(hdr[:])
 
-	// Write entries
 	var entryBuf [DynamicEntrySize]byte
 	for _, e := range w.entries {
 		binary.LittleEndian.PutUint64(entryBuf[0:8], e.EndOffset)

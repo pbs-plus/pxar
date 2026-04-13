@@ -587,7 +587,6 @@ func TestRunBackupWithMode(t *testing.T) {
 
 	srv, _ := newTestServer(t, fs)
 
-	// Test legacy mode dispatches correctly
 	result, err := srv.RunBackupWithMode(context.Background(), "/root", BackupConfig{
 		BackupType:    datastore.BackupHost,
 		BackupID:      "test",
@@ -599,4 +598,981 @@ func TestRunBackupWithMode(t *testing.T) {
 	if result.FileCount != 1 {
 		t.Errorf("legacy file count = %d, want 1", result.FileCount)
 	}
+}
+
+func restoreLegacyArchive(t *testing.T, dir string) *accessor.Accessor {
+	t.Helper()
+	raw, err := os.ReadFile(dir + "/root.pxar.didx")
+	if err != nil {
+		t.Fatalf("read legacy index: %v", err)
+	}
+	idx, err := datastore.ReadDynamicIndex(raw)
+	if err != nil {
+		t.Fatalf("parse legacy index: %v", err)
+	}
+	chunkStore, err := datastore.NewChunkStore(dir)
+	if err != nil {
+		t.Fatalf("open chunk store: %v", err)
+	}
+	var archive bytes.Buffer
+	for i := 0; i < idx.Count(); i++ {
+		info, _ := idx.ChunkInfo(i)
+		chunk, err := chunkStore.LoadChunk(info.Digest)
+		if err != nil {
+			t.Fatalf("load chunk %d: %v", i, err)
+		}
+		decoded, err := datastore.DecodeBlob(chunk)
+		if err != nil {
+			t.Fatalf("decode chunk %d: %v", i, err)
+		}
+		archive.Write(decoded)
+	}
+	acc := accessor.NewAccessor(bytes.NewReader(archive.Bytes()))
+	return acc
+}
+
+func restoreSplitArchive(t *testing.T, dir string) (*accessor.Accessor, *accessor.Accessor) {
+	t.Helper()
+	metaRaw, err := os.ReadFile(dir + "/root.mpxar.didx")
+	if err != nil {
+		t.Fatalf("read metadata index: %v", err)
+	}
+	payloadRaw, err := os.ReadFile(dir + "/root.ppxar.didx")
+	if err != nil {
+		t.Fatalf("read payload index: %v", err)
+	}
+	metaIdx, err := datastore.ReadDynamicIndex(metaRaw)
+	if err != nil {
+		t.Fatalf("parse metadata index: %v", err)
+	}
+	payloadIdx, err := datastore.ReadDynamicIndex(payloadRaw)
+	if err != nil {
+		t.Fatalf("parse payload index: %v", err)
+	}
+	chunkStore, err := datastore.NewChunkStore(dir)
+	if err != nil {
+		t.Fatalf("open chunk store: %v", err)
+	}
+	var metaBuf, payloadBuf bytes.Buffer
+	for _, idx := range []*datastore.DynamicIndexReader{metaIdx, payloadIdx} {
+		dst := &metaBuf
+		if idx == payloadIdx {
+			dst = &payloadBuf
+		}
+		for i := 0; i < idx.Count(); i++ {
+			info, _ := idx.ChunkInfo(i)
+			chunk, err := chunkStore.LoadChunk(info.Digest)
+			if err != nil {
+				t.Fatalf("load chunk %d: %v", i, err)
+			}
+			decoded, err := datastore.DecodeBlob(chunk)
+			if err != nil {
+				t.Fatalf("decode chunk %d: %v", i, err)
+			}
+			dst.Write(decoded)
+		}
+	}
+	acc := accessor.NewAccessor(bytes.NewReader(metaBuf.Bytes()), bytes.NewReader(payloadBuf.Bytes()))
+	return acc, nil
+}
+
+func verifyFileContent(t *testing.T, acc *accessor.Accessor, path, expected string) {
+	t.Helper()
+	entry, err := acc.Lookup(path)
+	if err != nil {
+		t.Fatalf("lookup %q: %v", path, err)
+	}
+	if !entry.IsRegularFile() {
+		t.Fatalf("expected %q to be a regular file, got kind=%v", path, entry.Kind)
+	}
+	content, err := acc.ReadFileContent(entry)
+	if err != nil {
+		t.Fatalf("read %q content: %v", path, err)
+	}
+	if string(content) != expected {
+		t.Errorf("content of %q = %q, want %q", path, string(content), expected)
+	}
+}
+
+func verifyIsDir(t *testing.T, acc *accessor.Accessor, path string) {
+	t.Helper()
+	entry, err := acc.Lookup(path)
+	if err != nil {
+		t.Fatalf("lookup %q: %v", path, err)
+	}
+	if !entry.IsDir() {
+		t.Errorf("expected %q to be a directory, got kind=%v", path, entry.Kind)
+	}
+}
+
+func verifyIsSymlink(t *testing.T, acc *accessor.Accessor, path, expectedTarget string) {
+	t.Helper()
+	entry, err := acc.Lookup(path)
+	if err != nil {
+		t.Fatalf("lookup %q: %v", path, err)
+	}
+	if !entry.IsSymlink() {
+		t.Fatalf("expected %q to be a symlink, got kind=%v", path, entry.Kind)
+	}
+	if entry.LinkTarget != expectedTarget {
+		t.Errorf("symlink %q target = %q, want %q", path, entry.LinkTarget, expectedTarget)
+	}
+}
+
+// --- Legacy mode edge cases ---
+
+func TestLegacyEmptyDirectory(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunBackup(context.Background(), "/root", BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 0 {
+		t.Errorf("file count = %d, want 0", result.FileCount)
+	}
+	if result.DirCount != 0 {
+		t.Errorf("dir count = %d, want 0", result.DirCount)
+	}
+
+	acc := restoreLegacyArchive(t, dir)
+	root, err := acc.ReadRoot()
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	if !root.IsDir() {
+		t.Error("root should be a directory")
+	}
+}
+
+func TestLegacyEmptyFile(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/empty.txt", "/root", []byte{}, 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunBackup(context.Background(), "/root", BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+
+	acc := restoreLegacyArchive(t, dir)
+	verifyFileContent(t, acc, "empty.txt", "")
+}
+
+func TestLegacyDeeplyNestedDirs(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addDir("/root/a", "/root", 0o755)
+	fs.addDir("/root/a/b", "/root/a", 0o755)
+	fs.addDir("/root/a/b/c", "/root/a/b", 0o755)
+	fs.addFile("/root/a/b/c/deep.txt", "/root/a/b/c", []byte("deep content"), 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunBackup(context.Background(), "/root", BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+	if result.DirCount != 3 {
+		t.Errorf("dir count = %d, want 3", result.DirCount)
+	}
+
+	acc := restoreLegacyArchive(t, dir)
+	verifyFileContent(t, acc, "a/b/c/deep.txt", "deep content")
+}
+
+func TestLegacySymlinks(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/real.txt", "/root", []byte("real content"), 0o644)
+	fs.addSymlink("/root/link", "/root", "real.txt", 0o777)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunBackup(context.Background(), "/root", BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1 (symlink not counted)", result.FileCount)
+	}
+
+	acc := restoreLegacyArchive(t, dir)
+	verifyIsSymlink(t, acc, "link", "real.txt")
+	verifyFileContent(t, acc, "real.txt", "real content")
+}
+
+func TestLegacyMultipleFilesWithSameContent(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/a.txt", "/root", []byte("same content"), 0o644)
+	fs.addFile("/root/b.txt", "/root", []byte("same content"), 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunBackup(context.Background(), "/root", BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 2 {
+		t.Errorf("file count = %d, want 2", result.FileCount)
+	}
+
+	acc := restoreLegacyArchive(t, dir)
+	verifyFileContent(t, acc, "a.txt", "same content")
+	verifyFileContent(t, acc, "b.txt", "same content")
+}
+
+func TestLegacyMixedContent(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/file.txt", "/root", []byte("data"), 0o644)
+	fs.addDir("/root/subdir", "/root", 0o755)
+	fs.addFile("/root/subdir/nested.txt", "/root/subdir", []byte("nested"), 0o644)
+	fs.addFile("/root/subdir/empty.txt", "/root/subdir", []byte{}, 0o644)
+	fs.addSymlink("/root/link", "/root", "file.txt", 0o777)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunBackup(context.Background(), "/root", BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 3 {
+		t.Errorf("file count = %d, want 3", result.FileCount)
+	}
+	if result.DirCount != 1 {
+		t.Errorf("dir count = %d, want 1", result.DirCount)
+	}
+
+	acc := restoreLegacyArchive(t, dir)
+	verifyFileContent(t, acc, "file.txt", "data")
+	verifyFileContent(t, acc, "subdir/nested.txt", "nested")
+	verifyFileContent(t, acc, "subdir/empty.txt", "")
+	verifyIsSymlink(t, acc, "link", "file.txt")
+}
+
+func TestLegacyLargeFile(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	largeData := make([]byte, 100<<10) // 100KB
+	rand.Read(largeData)
+	fs.addFile("/root/large.bin", "/root", largeData, 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunBackup(context.Background(), "/root", BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+	if result.TotalBytes == 0 {
+		t.Error("total bytes should not be 0")
+	}
+
+	acc := restoreLegacyArchive(t, dir)
+	entry, err := acc.Lookup("large.bin")
+	if err != nil {
+		t.Fatalf("lookup large.bin: %v", err)
+	}
+	content, err := acc.ReadFileContent(entry)
+	if err != nil {
+		t.Fatalf("read large.bin content: %v", err)
+	}
+	if !bytes.Equal(content, largeData) {
+		t.Errorf("large.bin content mismatch: got %d bytes, want %d bytes", len(content), len(largeData))
+	}
+}
+
+// --- Data mode edge cases ---
+
+func TestDataModeEmptyDirectory(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 0 {
+		t.Errorf("file count = %d, want 0", result.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, dir)
+	root, err := acc.ReadRoot()
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	if !root.IsDir() {
+		t.Error("root should be a directory")
+	}
+}
+
+func TestDataModeEmptyFile(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/empty.txt", "/root", []byte{}, 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, dir)
+	verifyFileContent(t, acc, "empty.txt", "")
+}
+
+func TestDataModeRoundTrip(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/hello.txt", "/root", []byte("hello world"), 0o644)
+	fs.addDir("/root/subdir", "/root", 0o755)
+	fs.addFile("/root/subdir/nested.txt", "/root/subdir", []byte("nested content"), 0o644)
+	fs.addFile("/root/subdir/empty.txt", "/root/subdir", []byte{}, 0o644)
+	fs.addSymlink("/root/link", "/root", "hello.txt", 0o777)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 3 {
+		t.Errorf("file count = %d, want 3", result.FileCount)
+	}
+	if result.DirCount != 1 {
+		t.Errorf("dir count = %d, want 1", result.DirCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, dir)
+	verifyFileContent(t, acc, "hello.txt", "hello world")
+	verifyFileContent(t, acc, "subdir/nested.txt", "nested content")
+	verifyFileContent(t, acc, "subdir/empty.txt", "")
+	verifyIsSymlink(t, acc, "link", "hello.txt")
+}
+
+func TestDataModeDeeplyNested(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addDir("/root/a", "/root", 0o755)
+	fs.addDir("/root/a/b", "/root/a", 0o755)
+	fs.addDir("/root/a/b/c", "/root/a/b", 0o755)
+	fs.addFile("/root/a/b/c/deep.txt", "/root/a/b/c", []byte("deep content"), 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	_, err := srv.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acc, _ := restoreSplitArchive(t, dir)
+	verifyFileContent(t, acc, "a/b/c/deep.txt", "deep content")
+}
+
+func TestDataModeLargeFile(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	largeData := make([]byte, 100<<10)
+	rand.Read(largeData)
+	fs.addFile("/root/large.bin", "/root", largeData, 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	_, err := srv.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acc, _ := restoreSplitArchive(t, dir)
+	entry, err := acc.Lookup("large.bin")
+	if err != nil {
+		t.Fatalf("lookup large.bin: %v", err)
+	}
+	content, err := acc.ReadFileContent(entry)
+	if err != nil {
+		t.Fatalf("read large.bin: %v", err)
+	}
+	if !bytes.Equal(content, largeData) {
+		t.Errorf("large.bin content mismatch: got %d bytes, want %d bytes", len(content), len(largeData))
+	}
+}
+
+func TestDataModeMultipleFilesSameContent(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/a.txt", "/root", []byte("identical"), 0o644)
+	fs.addFile("/root/b.txt", "/root", []byte("identical"), 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	_, err := srv.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acc, _ := restoreSplitArchive(t, dir)
+	verifyFileContent(t, acc, "a.txt", "identical")
+	verifyFileContent(t, acc, "b.txt", "identical")
+}
+
+func TestDataModeFilesOnlyWithNoDirs(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/only.txt", "/root", []byte("just a file"), 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+	if result.DirCount != 0 {
+		t.Errorf("dir count = %d, want 0", result.DirCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, dir)
+	verifyFileContent(t, acc, "only.txt", "just a file")
+}
+
+// --- Metadata mode edge cases ---
+
+func TestMetadataModeAllUnchanged(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	// Phase 1: initial data backup
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/a.txt", "/root", []byte("alpha"), 0o644, mtime)
+	fs1.addFileWithMtime("/root/b.txt", "/root", []byte("beta"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	prevResult, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+	if prevResult.FileCount != 2 {
+		t.Errorf("initial file count = %d, want 2", prevResult.FileCount)
+	}
+
+	// Phase 2: no files changed
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/a.txt", "/root", []byte("alpha"), 0o644, mtime)
+	fs2.addFileWithMtime("/root/b.txt", "/root", []byte("beta"), 0o644, mtime)
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup (all unchanged): %v", err)
+	}
+	if metaResult.FileCount != 2 {
+		t.Errorf("metadata file count = %d, want 2", metaResult.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "a.txt", "alpha")
+	verifyFileContent(t, acc, "b.txt", "beta")
+}
+
+func TestMetadataModeAllChanged(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+	newMtime := format.StatxTimestamp{Secs: 1700000001}
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/a.txt", "/root", []byte("old_a"), 0o644, mtime)
+	fs1.addFileWithMtime("/root/b.txt", "/root", []byte("old_b"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	_, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+
+	// All files changed
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/a.txt", "/root", []byte("new_a"), 0o644, newMtime)
+	fs2.addFileWithMtime("/root/b.txt", "/root", []byte("new_b"), 0o644, newMtime)
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup (all changed): %v", err)
+	}
+	if metaResult.FileCount != 2 {
+		t.Errorf("metadata file count = %d, want 2", metaResult.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "a.txt", "new_a")
+	verifyFileContent(t, acc, "b.txt", "new_b")
+}
+
+func TestMetadataModeNewFileAdded(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/existing.txt", "/root", []byte("old"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	_, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+
+	// New file added
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/existing.txt", "/root", []byte("old"), 0o644, mtime)
+	fs2.addFileWithMtime("/root/new.txt", "/root", []byte("new file"), 0o644, mtime)
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup (new file): %v", err)
+	}
+	if metaResult.FileCount != 2 {
+		t.Errorf("metadata file count = %d, want 2", metaResult.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "existing.txt", "old")
+	verifyFileContent(t, acc, "new.txt", "new file")
+}
+
+func TestMetadataModeFileSizeChange(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	// Same mtime but different size should be detected as changed
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/file.txt", "/root", []byte("short"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	_, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+
+	// Same mtime but different size (content grew)
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/file.txt", "/root", []byte("much longer content now"), 0o644, mtime)
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup (size change): %v", err)
+	}
+	if metaResult.FileCount != 1 {
+		t.Errorf("metadata file count = %d, want 1", metaResult.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "file.txt", "much longer content now")
+}
+
+func TestMetadataModeNestedChanges(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+	newMtime := format.StatxTimestamp{Secs: 1700000001}
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addDirWithMtime("/root/subdir", "/root", 0o755, mtime)
+	fs1.addFileWithMtime("/root/top.txt", "/root", []byte("top unchanged"), 0o644, mtime)
+	fs1.addFileWithMtime("/root/subdir/unchanged.txt", "/root/subdir", []byte("nested unchanged"), 0o644, mtime)
+	fs1.addFileWithMtime("/root/subdir/changed.txt", "/root/subdir", []byte("nested old"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	_, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+
+	// Top-level unchanged, nested: one changed, one unchanged
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addDirWithMtime("/root/subdir", "/root", 0o755, mtime)
+	fs2.addFileWithMtime("/root/top.txt", "/root", []byte("top unchanged"), 0o644, mtime)
+	fs2.addFileWithMtime("/root/subdir/unchanged.txt", "/root/subdir", []byte("nested unchanged"), 0o644, mtime)
+	fs2.addFileWithMtime("/root/subdir/changed.txt", "/root/subdir", []byte("nested new content"), 0o644, newMtime)
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup (nested changes): %v", err)
+	}
+	if metaResult.FileCount != 3 {
+		t.Errorf("metadata file count = %d, want 3", metaResult.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "top.txt", "top unchanged")
+	verifyFileContent(t, acc, "subdir/unchanged.txt", "nested unchanged")
+	verifyFileContent(t, acc, "subdir/changed.txt", "nested new content")
+}
+
+func TestMetadataModeEmptyFileUnchanged(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/empty.txt", "/root", []byte{}, 0o644, mtime)
+	fs1.addFileWithMtime("/root/data.txt", "/root", []byte("some data"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	_, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+
+	// Empty file unchanged, data file changed
+	newMtime := format.StatxTimestamp{Secs: 1700000001}
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/empty.txt", "/root", []byte{}, 0o644, mtime)
+	fs2.addFileWithMtime("/root/data.txt", "/root", []byte("new data"), 0o644, newMtime)
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup (empty file unchanged): %v", err)
+	}
+	if metaResult.FileCount != 2 {
+		t.Errorf("metadata file count = %d, want 2", metaResult.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "empty.txt", "")
+	verifyFileContent(t, acc, "data.txt", "new data")
+}
+
+func TestMetadataModePermissionChange(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/file.txt", "/root", []byte("same content"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	_, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+
+	// Same content, same mtime, same size, but different mode (permissions)
+	// This should be detected as changed because MetadataEqual checks mode
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/file.txt", "/root", []byte("same content"), 0o755, mtime) // mode changed
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup (permission change): %v", err)
+	}
+	if metaResult.FileCount != 1 {
+		t.Errorf("metadata file count = %d, want 1", metaResult.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "file.txt", "same content")
+}
+
+func TestMetadataModeSymlinkUnchanged(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/real.txt", "/root", []byte("real"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	_, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+
+	// Add a symlink (new entry not in previous catalog)
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/real.txt", "/root", []byte("real"), 0o644, mtime)
+	fs2.addSymlink("/root/link", "/root", "real.txt", 0o777)
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup (symlink added): %v", err)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "real.txt", "real")
+	verifyIsSymlink(t, acc, "link", "real.txt")
+
+	_ = metaResult
+}
+
+func TestRunBackupWithModeDataDispatch(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/file.txt", "/root", []byte("data mode"), 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("RunBackupWithMode data: %v", err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, dir)
+	verifyFileContent(t, acc, "file.txt", "data mode")
+}
+
+func TestRunBackupWithModeMetadataDispatch(t *testing.T) {
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/file.txt", "/root", []byte("original"), 0o644, mtime)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	_, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial data backup: %v", err)
+	}
+
+	newMtime := format.StatxTimestamp{Secs: 1700000001}
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/file.txt", "/root", []byte("updated"), 0o644, newMtime)
+
+	srv2, currDir := newTestServer(t, fs2)
+	result, err := srv2.RunBackupWithMode(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunBackupWithMode metadata: %v", err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+
+	acc, _ := restoreSplitArchive(t, currDir)
+	verifyFileContent(t, acc, "file.txt", "updated")
 }

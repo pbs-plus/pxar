@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/pbs-plus/pxar/buzhash"
@@ -43,6 +44,13 @@ func (sc *StoreChunker) ChunkStream(r io.Reader) ([]ChunkResult, *DynamicIndexWr
 	return sc.ChunkStreamCallback(r, nil)
 }
 
+var blobBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 0, 4<<20)
+		return &buf
+	},
+}
+
 // ChunkStreamCallback is like ChunkStream but calls fn for each chunk after it
 // is stored. If fn returns a non-nil error, chunking stops and the error is
 // returned. If fn is nil, no callback is made.
@@ -50,8 +58,9 @@ func (sc *StoreChunker) ChunkStreamCallback(r io.Reader, fn func(ChunkResult) er
 	index := NewDynamicIndexWriter(time.Now().Unix())
 	chunker := buzhash.NewChunker(r, sc.config)
 
-	var results []ChunkResult
+	results := make([]ChunkResult, 0, 64)
 	var offset uint64
+	var blobBuf *[]byte
 
 	for {
 		chunk, err := chunker.Next()
@@ -64,24 +73,35 @@ func (sc *StoreChunker) ChunkStreamCallback(r io.Reader, fn func(ChunkResult) er
 
 		digest := sha256.Sum256(chunk)
 
-		// Encode chunk as blob for storage
 		var storeData []byte
 		if sc.compress {
-			blob, err := EncodeCompressedBlob(chunk)
+			if blobBuf == nil {
+				blobBuf = blobBufPool.Get().(*[]byte)
+			}
+			encoded, err := EncodeCompressedBlobTo((*blobBuf)[:0], chunk)
 			if err != nil {
+				putBlobBuf(blobBuf)
 				return nil, nil, fmt.Errorf("compress chunk at offset %d: %w", offset, err)
 			}
-			storeData = blob.Bytes()
+			// Copy out since blobBuf will be reused
+			storeData = make([]byte, len(encoded))
+			copy(storeData, encoded)
 		} else {
-			blob, err := EncodeBlob(chunk)
+			if blobBuf == nil {
+				blobBuf = blobBufPool.Get().(*[]byte)
+			}
+			encoded, err := EncodeBlobTo((*blobBuf)[:0], chunk)
 			if err != nil {
+				putBlobBuf(blobBuf)
 				return nil, nil, fmt.Errorf("encode chunk at offset %d: %w", offset, err)
 			}
-			storeData = blob.Bytes()
+			storeData = make([]byte, len(encoded))
+			copy(storeData, encoded)
 		}
 
 		exists, _, err := sc.store.InsertChunk(digest, storeData)
 		if err != nil {
+			putBlobBuf(blobBuf)
 			return nil, nil, fmt.Errorf("store chunk at offset %d: %w", offset, err)
 		}
 
@@ -99,10 +119,20 @@ func (sc *StoreChunker) ChunkStreamCallback(r io.Reader, fn func(ChunkResult) er
 
 		if fn != nil {
 			if err := fn(result); err != nil {
+				putBlobBuf(blobBuf)
 				return results, index, err
 			}
 		}
 	}
 
+	if blobBuf != nil {
+		putBlobBuf(blobBuf)
+	}
+
 	return results, index, nil
+}
+
+func putBlobBuf(bp *[]byte) {
+	*bp = (*bp)[:0]
+	blobBufPool.Put(bp)
 }

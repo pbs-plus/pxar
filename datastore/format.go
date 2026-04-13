@@ -7,22 +7,21 @@ import (
 
 // Magic numbers from Proxmox Backup Server (file_formats.rs).
 var (
-	MagicUncompressedBlob = [8]byte{66, 171, 56, 7, 190, 131, 112, 161}
-	MagicCompressedBlob   = [8]byte{49, 185, 88, 66, 111, 182, 163, 127}
-	MagicEncryptedBlob    = [8]byte{123, 103, 133, 190, 34, 45, 76, 240}
-	MagicEncrComprBlob    = [8]byte{230, 89, 27, 191, 11, 191, 216, 11}
-	MagicFixedChunkIndex  = [8]byte{47, 127, 65, 237, 145, 253, 15, 205}
+	MagicUncompressedBlob  = [8]byte{66, 171, 56, 7, 190, 131, 112, 161}
+	MagicCompressedBlob    = [8]byte{49, 185, 88, 66, 111, 182, 163, 127}
+	MagicEncryptedBlob     = [8]byte{123, 103, 133, 190, 34, 45, 76, 240}
+	MagicEncrComprBlob     = [8]byte{230, 89, 27, 191, 11, 191, 216, 11}
+	MagicFixedChunkIndex   = [8]byte{47, 127, 65, 237, 145, 253, 15, 205}
 	MagicDynamicChunkIndex = [8]byte{28, 145, 78, 165, 25, 186, 179, 205}
-	MagicCatalogFile      = [8]byte{145, 253, 96, 249, 196, 103, 88, 213}
 )
 
 const (
-	BlobHeaderSize         = 12 // magic(8) + crc32(4)
+	BlobHeaderSize          = 12 // magic(8) + crc32(4)
 	EncryptedBlobHeaderSize = 48 // magic(8) + crc32(4) + iv(16) + tag(16)
-	IndexHeaderSize        = 4096
-	DynamicEntrySize       = 40 // end_offset(8) + digest(32)
-	FixedDigestSize        = 32
-	MaxBlobSize            = 128 * 1024 * 1024 // 128MB
+	IndexHeaderSize         = 4096
+	DynamicEntrySize        = 40 // end_offset(8) + digest(32)
+	FixedDigestSize         = 32
+	MaxBlobSize             = 128 * 1024 * 1024 // 128MB
 )
 
 // BlobHeader is the 12-byte header for uncompressed and compressed blobs.

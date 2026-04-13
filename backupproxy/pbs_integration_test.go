@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -1610,4 +1611,136 @@ func TestIntegration_ChunkedDidxChunkCountAndSize(t *testing.T) {
 	}
 
 	t.Logf("Chunk size analysis complete: %d chunks covering %d bytes", chunkCount, len(data))
+}
+
+// pbsVerifySnapshot triggers a verify job on PBS for the given snapshot and
+// waits for it to complete. It returns the verify task status ("ok" or "failed").
+func pbsVerifySnapshot(t *testing.T, cfg PBSConfig, backupType string, backupID string, backupTime int64) string {
+	t.Helper()
+
+	verifyURL := fmt.Sprintf("%s/admin/datastore/%s/verify", cfg.BaseURL, cfg.Datastore)
+	form := url.Values{
+		"backup-type":     {backupType},
+		"backup-id":       {backupID},
+		"backup-time":     {fmt.Sprintf("%d", backupTime)},
+		"ignore-verified": {"true"},
+		"outdated-after":  {"0"},
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, verifyURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("create verify request: %v", err)
+	}
+	req.Header.Set("Authorization", "PBSAPIToken "+cfg.AuthToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := pbsHTTPClient(t)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("verify request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("verify: HTTP %d: %s", resp.StatusCode, body)
+	}
+
+	var result struct {
+		Data string `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode verify response: %v", err)
+	}
+
+	upid := result.Data
+	if upid == "" {
+		t.Fatal("verify returned empty UPID")
+	}
+	t.Logf("verify task UPID: %s", upid)
+
+	encodedUPID := url.PathEscape(upid)
+	taskURL := fmt.Sprintf("%s/nodes/localhost/tasks/%s/status", strings.TrimSuffix(cfg.BaseURL, "/api2/json"), encodedUPID)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, taskURL, nil)
+		if err != nil {
+			t.Fatalf("create task status request: %v", err)
+		}
+		req.Header.Set("Authorization", "PBSAPIToken "+cfg.AuthToken)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Logf("task status request error: %v, retrying", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var statusResp struct {
+			Data struct {
+				Status string `json:"status"`
+				Exit   string `json:"exitstatus"`
+			} `json:"data"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&statusResp)
+		resp.Body.Close()
+		if err != nil {
+			t.Logf("decode task status: %v, retrying", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		if statusResp.Data.Status == "stopped" {
+			return statusResp.Data.Exit
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	t.Fatal("verify task did not complete within 60 seconds")
+	return ""
+}
+
+// TestIntegration_PBSVerify tests that PBS's own verify endpoint successfully
+// verifies a backup snapshot we uploaded. This validates end-to-end integrity
+// from PBS's perspective — not just that our client can download and check the
+// data, but that PBS independently confirms all chunks and indexes are correct.
+func TestIntegration_PBSVerify(t *testing.T) {
+	store := newIntegrationStore(t)
+	pbsCfg := pbsConfigFromEnv(t)
+	cfg := defaultBackupConfig(t)
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	archiveData := make([]byte, 50*1024)
+	if _, err := rand.Read(archiveData); err != nil {
+		t.Fatalf("generate archive data: %v", err)
+	}
+
+	blobData := []byte(`{"test": "verify-integration"}`)
+
+	sess, err := store.StartSession(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData)); err != nil {
+		t.Fatalf("UploadArchive: %v", err)
+	}
+
+	if err := sess.UploadBlob(context.Background(), "config.blob", blobData); err != nil {
+		t.Fatalf("UploadBlob: %v", err)
+	}
+
+	if _, err := sess.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify failed with exit status: %q", exitStatus)
+	} else {
+		t.Log("PBS verify completed successfully: OK")
+	}
 }

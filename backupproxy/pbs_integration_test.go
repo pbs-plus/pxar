@@ -20,10 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pbs-plus/pxar/accessor"
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
-	"github.com/pbs-plus/pxar/format"
 )
 
 // pbsConfigFromEnv reads PBS connection settings from environment variables.

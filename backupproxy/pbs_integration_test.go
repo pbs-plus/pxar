@@ -1786,3 +1786,97 @@ func TestIntegration_PBSVerifyBlob(t *testing.T) {
 		t.Log("PBS verify of blob snapshot completed successfully: OK")
 	}
 }
+
+// TestIntegration_PBSSplitArchive tests uploading and downloading a split archive
+// (.mpxar.didx + .ppxar.didx) to PBS, verifying that both the metadata and payload
+// indexes are stored correctly and that PBS verify confirms data integrity.
+func TestIntegration_PBSSplitArchive(t *testing.T) {
+	store := newIntegrationStore(t)
+	pbsCfg := pbsConfigFromEnv(t)
+	cfg := defaultBackupConfig(t)
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	sess, err := store.StartSession(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Create metadata and payload streams for a split archive
+	metaData := make([]byte, 8*1024)
+	payloadData := make([]byte, 50*1024)
+	if _, err := rand.Read(metaData); err != nil {
+		t.Fatalf("generate metadata: %v", err)
+	}
+	if _, err := rand.Read(payloadData); err != nil {
+		t.Fatalf("generate payload: %v", err)
+	}
+
+	splitResult, err := sess.UploadSplitArchive(
+		context.Background(),
+		"root.mpxar.didx", bytes.NewReader(metaData),
+		"root.ppxar.didx", bytes.NewReader(payloadData),
+	)
+	if err != nil {
+		t.Fatalf("UploadSplitArchive: %v", err)
+	}
+
+	if splitResult.MetadataResult.Filename != "root.mpxar.didx" {
+		t.Errorf("metadata filename = %q, want root.mpxar.didx", splitResult.MetadataResult.Filename)
+	}
+	if splitResult.PayloadResult.Filename != "root.ppxar.didx" {
+		t.Errorf("payload filename = %q, want root.ppxar.didx", splitResult.PayloadResult.Filename)
+	}
+
+	if splitResult.MetadataResult.Size == 0 {
+		t.Error("metadata size should not be zero")
+	}
+	if splitResult.PayloadResult.Size == 0 {
+		t.Error("payload size should not be zero")
+	}
+
+	t.Logf("Split archive uploaded: metadata=%d bytes, payload=%d bytes",
+		splitResult.MetadataResult.Size, splitResult.PayloadResult.Size)
+
+	if _, err := sess.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	// Verify both indexes exist on PBS and can be downloaded
+	metaIdxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.mpxar.didx")
+	if len(metaIdxData) == 0 {
+		t.Error("downloaded metadata index is empty")
+	}
+
+	payloadIdxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.ppxar.didx")
+	if len(payloadIdxData) == 0 {
+		t.Error("downloaded payload index is empty")
+	}
+
+	// Parse both indexes
+	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
+	if err != nil {
+		t.Fatalf("parse metadata didx: %v", err)
+	}
+	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	if err != nil {
+		t.Fatalf("parse payload didx: %v", err)
+	}
+
+	t.Logf("Metadata index: %d entries, %d bytes", metaIdx.Count(), metaIdx.IndexBytes())
+	t.Logf("Payload index: %d entries, %d bytes", payloadIdx.Count(), payloadIdx.IndexBytes())
+
+	if metaIdx.Count() == 0 {
+		t.Error("metadata index should have at least one chunk")
+	}
+	if payloadIdx.Count() == 0 {
+		t.Error("payload index should have at least one chunk")
+	}
+
+	// Verify PBS verify passes for the snapshot with split archives
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify split archive snapshot failed with exit status: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of split archive snapshot completed successfully: OK")
+	}
+}

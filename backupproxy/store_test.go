@@ -269,3 +269,96 @@ func TestLocalStoreIndexDigest(t *testing.T) {
 	// Verify manifest entry has the digest
 	sess.Finish(nil)
 }
+
+func TestLocalStoreUploadSplitArchive(t *testing.T) {
+	ls, dir := newTestLocalStore(t)
+
+	sess, _ := ls.StartSession(nil, BackupConfig{
+		BackupType: datastore.BackupVM,
+		BackupID:   "200",
+	})
+
+	metaData := make([]byte, 8*1024)
+	payloadData := make([]byte, 50*1024)
+	rand.Read(metaData)
+	rand.Read(payloadData)
+
+	splitResult, err := sess.UploadSplitArchive(
+		nil,
+		"root.mpxar.didx", bytes.NewReader(metaData),
+		"root.ppxar.didx", bytes.NewReader(payloadData),
+	)
+	if err != nil {
+		t.Fatalf("UploadSplitArchive: %v", err)
+	}
+
+	if splitResult.MetadataResult.Filename != "root.mpxar.didx" {
+		t.Errorf("metadata filename = %q, want root.mpxar.didx", splitResult.MetadataResult.Filename)
+	}
+	if splitResult.PayloadResult.Filename != "root.ppxar.didx" {
+		t.Errorf("payload filename = %q, want root.ppxar.didx", splitResult.PayloadResult.Filename)
+	}
+	if splitResult.MetadataResult.Size == 0 {
+		t.Error("metadata size should not be zero")
+	}
+	if splitResult.PayloadResult.Size == 0 {
+		t.Error("payload size should not be zero")
+	}
+
+	// Verify both index files exist
+	metaPath := filepath.Join(dir, "root.mpxar.didx")
+	payloadPath := filepath.Join(dir, "root.ppxar.didx")
+
+	metaRaw, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("metadata index not found: %v", err)
+	}
+	payloadRaw, err := os.ReadFile(payloadPath)
+	if err != nil {
+		t.Fatalf("payload index not found: %v", err)
+	}
+
+	metaIdx, err := datastore.ReadDynamicIndex(metaRaw)
+	if err != nil {
+		t.Fatalf("read metadata didx: %v", err)
+	}
+	payloadIdx, err := datastore.ReadDynamicIndex(payloadRaw)
+	if err != nil {
+		t.Fatalf("read payload didx: %v", err)
+	}
+
+	if metaIdx.Count() == 0 {
+		t.Error("metadata index should have at least one chunk")
+	}
+	if payloadIdx.Count() == 0 {
+		t.Error("payload index should have at least one chunk")
+	}
+
+	t.Logf("Split archive: metadata=%d chunks (%d bytes), payload=%d chunks (%d bytes)",
+		metaIdx.Count(), splitResult.MetadataResult.Size,
+		payloadIdx.Count(), splitResult.PayloadResult.Size)
+
+	// Verify both chunks can be loaded and their data reconstructed
+	chunkStore, _ := datastore.NewChunkStore(dir)
+
+	var reconstructed bytes.Buffer
+	for i := 0; i < payloadIdx.Count(); i++ {
+		info, ok := payloadIdx.ChunkInfo(i)
+		if !ok {
+			t.Fatalf("payload chunk %d not found", i)
+		}
+		chunkData, err := chunkStore.LoadChunk(info.Digest)
+		if err != nil {
+			t.Fatalf("load payload chunk %d: %v", i, err)
+		}
+		decoded, err := datastore.DecodeBlob(chunkData)
+		if err != nil {
+			t.Fatalf("decode payload chunk %d: %v", i, err)
+		}
+		reconstructed.Write(decoded)
+	}
+
+	if !bytes.Equal(reconstructed.Bytes(), payloadData) {
+		t.Error("reconstructed payload doesn't match original")
+	}
+}

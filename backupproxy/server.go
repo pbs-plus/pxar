@@ -6,10 +6,10 @@ import (
 	"io"
 	"time"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/datastore"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
-	pxar "github.com/pbs-plus/pxar"
 )
 
 // Server orchestrates pull backups: walks the client filesystem, encodes a pxar
@@ -92,6 +92,83 @@ func (s *Server) RunBackup(ctx context.Context, root string, config BackupConfig
 type uploadResult struct {
 	result *UploadResult
 	err    error
+}
+
+// RunSplitBackup executes a full pull backup using the split archive format (v2).
+// The metadata stream (catalog) is uploaded as .mpxar.didx and the payload stream
+// is uploaded as .ppxar.didx. This reduces metadata overhead in backups with many
+// small files — only the metadata index needs to be read to list/restore directory
+// structure, while file content is accessed on-demand from the payload index.
+func (s *Server) RunSplitBackup(ctx context.Context, root string, config BackupConfig) (*BackupResult, error) {
+	start := time.Now()
+
+	sess, err := s.store.StartSession(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("start session: %w", err)
+	}
+
+	rootStat, err := s.client.Stat(ctx, root)
+	if err != nil {
+		return nil, fmt.Errorf("stat root: %w", err)
+	}
+
+	// Create two pipes: one for metadata (mpxar) and one for payload (ppxar)
+	metaReader, metaWriter := io.Pipe()
+	payloadReader, payloadWriter := io.Pipe()
+
+	metaUploadErrCh := make(chan uploadResult, 1)
+	go func() {
+		result, err := sess.UploadArchive(ctx, "root.mpxar.didx", metaReader)
+		metaUploadErrCh <- uploadResult{result: result, err: err}
+	}()
+
+	payloadUploadErrCh := make(chan uploadResult, 1)
+	go func() {
+		result, err := sess.UploadArchive(ctx, "root.ppxar.didx", payloadReader)
+		payloadUploadErrCh <- uploadResult{result: result, err: err}
+	}()
+
+	rootMeta := &pxar.Metadata{Stat: rootStat}
+	enc := encoder.NewEncoder(metaWriter, payloadWriter, rootMeta, nil)
+
+	result := &BackupResult{}
+	if err := s.walkDir(ctx, root, enc, result); err != nil {
+		metaWriter.CloseWithError(err)
+		payloadWriter.CloseWithError(err)
+		<-metaUploadErrCh
+		<-payloadUploadErrCh
+		return nil, err
+	}
+
+	if err := enc.Close(); err != nil {
+		metaWriter.CloseWithError(err)
+		payloadWriter.CloseWithError(err)
+		<-metaUploadErrCh
+		<-payloadUploadErrCh
+		return nil, fmt.Errorf("close encoder: %w", err)
+	}
+	metaWriter.Close()
+	payloadWriter.Close()
+
+	metaUpload := <-metaUploadErrCh
+	if metaUpload.err != nil {
+		return nil, fmt.Errorf("upload metadata archive: %w", metaUpload.err)
+	}
+	payloadUpload := <-payloadUploadErrCh
+	if payloadUpload.err != nil {
+		return nil, fmt.Errorf("upload payload archive: %w", payloadUpload.err)
+	}
+
+	result.TotalBytes = int64(metaUpload.result.Size + payloadUpload.result.Size)
+
+	manifest, err := sess.Finish(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("finish session: %w", err)
+	}
+	result.Manifest = manifest
+	result.Duration = time.Since(start)
+
+	return result, nil
 }
 
 func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encoder, result *BackupResult) error {

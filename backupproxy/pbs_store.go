@@ -240,6 +240,23 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 	return result, nil
 }
 
+func (s *pbsSession) UploadSplitArchive(_ context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error) {
+	metaResult, err := s.UploadArchive(nil, metadataName, metadataData)
+	if err != nil {
+		return nil, fmt.Errorf("metadata archive: %w", err)
+	}
+
+	payloadResult, err := s.UploadArchive(nil, payloadName, payloadData)
+	if err != nil {
+		return nil, fmt.Errorf("payload archive: %w", err)
+	}
+
+	return &SplitArchiveResult{
+		MetadataResult: metaResult,
+		PayloadResult:  payloadResult,
+	}, nil
+}
+
 func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) error {
 	blob, err := datastore.EncodeBlob(data)
 	if err != nil {

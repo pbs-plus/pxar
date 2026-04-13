@@ -22,33 +22,39 @@ var blobBufPool = sync.Pool{
 	},
 }
 
+func getBlobBuf() *[]byte {
+	return blobBufPool.Get().(*[]byte)
+}
+
+func putBlobBuf(bp *[]byte) {
+	*bp = (*bp)[:0]
+	blobBufPool.Put(bp)
+}
+
 // encodeChunkBlob encodes a chunk as a PBS blob, optionally compressing with zstd.
-// Uses pooled buffers to minimize allocations on the hot path.
+// Returns the encoded bytes. Callers who need zero-alloc should use encodeChunkBlobTo.
 func encodeChunkBlob(chunk []byte, compress bool) ([]byte, error) {
-	bp := blobBufPool.Get().(*[]byte)
-	dst := (*bp)[:0]
-	defer func() {
-		*bp = dst
-		blobBufPool.Put(bp)
-	}()
-
-	if compress {
-		encoded, err := datastore.EncodeCompressedBlobTo(dst, chunk)
-		if err != nil {
-			return nil, fmt.Errorf("compress chunk: %w", err)
-		}
-		result := make([]byte, len(encoded))
-		copy(result, encoded)
-		return result, nil
-	}
-
-	encoded, err := datastore.EncodeBlobTo(dst, chunk)
+	bp := getBlobBuf()
+	dst := *bp
+	encoded, err := encodeChunkBlobTo(dst, chunk, compress)
 	if err != nil {
-		return nil, fmt.Errorf("encode chunk: %w", err)
+		putBlobBuf(bp)
+		return nil, err
 	}
+	// Copy out of pooled buffer before returning to pool
 	result := make([]byte, len(encoded))
 	copy(result, encoded)
+	putBlobBuf(bp)
 	return result, nil
+}
+
+// encodeChunkBlobTo encodes a chunk as a PBS blob into dst, without allocating.
+// The returned slice is a sub-slice of the provided buffer.
+func encodeChunkBlobTo(dst []byte, chunk []byte, compress bool) ([]byte, error) {
+	if compress {
+		return datastore.EncodeCompressedBlobTo(dst, chunk)
+	}
+	return datastore.EncodeBlobTo(dst, chunk)
 }
 
 // addFileInfo appends a file entry to the manifest file list.

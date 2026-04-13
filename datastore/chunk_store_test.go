@@ -2,6 +2,7 @@ package datastore
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,7 +63,9 @@ func TestChunkStorePathGeneration(t *testing.T) {
 	digest := sha256.Sum256([]byte("test"))
 
 	path := cs.ChunkPath(digest)
-	hex := fmtDigest(digest)
+	var hexBuf [64]byte
+	hex.Encode(hexBuf[:], digest[:])
+	hex := string(hexBuf[:])
 
 	expected := filepath.Join(cs.chunkDir(), hex[:2], hex)
 	if path != expected {

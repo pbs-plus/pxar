@@ -37,18 +37,26 @@ func NewLocalClient(fs FileSystemAccessor) *LocalClient {
 	return &LocalClient{fs: fs}
 }
 
+// Stat returns file metadata for the given path by delegating to the
+// underlying FileSystemAccessor.
 func (lc *LocalClient) Stat(_ context.Context, path string) (format.Stat, error) {
 	return lc.fs.Stat(path)
 }
 
+// ReadDir returns directory entries for the given path by delegating to the
+// underlying FileSystemAccessor.
 func (lc *LocalClient) ReadDir(_ context.Context, path string) ([]DirEntry, error) {
 	return lc.fs.ReadDir(path)
 }
 
+// ReadFile returns file content at the given path and offset by delegating to
+// the underlying FileSystemAccessor.
 func (lc *LocalClient) ReadFile(_ context.Context, path string, offset, length int64) ([]byte, error) {
 	return lc.fs.ReadFile(path, offset, length)
 }
 
+// ReadLink returns the symlink target for the given path by delegating to the
+// underlying FileSystemAccessor.
 func (lc *LocalClient) ReadLink(_ context.Context, path string) (string, error) {
 	return lc.fs.ReadLink(path)
 }

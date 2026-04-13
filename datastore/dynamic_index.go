@@ -1,7 +1,6 @@
 package datastore
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -140,7 +139,7 @@ func NewDynamicIndexWriter(ctime int64) *DynamicIndexWriter {
 			Magic: MagicDynamicChunkIndex,
 			Ctime: ctime,
 		},
-		entries: make([]DynamicEntry, 0, 64),
+		entries: make([]DynamicEntry, 0, 256),
 	}
 }
 
@@ -174,20 +173,18 @@ func (w *DynamicIndexWriter) Finish() ([]byte, error) {
 	uuidHash := sha256.Sum256(uuidInput[:])
 	copy(w.header.UUID[:], uuidHash[:16])
 
-	buf := bytes.NewBuffer(make([]byte, 0, IndexHeaderSize+len(w.entries)*DynamicEntrySize))
-
-	var hdr [IndexHeaderSize]byte
-	w.header.MarshalTo(hdr[:])
-	buf.Write(hdr[:])
+	size := IndexHeaderSize + len(w.entries)*DynamicEntrySize
+	buf := make([]byte, IndexHeaderSize, size)
+	w.header.MarshalTo(buf[:IndexHeaderSize])
 
 	var entryBuf [DynamicEntrySize]byte
 	for _, e := range w.entries {
 		binary.LittleEndian.PutUint64(entryBuf[0:8], e.EndOffset)
 		copy(entryBuf[8:40], e.Digest[:])
-		buf.Write(entryBuf[:])
+		buf = append(buf, entryBuf[:]...)
 	}
 
-	return buf.Bytes(), nil
+	return buf, nil
 }
 
 func (w *DynamicIndexWriter) computeCsum() ([32]byte, uint64) {

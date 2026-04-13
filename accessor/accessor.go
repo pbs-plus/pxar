@@ -6,19 +6,25 @@ import (
 	"fmt"
 	"io"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/binarytree"
 	"github.com/pbs-plus/pxar/format"
-	pxar "github.com/pbs-plus/pxar"
 )
 
 // Accessor provides random access to entries in a pxar archive.
 type Accessor struct {
-	reader io.ReadSeeker
+	reader        io.ReadSeeker
+	payloadReader io.ReadSeeker // optional, for split archives (v2 format)
 }
 
 // NewAccessor creates an accessor for random access to a pxar archive.
-func NewAccessor(reader io.ReadSeeker) *Accessor {
-	return &Accessor{reader: reader}
+// For split archives (v2 format), provide the payload reader as the second argument.
+func NewAccessor(reader io.ReadSeeker, payloadReader ...io.ReadSeeker) *Accessor {
+	a := &Accessor{reader: reader}
+	if len(payloadReader) > 0 {
+		a.payloadReader = payloadReader[0]
+	}
+	return a
 }
 
 // ReadRoot reads the root entry of the archive.
@@ -501,6 +507,7 @@ func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 				return nil, err
 			}
 			entry.Kind = pxar.KindFile
+			entry.PayloadOffset = binary.LittleEndian.Uint64(data[0:])
 			entry.FileSize = binary.LittleEndian.Uint64(data[8:])
 			return entry, nil
 
@@ -636,6 +643,21 @@ func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 		return nil, fmt.Errorf("entry is not a regular file")
 	}
 
+	// For split archives (v2 format), read from payload stream
+	if entry.PayloadOffset > 0 {
+		if a.payloadReader == nil {
+			return nil, fmt.Errorf("split archive requires payload reader")
+		}
+		// Seek to payload offset (after the PXARPayload header)
+		if _, err := a.payloadReader.Seek(int64(entry.PayloadOffset)+format.HeaderSize, io.SeekStart); err != nil {
+			return nil, err
+		}
+		data := make([]byte, entry.FileSize)
+		_, err := io.ReadFull(a.payloadReader, data)
+		return data, err
+	}
+
+	// For unified archives (v1 format), read inline payload
 	// Seek to the entry start (FILENAME header)
 	if _, err := a.reader.Seek(int64(entry.FileOffset), io.SeekStart); err != nil {
 		return nil, err

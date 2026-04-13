@@ -48,6 +48,40 @@ import (
 type DirEntry struct {
 	Name string
 	Stat format.Stat
+	Size uint64 // file size in bytes (0 for non-regular files)
+}
+
+// DetectionMode controls how file changes are detected between backup runs.
+type DetectionMode int
+
+const (
+	// DetectionLegacy creates a single self-contained pxar v1 archive.
+	// All file data and metadata are read and encoded in one stream.
+	DetectionLegacy DetectionMode = iota
+
+	// DetectionData creates split pxar v2 archives (.mpxar + .ppxar).
+	// All file data is still read fully, but metadata and payload are
+	// stored in separate streams for more efficient catalog access.
+	DetectionData
+
+	// DetectionMetadata creates split pxar v2 archives (.mpxar + .ppxar)
+	// but only re-reads file content for files whose metadata (size, mtime,
+	// uid, gid, mode, xattrs) has changed since the previous backup.
+	// Unchanged files reuse payload chunks from the previous backup.
+	DetectionMetadata
+)
+
+func (d DetectionMode) String() string {
+	switch d {
+	case DetectionLegacy:
+		return "legacy"
+	case DetectionData:
+		return "data"
+	case DetectionMetadata:
+		return "metadata"
+	default:
+		return "unknown"
+	}
 }
 
 // BackupConfig holds parameters for a single backup operation.
@@ -55,10 +89,30 @@ type BackupConfig struct {
 	Store       string               // datastore name
 	BackupType  datastore.BackupType // vm, ct, or host
 	BackupID    string               // backup identifier
-	BackupTime  int64
-	Namespace   string         // Unix timestamp for this snapshot
-	Compress    bool           // compress chunks with zstd
-	ChunkConfig buzhash.Config // buzhash chunking parameters
+	BackupTime  int64                // Unix timestamp for this snapshot
+	Namespace   string               // optional namespace
+	Compress    bool                 // compress chunks with zstd
+	ChunkConfig buzhash.Config       // buzhash chunking parameters
+
+	// DetectionMode controls the backup format and change detection strategy.
+	// DetectionLegacy (default) creates a single v1 archive with all data.
+	// DetectionData creates split v2 archives with all data re-encoded.
+	// DetectionMetadata creates split v2 archives, reusing payload chunks
+	// for files whose metadata hasn't changed since PreviousBackup.
+	DetectionMode DetectionMode
+
+	// PreviousBackup identifies the snapshot to compare against when
+	// DetectionMode is DetectionMetadata. Required for metadata mode.
+	PreviousBackup *PreviousBackupRef
+}
+
+// PreviousBackupRef identifies a previous backup snapshot for metadata comparison.
+type PreviousBackupRef struct {
+	BackupType datastore.BackupType
+	BackupID   string
+	BackupTime int64
+	Namespace  string
+	Dir        string // local directory containing previous snapshot files (for LocalStore)
 }
 
 // UploadResult describes the outcome of an archive upload.

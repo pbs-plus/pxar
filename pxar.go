@@ -61,10 +61,10 @@ type Entry struct {
 	Kind     EntryKind
 
 	// File-specific fields
-	FileSize       uint64 // valid when Kind == KindFile
-	FileOffset     uint64 // byte offset in archive (start of FILENAME header)
-	PayloadOffset  uint64 // byte offset in payload stream (0 if not split)
-	ContentOffset  uint64 // absolute byte offset where content begins (after PAYLOAD header for files, start of child entries for dirs)
+	FileSize      uint64 // valid when Kind == KindFile
+	FileOffset    uint64 // byte offset in archive (start of FILENAME header)
+	PayloadOffset uint64 // byte offset in payload stream (0 if not split)
+	ContentOffset uint64 // absolute byte offset where content begins (after PAYLOAD header for files, start of child entries for dirs)
 
 	// Symlink/Hardlink target
 	LinkTarget string
@@ -109,11 +109,11 @@ func (e *Entry) FileSize_() (uint64, bool) {
 
 // Metadata holds file metadata found in pxar archives.
 type Metadata struct {
-	Stat            format.Stat
-	XAttrs          []format.XAttr
-	ACL             ACL
-	FCaps           []byte // file capability data
-	QuotaProjectID  *uint64
+	Stat           format.Stat
+	XAttrs         []format.XAttr
+	ACL            ACL
+	FCaps          []byte // file capability data
+	QuotaProjectID *uint64
 }
 
 // FileType returns the file type portion of the mode.
@@ -139,6 +139,97 @@ func (m Metadata) IsFIFO() bool { return m.Stat.IsFIFO() }
 
 // IsSocket reports whether this metadata describes a socket.
 func (m Metadata) IsSocket() bool { return m.Stat.IsSocket() }
+
+// MetadataEqual reports whether two Metadata entries are equivalent for
+// metadata change detection. This compares stat fields, xattrs, ACLs,
+// FCaps, and QuotaProjectID. File size is compared separately since
+// it's not part of the pxar Stat format.
+func (m Metadata) MetadataEqual(other Metadata) bool {
+	if !m.Stat.MetadataEqual(other.Stat) {
+		return false
+	}
+	if len(m.XAttrs) != len(other.XAttrs) {
+		return false
+	}
+	for i := range m.XAttrs {
+		if !xAttrEqual(m.XAttrs[i], other.XAttrs[i]) {
+			return false
+		}
+	}
+	if len(m.FCaps) != len(other.FCaps) {
+		return false
+	}
+	for i := range m.FCaps {
+		if m.FCaps[i] != other.FCaps[i] {
+			return false
+		}
+	}
+	if !aclEqual(m.ACL, other.ACL) {
+		return false
+	}
+	if m.QuotaProjectID != nil && other.QuotaProjectID != nil {
+		if *m.QuotaProjectID != *other.QuotaProjectID {
+			return false
+		}
+	} else if m.QuotaProjectID != nil || other.QuotaProjectID != nil {
+		return false
+	}
+	return true
+}
+
+func xAttrEqual(a, b format.XAttr) bool {
+	return a.NameLen == b.NameLen && string(a.Data) == string(b.Data)
+}
+
+func aclEqual(a, b ACL) bool {
+	if len(a.Users) != len(b.Users) {
+		return false
+	}
+	if len(a.Groups) != len(b.Groups) {
+		return false
+	}
+	for i := range a.Users {
+		if a.Users[i] != b.Users[i] {
+			return false
+		}
+	}
+	for i := range a.Groups {
+		if a.Groups[i] != b.Groups[i] {
+			return false
+		}
+	}
+	if a.GroupObj != nil && b.GroupObj != nil {
+		if *a.GroupObj != *b.GroupObj {
+			return false
+		}
+	} else if a.GroupObj != nil || b.GroupObj != nil {
+		return false
+	}
+	if a.Default != nil && b.Default != nil {
+		if *a.Default != *b.Default {
+			return false
+		}
+	} else if a.Default != nil || b.Default != nil {
+		return false
+	}
+	if len(a.DefaultUsers) != len(b.DefaultUsers) {
+		return false
+	}
+	for i := range a.DefaultUsers {
+		if a.DefaultUsers[i] != b.DefaultUsers[i] {
+			return false
+		}
+	}
+	if len(a.DefaultGroups) != len(b.DefaultGroups) {
+		return false
+	}
+	for i := range a.DefaultGroups {
+		if a.DefaultGroups[i] != b.DefaultGroups[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // ACL holds access control list entries.
 type ACL struct {

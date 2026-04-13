@@ -67,6 +67,7 @@ func (fs memFS) addFile(path, dirPath string, data []byte, mode uint64) {
 		dir.entries = append(dir.entries, DirEntry{
 			Name: baseName(path),
 			Stat: format.Stat{Mode: format.ModeIFREG | mode},
+			Size: uint64(len(data)),
 		})
 	}
 }
@@ -373,4 +374,213 @@ func TestServerArchiveRoundTrip(t *testing.T) {
 	}
 
 	_ = result
+}
+
+func TestDetectionModeString(t *testing.T) {
+	tests := []struct {
+		mode DetectionMode
+		want string
+	}{
+		{DetectionLegacy, "legacy"},
+		{DetectionData, "data"},
+		{DetectionMetadata, "metadata"},
+		{DetectionMode(99), "unknown"},
+	}
+	for _, tt := range tests {
+		if got := tt.mode.String(); got != tt.want {
+			t.Errorf("DetectionMode(%d).String() = %q, want %q", tt.mode, got, tt.want)
+		}
+	}
+}
+
+func TestStatMetadataEqual(t *testing.T) {
+	base := format.Stat{
+		Mode:  format.ModeIFREG | 0o644,
+		Flags: 0,
+		UID:   1000,
+		GID:   1000,
+		Mtime: format.StatxTimestamp{Secs: 1700000000, Nanos: 0},
+	}
+
+	tests := []struct {
+		name  string
+		other format.Stat
+		equal bool
+	}{
+		{"identical", base, true},
+		{"diff_mode", format.Stat{Mode: format.ModeIFREG | 0o755, Flags: 0, UID: 1000, GID: 1000, Mtime: base.Mtime}, false},
+		{"diff_uid", format.Stat{Mode: base.Mode, Flags: 0, UID: 0, GID: 1000, Mtime: base.Mtime}, false},
+		{"diff_gid", format.Stat{Mode: base.Mode, Flags: 0, UID: 1000, GID: 0, Mtime: base.Mtime}, false},
+		{"diff_mtime", format.Stat{Mode: base.Mode, Flags: 0, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1800000000}}, false},
+		{"diff_type", format.Stat{Mode: format.ModeIFDIR | 0o755, Flags: 0, UID: 1000, GID: 1000, Mtime: base.Mtime}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := base.MetadataEqual(tt.other); got != tt.equal {
+				t.Errorf("MetadataEqual() = %v, want %v", got, tt.equal)
+			}
+		})
+	}
+}
+
+func TestEntryMatches(t *testing.T) {
+	prevEntry := &CatalogEntry{
+		Path:          "/root/file.txt",
+		Stat:          format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}},
+		FileSize:      100,
+		IsRegularFile: true,
+	}
+
+	tests := []struct {
+		name    string
+		current DirEntry
+		want    bool
+	}{
+		{
+			"matching_file",
+			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 100},
+			true,
+		},
+		{
+			"diff_size",
+			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 200},
+			false,
+		},
+		{
+			"diff_mtime",
+			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1800000000}}, Size: 100},
+			false,
+		},
+		{
+			"diff_type",
+			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFDIR | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 0},
+			false,
+		},
+		{
+			"nil_prev",
+			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644}, Size: 100},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EntryMatches(tt.current, prevEntry); got != tt.want {
+				t.Errorf("EntryMatches() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerDataMode(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/hello.txt", "/root", []byte("hello world"), 0o644)
+	fs.addDir("/root/subdir", "/root", 0o755)
+	fs.addFile("/root/subdir/nested.txt", "/root/subdir", []byte("nested content"), 0o644)
+
+	srv, dir := newTestServer(t, fs)
+	result, err := srv.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FileCount != 2 {
+		t.Errorf("file count = %d, want 2", result.FileCount)
+	}
+	if result.DirCount != 1 {
+		t.Errorf("dir count = %d, want 1", result.DirCount)
+	}
+
+	// Verify both index files exist
+	if _, err := os.Stat(dir + "/root.mpxar.didx"); os.IsNotExist(err) {
+		t.Error("root.mpxar.didx should exist")
+	}
+	if _, err := os.Stat(dir + "/root.ppxar.didx"); os.IsNotExist(err) {
+		t.Error("root.ppxar.didx should exist")
+	}
+}
+
+func TestServerMetadataMode(t *testing.T) {
+	// Phase 1: Create initial backup in data mode
+	fs1 := newMemFS()
+	fs1.addDir("/root", "", 0o755)
+	fs1.addFile("/root/a.txt", "/root", []byte("alpha"), 0o644)
+	fs1.addFile("/root/b.txt", "/root", []byte("beta"), 0o644)
+
+	srv1, prevDir := newTestServer(t, fs1)
+	prevResult, err := srv1.RunSplitBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000000,
+		DetectionMode: DetectionData,
+	})
+	if err != nil {
+		t.Fatalf("initial backup: %v", err)
+	}
+	if prevResult.FileCount != 2 {
+		t.Errorf("initial file count = %d, want 2", prevResult.FileCount)
+	}
+
+	// Phase 2: Create metadata mode backup with same files (should reuse payload)
+	fs2 := newMemFS()
+	fs2.addDir("/root", "", 0o755)
+	fs2.addFile("/root/a.txt", "/root", []byte("alpha"), 0o644)         // unchanged
+	fs2.addFile("/root/b.txt", "/root", []byte("beta modified"), 0o644) // modified
+
+	srv2, currDir := newTestServer(t, fs2)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		BackupTime:    1700000001,
+		DetectionMode: DetectionMetadata,
+		PreviousBackup: &PreviousBackupRef{
+			BackupType: datastore.BackupHost,
+			BackupID:   "test",
+			BackupTime: 1700000000,
+			Dir:        prevDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("metadata backup: %v", err)
+	}
+	if metaResult.FileCount != 2 {
+		t.Errorf("metadata file count = %d, want 2", metaResult.FileCount)
+	}
+
+	// Verify the metadata backup produced split archives
+	if _, err := os.Stat(currDir + "/root.mpxar.didx"); os.IsNotExist(err) {
+		t.Error("root.mpxar.didx should exist")
+	}
+	if _, err := os.Stat(currDir + "/root.ppxar.didx"); os.IsNotExist(err) {
+		t.Error("root.ppxar.didx should exist")
+	}
+
+	_ = currDir
+}
+
+func TestRunBackupWithMode(t *testing.T) {
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/file.txt", "/root", []byte("content"), 0o644)
+
+	srv, _ := newTestServer(t, fs)
+
+	// Test legacy mode dispatches correctly
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", BackupConfig{
+		BackupType:    datastore.BackupHost,
+		BackupID:      "test",
+		DetectionMode: DetectionLegacy,
+	})
+	if err != nil {
+		t.Fatalf("RunBackupWithMode legacy: %v", err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("legacy file count = %d, want 1", result.FileCount)
+	}
 }

@@ -1660,7 +1660,7 @@ func pbsVerifySnapshot(t *testing.T, cfg PBSConfig, backupType string, backupID 
 	t.Logf("verify task UPID: %s", upid)
 
 	encodedUPID := url.PathEscape(upid)
-	taskURL := fmt.Sprintf("%s/nodes/localhost/tasks/%s/status", strings.TrimSuffix(cfg.BaseURL, "/api2/json"), encodedUPID)
+	taskURL := fmt.Sprintf("%s/nodes/localhost/tasks/%s/status", cfg.BaseURL, encodedUPID)
 
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1677,22 +1677,39 @@ func pbsVerifySnapshot(t *testing.T, cfg PBSConfig, backupType string, backupID 
 			continue
 		}
 
-		var statusResp struct {
-			Data struct {
-				Status string `json:"status"`
-				Exit   string `json:"exitstatus"`
-			} `json:"data"`
-		}
-		err = json.NewDecoder(resp.Body).Decode(&statusResp)
+		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if err != nil {
-			t.Logf("decode task status: %v, retrying", err)
+		if readErr != nil {
+			t.Logf("read task status body: %v, retrying", readErr)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		if statusResp.Data.Status == "stopped" {
-			return statusResp.Data.Exit
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Logf("parse task status: %v, retrying", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		dataRaw, ok := raw["data"]
+		if !ok || string(dataRaw) == "null" {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var taskStatus struct {
+			Status     string `json:"status"`
+			ExitStatus string `json:"exitstatus"`
+		}
+		if err := json.Unmarshal(dataRaw, &taskStatus); err != nil {
+			t.Logf("decode task status data: %v, retrying", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		if taskStatus.Status == "stopped" {
+			return taskStatus.ExitStatus
 		}
 
 		time.Sleep(2 * time.Second)

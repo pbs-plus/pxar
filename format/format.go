@@ -22,27 +22,27 @@ const (
 
 // Pxar format type constants.
 const (
-	PXARFormatVersion    uint64 = 0x730f6c75df16a40d
-	PXAREntry            uint64 = 0xd5956474e588acef
-	PXAREntryV1          uint64 = 0x11da850a1c1cceff
-	PXARPrelude          uint64 = 0xe309d79d9f7b771b
-	PXARFilename         uint64 = 0x16701121063917b3
-	PXARSymlink          uint64 = 0x27f971e7dbf5dc5f
-	PXARDevice           uint64 = 0x9fc9e906586d5ce9
-	PXARXAttr            uint64 = 0x0dab0229b57dcd03
-	PXARACLUser          uint64 = 0x2ce8540a457d55b8
-	PXARACLGroup         uint64 = 0x136e3eceb04c03ab
-	PXARACLGroupObj      uint64 = 0x10868031e9582876
-	PXARACLDefault       uint64 = 0xbbbb13415a6896f5
-	PXARACLDefaultUser   uint64 = 0xc89357b40532cd1f
-	PXARACLDefaultGroup  uint64 = 0xf90a8a5816038ffe
-	PXARFCaps            uint64 = 0x2da9dd9db5f7fb67
-	PXARQuotaProjID      uint64 = 0xe07540e82f7d1cbb
-	PXARHardlink         uint64 = 0x51269c8422bd7275
-	PXARPayload          uint64 = 0x28147a1b0b7c1a25
-	PXARPayloadRef       uint64 = 0x419d3d6bc4ba977e
-	PXARGoodbye          uint64 = 0x2fec4fa642d5731d
-	PXARGoodbyeTailMarker uint64 = 0xef5eed5b753e1555
+	PXARFormatVersion      uint64 = 0x730f6c75df16a40d
+	PXAREntry              uint64 = 0xd5956474e588acef
+	PXAREntryV1            uint64 = 0x11da850a1c1cceff
+	PXARPrelude            uint64 = 0xe309d79d9f7b771b
+	PXARFilename           uint64 = 0x16701121063917b3
+	PXARSymlink            uint64 = 0x27f971e7dbf5dc5f
+	PXARDevice             uint64 = 0x9fc9e906586d5ce9
+	PXARXAttr              uint64 = 0x0dab0229b57dcd03
+	PXARACLUser            uint64 = 0x2ce8540a457d55b8
+	PXARACLGroup           uint64 = 0x136e3eceb04c03ab
+	PXARACLGroupObj        uint64 = 0x10868031e9582876
+	PXARACLDefault         uint64 = 0xbbbb13415a6896f5
+	PXARACLDefaultUser     uint64 = 0xc89357b40532cd1f
+	PXARACLDefaultGroup    uint64 = 0xf90a8a5816038ffe
+	PXARFCaps              uint64 = 0x2da9dd9db5f7fb67
+	PXARQuotaProjID        uint64 = 0xe07540e82f7d1cbb
+	PXARHardlink           uint64 = 0x51269c8422bd7275
+	PXARPayload            uint64 = 0x28147a1b0b7c1a25
+	PXARPayloadRef         uint64 = 0x419d3d6bc4ba977e
+	PXARGoodbye            uint64 = 0x2fec4fa642d5731d
+	PXARGoodbyeTailMarker  uint64 = 0xef5eed5b753e1555
 	PXARPayloadStartMarker uint64 = 0x834c68c2194a4ed2
 	PXARPayloadTailMarker  uint64 = 0x6c72b78b984c81b5
 )
@@ -283,6 +283,18 @@ func (s Stat) IsSocket() bool {
 	return s.Mode&ModeIFMT == ModeIFSOCK
 }
 
+// MetadataEqual reports whether two Stat entries are equivalent for
+// metadata change detection. Two entries are considered equal if
+// their file type, permissions, uid, gid, and mtime match.
+// File size comparison is done separately since Stat doesn't carry size.
+func (s Stat) MetadataEqual(other Stat) bool {
+	return s.Mode == other.Mode &&
+		s.Flags == other.Flags &&
+		s.UID == other.UID &&
+		s.GID == other.GID &&
+		s.Mtime == other.Mtime
+}
+
 // StatV1 is the legacy format stat structure. 32 bytes.
 type StatV1 struct {
 	Mode  uint64
@@ -321,7 +333,7 @@ func (d Device) ToDevT() uint64 {
 func DeviceFromDevT(dev uint64) Device {
 	return Device{
 		Major: (dev>>8)&0x0000_0fff | (dev>>32)&0xffff_f000,
-		Minor: dev & 0x0000_00ff | (dev>>12)&0xffff_ff00,
+		Minor: dev&0x0000_00ff | (dev>>12)&0xffff_ff00,
 	}
 }
 

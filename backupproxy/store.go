@@ -8,34 +8,57 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
 )
 
+var blobBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 0, 4<<20) // 4MB default
+		return &buf
+	},
+}
+
 // encodeChunkBlob encodes a chunk as a PBS blob, optionally compressing with zstd.
+// Uses pooled buffers to minimize allocations on the hot path.
 func encodeChunkBlob(chunk []byte, compress bool) ([]byte, error) {
+	bp := blobBufPool.Get().(*[]byte)
+	dst := (*bp)[:0]
+	defer func() {
+		*bp = dst
+		blobBufPool.Put(bp)
+	}()
+
 	if compress {
-		blob, err := datastore.EncodeCompressedBlob(chunk)
+		encoded, err := datastore.EncodeCompressedBlobTo(dst, chunk)
 		if err != nil {
 			return nil, fmt.Errorf("compress chunk: %w", err)
 		}
-		return blob.Bytes(), nil
+		result := make([]byte, len(encoded))
+		copy(result, encoded)
+		return result, nil
 	}
-	blob, err := datastore.EncodeBlob(chunk)
+
+	encoded, err := datastore.EncodeBlobTo(dst, chunk)
 	if err != nil {
 		return nil, fmt.Errorf("encode chunk: %w", err)
 	}
-	return blob.Bytes(), nil
+	result := make([]byte, len(encoded))
+	copy(result, encoded)
+	return result, nil
 }
 
 // addFileInfo appends a file entry to the manifest file list.
 func addFileInfo(files *[]datastore.FileInfo, name string, size uint64, digest [32]byte) {
+	var hexBuf [64]byte
+	hex.Encode(hexBuf[:], digest[:])
 	*files = append(*files, datastore.FileInfo{
 		Filename: name,
 		Size:     size,
-		CSum:     hex.EncodeToString(digest[:]),
+		CSum:     string(hexBuf[:]),
 	})
 }
 

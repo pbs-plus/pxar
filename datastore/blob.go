@@ -48,6 +48,27 @@ func EncodeBlob(data []byte) (*DataBlob, error) {
 	return &DataBlob{raw: raw}, nil
 }
 
+// EncodeBlobTo encodes data as an uncompressed blob into dst, which must have
+// capacity of at least BlobHeaderSize+len(data). Returns the slice of dst
+// containing the encoded blob. This avoids the DataBlob wrapper allocation.
+func EncodeBlobTo(dst []byte, data []byte) ([]byte, error) {
+	if len(data) > MaxBlobSize {
+		return nil, fmt.Errorf("blob data too large: %d > %d", len(data), MaxBlobSize)
+	}
+
+	n := BlobHeaderSize + len(data)
+	if cap(dst) < n {
+		dst = make([]byte, n)
+	} else {
+		dst = dst[:n]
+	}
+	copy(dst[0:8], MagicUncompressedBlob[:])
+	binaryPutUint32(dst[8:12], crc32.ChecksumIEEE(data))
+	copy(dst[BlobHeaderSize:], data)
+
+	return dst, nil
+}
+
 // EncodeCompressedBlob creates a compressed blob. Falls back to uncompressed
 // if compression doesn't reduce size.
 func EncodeCompressedBlob(data []byte) (*DataBlob, error) {
@@ -74,6 +95,40 @@ func EncodeCompressedBlob(data []byte) (*DataBlob, error) {
 	copy(raw[BlobHeaderSize:], compressed)
 
 	return &DataBlob{raw: raw}, nil
+}
+
+// EncodeCompressedBlobTo encodes data as a compressed blob into dst.
+// If compression doesn't reduce size, falls back to uncompressed format.
+// Returns the slice of dst containing the encoded blob.
+func EncodeCompressedBlobTo(dst []byte, data []byte) ([]byte, error) {
+	if len(data) > MaxBlobSize {
+		return nil, fmt.Errorf("blob data too large: %d > %d", len(data), MaxBlobSize)
+	}
+
+	if len(data) < 32 {
+		return EncodeBlobTo(dst, data)
+	}
+
+	compressed, err := zstdCompress(data)
+	if err != nil {
+		return nil, fmt.Errorf("zstd compress: %w", err)
+	}
+
+	if len(compressed) >= len(data) {
+		return EncodeBlobTo(dst, data)
+	}
+
+	n := BlobHeaderSize + len(compressed)
+	if cap(dst) < n {
+		dst = make([]byte, n)
+	} else {
+		dst = dst[:n]
+	}
+	copy(dst[0:8], MagicCompressedBlob[:])
+	binaryPutUint32(dst[8:12], crc32.ChecksumIEEE(compressed))
+	copy(dst[BlobHeaderSize:], compressed)
+
+	return dst, nil
 }
 
 // DecodeBlob decodes a raw blob, verifies CRC, and returns the payload data.

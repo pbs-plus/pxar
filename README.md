@@ -470,4 +470,4 @@ Backup Data Flow:
 
 ## License
 
-Apache License 2.0
+MIT License - see [LICENSE](LICENSE) file for details.

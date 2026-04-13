@@ -150,6 +150,13 @@ func (w *DynamicIndexWriter) Add(endOffset uint64, digest [32]byte) {
 	})
 }
 
+// Csum returns the SHA-256 checksum over all entry data (end_offset || digest pairs).
+// This matches PBS's compute_csum() and is the checksum stored in the manifest.
+func (w *DynamicIndexWriter) Csum() [32]byte {
+	csum, _ := w.computeCsum()
+	return csum
+}
+
 // Finish writes the complete index and returns the raw bytes.
 func (w *DynamicIndexWriter) Finish() ([]byte, error) {
 	// Compute index checksum

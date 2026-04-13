@@ -1171,12 +1171,10 @@ func TestIntegration_ChunkedDidxUploadDownload(t *testing.T) {
 		t.Errorf("total indexed bytes = %d, want %d", totalSize, len(data))
 	}
 
-	// Verify the index checksum - note that the download-parsed index csum may
-	// differ from the upload result digest due to PBS re-serializing the index
-	// with potentially different header padding
+	// Verify the index checksum matches the upload digest
 	csum, _ := idx.ComputeCsum()
 	if csum != result.Digest {
-		t.Logf("Note: computed index csum differs from upload digest (PBS may re-serialize headers)")
+		t.Errorf("computed index csum differs from upload digest")
 	}
 
 	t.Logf("Successfully verified %d chunks covering %d bytes", idx.Count(), len(data))

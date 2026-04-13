@@ -167,6 +167,46 @@ func DecodeBlob(raw []byte) ([]byte, error) {
 	return data, nil
 }
 
+// DecodeBlobInto decodes a raw blob into dst, verifying CRC. For compressed
+// blobs, dst is used as the decompression output buffer (grown if needed).
+// For uncompressed blobs, returns a slice into raw (zero allocation).
+func DecodeBlobInto(dst []byte, raw []byte) ([]byte, error) {
+	if len(raw) < BlobHeaderSize {
+		return nil, fmt.Errorf("blob too short: %d bytes", len(raw))
+	}
+
+	var magic [8]byte
+	copy(magic[:], raw[0:8])
+
+	if err := validateBlobMagic(magic); err != nil {
+		return nil, err
+	}
+
+	hdrSize := BlobHeaderSizeFor(magic)
+	if len(raw) < hdrSize {
+		return nil, fmt.Errorf("blob too short for header: %d < %d", len(raw), hdrSize)
+	}
+
+	storedCRC := binaryUint32(raw[8:12])
+	data := raw[hdrSize:]
+
+	if crc32.ChecksumIEEE(data) != storedCRC {
+		return nil, fmt.Errorf("blob CRC mismatch")
+	}
+
+	if IsCompressedMagic(magic) {
+		dec := zstdDecoderPool.Get().(*zstd.Decoder)
+		defer zstdDecoderPool.Put(dec)
+		result, err := dec.DecodeAll(data, dst[:0])
+		if err != nil {
+			return nil, fmt.Errorf("zstd decompress: %w", err)
+		}
+		return result, nil
+	}
+
+	return data, nil
+}
+
 // Bytes returns the raw blob bytes (header + payload).
 func (b *DataBlob) Bytes() []byte { return b.raw }
 

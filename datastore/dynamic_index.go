@@ -120,7 +120,7 @@ func (r *DynamicIndexReader) ComputeCsum() ([32]byte, uint64) {
 		h.Write(buf[:])
 	}
 	var sum [32]byte
-	copy(sum[:], h.Sum(nil))
+	h.Sum(sum[:0])
 	return sum, uint64(len(r.entries) * DynamicEntrySize)
 }
 
@@ -196,6 +196,6 @@ func (w *DynamicIndexWriter) computeCsum() ([32]byte, uint64) {
 		h.Write(buf[:])
 	}
 	var sum [32]byte
-	copy(sum[:], h.Sum(nil))
+	h.Sum(sum[:0])
 	return sum, uint64(len(w.entries) * DynamicEntrySize)
 }

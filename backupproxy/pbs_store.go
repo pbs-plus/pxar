@@ -274,6 +274,23 @@ func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) err
 	return nil
 }
 
+// ReadPreviousArchive reads an archive file from a previous PBS backup snapshot.
+func (ps *PBSRemoteStore) ReadPreviousArchive(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace, filename string) ([]byte, error) {
+	cfg := PBSConfig{
+		BaseURL:       ps.config.BaseURL,
+		Datastore:     ps.config.Datastore,
+		AuthToken:     ps.config.AuthToken,
+		SkipTLSVerify: ps.config.SkipTLSVerify,
+		Namespace:     namespace,
+	}
+	reader := NewPBSReader(cfg, backupType.String(), backupID, backupTime)
+	if err := reader.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("connect reader: %w", err)
+	}
+	defer reader.Close()
+	return reader.DownloadFile(filename)
+}
+
 func (s *pbsSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 	manifest := &datastore.Manifest{
 		BackupType: s.config.BackupType.String(),

@@ -75,8 +75,21 @@ type SplitArchiveResult struct {
 	PayloadResult  *UploadResult
 }
 
+// SnapshotReader provides read access to existing backup snapshots for
+// metadata change detection. Both LocalStore and PBSRemoteStore implement
+// this interface.
+type SnapshotReader interface {
+	ReadPreviousArchive(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace, filename string) ([]byte, error)
+}
+
 // RemoteStore abstracts the backup storage backend.
 type RemoteStore interface {
+	RemoteStoreBase
+	SnapshotReader
+}
+
+// RemoteStoreBase contains the session creation method.
+type RemoteStoreBase interface {
 	StartSession(ctx context.Context, config BackupConfig) (BackupSession, error)
 }
 
@@ -244,4 +257,14 @@ func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 	}
 
 	return manifest, nil
+}
+
+// ReadPreviousArchive reads an archive file from a previous local backup snapshot.
+func (ls *LocalStore) ReadPreviousArchive(_ context.Context, _ datastore.BackupType, _ string, _ int64, _, filename string) ([]byte, error) {
+	return nil, fmt.Errorf("local store: use Dir field in PreviousBackupRef for file lookup")
+}
+
+// ReadPreviousArchiveDir reads an archive file from a directory on the local filesystem.
+func ReadPreviousArchiveDir(dir, filename string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(dir, filename))
 }

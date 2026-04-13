@@ -71,6 +71,9 @@ func (r *PBSReader) DownloadFile(fileName string) ([]byte, error) {
 }
 
 // DownloadChunk downloads a chunk by its digest.
+// The reader protocol requires that the index file referencing this chunk
+// has been downloaded first (via DownloadFile), which populates the
+// server-side allowed_chunks set.
 func (r *PBSReader) DownloadChunk(digest [32]byte) ([]byte, error) {
 	if r.conn == nil {
 		return nil, fmt.Errorf("not connected")
@@ -87,17 +90,21 @@ func (r *PBSReader) AsChunkSource() datastore.ChunkSource {
 	return &pbsChunkSource{reader: r}
 }
 
-// RestoreFile restores a complete file from the given didx index.
+// RestoreFile restores a complete file from a dynamic index.
 // This downloads all chunks and reconstructs the file content.
+// Each chunk download uses a fresh connection to avoid H2 stream
+// multiplexing issues with PBS.
 func (r *PBSReader) RestoreFile(idx *datastore.DynamicIndexReader, w io.Writer) error {
-	restorer := datastore.NewRestorer(r.AsChunkSource())
+	source := &pbsChunkSource{reader: r}
+	restorer := datastore.NewRestorer(source)
 	return restorer.RestoreFile(idx, w)
 }
 
 // RestoreFileRange restores a specific byte range from a file.
 // Useful for partial reads without downloading the entire file.
 func (r *PBSReader) RestoreFileRange(idx *datastore.DynamicIndexReader, offset, length uint64, w io.Writer) error {
-	restorer := datastore.NewRestorer(r.AsChunkSource())
+	source := &pbsChunkSource{reader: r}
+	restorer := datastore.NewRestorer(source)
 	return restorer.RestoreRange(idx, offset, length, w)
 }
 

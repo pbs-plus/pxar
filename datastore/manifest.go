@@ -7,19 +7,19 @@ import (
 
 // FileInfo describes a file in a backup manifest.
 type FileInfo struct {
-	Filename string `json:"filename"`
+	Filename  string `json:"filename"`
 	CryptMode string `json:"crypt-mode,omitempty"`
-	Size     uint64 `json:"size"`
-	CSum     string `json:"csum"`
+	Size      uint64 `json:"size"`
+	CSum      string `json:"csum"`
 }
 
 // Manifest represents a backup manifest (index.json).
 type Manifest struct {
-	BackupType string    `json:"backup-type"`
-	BackupID   string    `json:"backup-id"`
-	BackupTime int64     `json:"backup-time"`
+	BackupType string     `json:"backup-type"`
+	BackupID   string     `json:"backup-id"`
+	BackupTime int64      `json:"backup-time"`
 	Files      []FileInfo `json:"files"`
-	Signature  string    `json:"signature,omitempty"`
+	Signature  string     `json:"signature,omitempty"`
 }
 
 // Marshal serializes the manifest to JSON.
@@ -50,13 +50,4 @@ func (m *Manifest) VerifyFile(filename, csum string, size uint64) error {
 		}
 	}
 	return fmt.Errorf("file %s not found in manifest", filename)
-}
-
-// AddFile adds a file entry to the manifest.
-func (m *Manifest) AddFile(filename string, size uint64, csum string) {
-	m.Files = append(m.Files, FileInfo{
-		Filename: filename,
-		Size:     size,
-		CSum:     csum,
-	})
 }

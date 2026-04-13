@@ -154,13 +154,19 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 }
 
 func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) error {
+	blob, err := datastore.EncodeBlob(data)
+	if err != nil {
+		return fmt.Errorf("encode blob: %w", err)
+	}
+	blobData := blob.Bytes()
+
 	blobPath := filepath.Join(s.baseDir, name)
-	if err := os.WriteFile(blobPath, data, 0o644); err != nil {
+	if err := os.WriteFile(blobPath, blobData, 0o644); err != nil {
 		return fmt.Errorf("write blob: %w", err)
 	}
 
-	digest := sha256.Sum256(data)
-	addFileInfo(&s.files, name, uint64(len(data)), digest)
+	digest := sha256.Sum256(blobData)
+	addFileInfo(&s.files, name, uint64(len(blobData)), digest)
 
 	return nil
 }

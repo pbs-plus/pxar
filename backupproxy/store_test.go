@@ -96,13 +96,16 @@ func TestLocalStoreUploadBlob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify blob file exists
 	blobPath := filepath.Join(dir, "config.json")
 	raw, err := os.ReadFile(blobPath)
 	if err != nil {
 		t.Fatalf("blob file not found: %v", err)
 	}
-	if !bytes.Equal(raw, blobData) {
+	decoded, err := datastore.DecodeBlob(raw)
+	if err != nil {
+		t.Fatalf("decode blob: %v", err)
+	}
+	if !bytes.Equal(decoded, blobData) {
 		t.Error("blob content mismatch")
 	}
 }

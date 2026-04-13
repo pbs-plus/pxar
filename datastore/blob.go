@@ -1,8 +1,6 @@
 package datastore
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"fmt"
 	"hash/crc32"
 
@@ -120,14 +118,6 @@ func (b *DataBlob) IsEncrypted() bool {
 	return IsEncryptedMagic(b.Magic())
 }
 
-// Digest returns the SHA-256 digest of the raw blob.
-func (b *DataBlob) Digest() [32]byte {
-	return sha256.Sum256(b.raw)
-}
-
-// Size returns the total size of the raw blob including header.
-func (b *DataBlob) Size() int { return len(b.raw) }
-
 func validateBlobMagic(magic [8]byte) error {
 	switch magic {
 	case MagicUncompressedBlob, MagicCompressedBlob,
@@ -168,9 +158,4 @@ func binaryPutUint32(buf []byte, v uint32) {
 func binaryUint32(buf []byte) uint32 {
 	_ = buf[3]
 	return uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16 | uint32(buf[3])<<24
-}
-
-// Equal reports whether two blobs have identical raw data.
-func (b *DataBlob) Equal(other *DataBlob) bool {
-	return bytes.Equal(b.raw, other.raw)
 }

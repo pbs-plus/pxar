@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -400,7 +399,6 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 			}
 
 		case *http2.WindowUpdateFrame:
-			// Handle window updates globally
 
 		case *http2.RSTStreamFrame:
 			if f.StreamID == streamID {
@@ -421,27 +419,6 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 	}
 
 	return dataBuf.Bytes(), nil
-}
-
-// readJSONResponse reads H2 frames and parses JSON response.
-func (c *pbsReaderConn) readJSONResponse(streamID uint32) (json.RawMessage, error) {
-	data, err := c.readBinaryResponse(streamID)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(data) == 0 {
-		return nil, nil
-	}
-
-	var result struct {
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("parse response JSON: %w", err)
-	}
-
-	return result.Data, nil
 }
 
 func (c *pbsReaderConn) close() error {

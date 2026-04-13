@@ -1702,11 +1702,10 @@ func pbsVerifySnapshot(t *testing.T, cfg PBSConfig, backupType string, backupID 
 	return ""
 }
 
-// TestIntegration_PBSVerify tests that PBS's own verify endpoint successfully
-// verifies a backup snapshot we uploaded. This validates end-to-end integrity
-// from PBS's perspective — not just that our client can download and check the
-// data, but that PBS independently confirms all chunks and indexes are correct.
-func TestIntegration_PBSVerify(t *testing.T) {
+// TestIntegration_PBSVerifyDidx tests that PBS's own verify endpoint successfully
+// verifies a snapshot containing an uploaded .didx archive. This validates that
+// PBS can independently confirm all chunk data and the dynamic index are correct.
+func TestIntegration_PBSVerifyDidx(t *testing.T) {
 	store := newIntegrationStore(t)
 	pbsCfg := pbsConfigFromEnv(t)
 	cfg := defaultBackupConfig(t)
@@ -1717,8 +1716,6 @@ func TestIntegration_PBSVerify(t *testing.T) {
 		t.Fatalf("generate archive data: %v", err)
 	}
 
-	blobData := []byte(`{"test": "verify-integration"}`)
-
 	sess, err := store.StartSession(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -1726,6 +1723,37 @@ func TestIntegration_PBSVerify(t *testing.T) {
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
+	}
+
+	if _, err := sess.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify didx snapshot failed with exit status: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of didx snapshot completed successfully: OK")
+	}
+}
+
+// TestIntegration_PBSVerifyBlob tests that PBS's own verify endpoint successfully
+// verifies a snapshot containing an uploaded .blob file. This validates that
+// PBS can independently confirm blob data integrity.
+func TestIntegration_PBSVerifyBlob(t *testing.T) {
+	store := newIntegrationStore(t)
+	pbsCfg := pbsConfigFromEnv(t)
+	cfg := defaultBackupConfig(t)
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	blobData := make([]byte, 10*1024)
+	if _, err := rand.Read(blobData); err != nil {
+		t.Fatalf("generate blob data: %v", err)
+	}
+
+	sess, err := store.StartSession(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
 	}
 
 	if err := sess.UploadBlob(context.Background(), "config.blob", blobData); err != nil {
@@ -1737,10 +1765,9 @@ func TestIntegration_PBSVerify(t *testing.T) {
 	}
 
 	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
-
 	if exitStatus != "OK" {
-		t.Errorf("PBS verify failed with exit status: %q", exitStatus)
+		t.Errorf("PBS verify blob snapshot failed with exit status: %q", exitStatus)
 	} else {
-		t.Log("PBS verify completed successfully: OK")
+		t.Log("PBS verify of blob snapshot completed successfully: OK")
 	}
 }

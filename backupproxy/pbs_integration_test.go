@@ -2236,3 +2236,194 @@ func TestIntegration_PBSMetadataModeBackup(t *testing.T) {
 		t.Errorf("curr changed.txt = %q, want %q", string(currChgContent), "new content!")
 	}
 }
+
+// TestIntegration_PBSDataModeEmptyFileAndDir verifies data mode handles
+// empty files and empty directories correctly through PBS round-trip.
+func TestIntegration_PBSDataModeEmptyFileAndDir(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+	cfg := defaultBackupConfig(t)
+	cfg.DetectionMode = DetectionData
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addDir("/root/emptydir", "/root", 0o755)
+	fs.addFile("/root/empty.txt", "/root", []byte{}, 0o644)
+	fs.addFile("/root/data.txt", "/root", []byte("has content"), 0o644)
+
+	srv := NewServer(fs.provider(), store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode: %v", err)
+	}
+	if result.FileCount != 2 {
+		t.Errorf("file count = %d, want 2", result.FileCount)
+	}
+	if result.DirCount != 1 {
+		t.Errorf("dir count = %d, want 1", result.DirCount)
+	}
+
+	metaBytes, payloadBytes, _, _ := pbsRestoreSplitArchive(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	acc := accessor.NewAccessor(bytes.NewReader(metaBytes), bytes.NewReader(payloadBytes))
+	root, err := acc.ReadRoot()
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	if !root.IsDir() {
+		t.Error("root should be a directory")
+	}
+
+	verifyFileWithAccessor(t, acc, "empty.txt", "")
+	verifyFileWithAccessor(t, acc, "data.txt", "has content")
+	verifyDirWithAccessor(t, acc, "emptydir")
+
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify data mode backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of data mode (empty file+dir) backup: OK")
+	}
+}
+
+// TestIntegration_PBSDataModeSymlinks verifies data mode handles symlinks
+// correctly through PBS round-trip.
+func TestIntegration_PBSDataModeSymlinks(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+	cfg := defaultBackupConfig(t)
+	cfg.DetectionMode = DetectionData
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/real.txt", "/root", []byte("real content"), 0o644)
+	fs.addSymlink("/root/link", "/root", "real.txt", 0o777)
+
+	srv := NewServer(fs.provider(), store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode: %v", err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+
+	metaBytes, payloadBytes, _, _ := pbsRestoreSplitArchive(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	acc := accessor.NewAccessor(bytes.NewReader(metaBytes), bytes.NewReader(payloadBytes))
+	verifyFileWithAccessor(t, acc, "real.txt", "real content")
+	verifySymlinkWithAccessor(t, acc, "link", "real.txt")
+
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify data mode (symlinks) backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of data mode (symlinks) backup: OK")
+	}
+}
+
+// TestIntegration_PBSMetadataModeNewFileAdded verifies metadata mode handles
+// files that didn't exist in the previous snapshot.
+func TestIntegration_PBSMetadataModeNewFileAdded(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	// Phase 1: initial data-mode snapshot with one file
+	prevCfg := defaultBackupConfig(t)
+	prevCfg.DetectionMode = DetectionData
+	cleanupSnapshot(t, pbsCfg, prevCfg)
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/original.txt", "/root", []byte("original"), 0o644, mtime)
+
+	srv1 := NewServer(fs1.provider(), store)
+	prevResult, err := srv1.RunSplitBackup(context.Background(), "/root", prevCfg)
+	if err != nil {
+		t.Fatalf("initial data backup: %v", err)
+	}
+	t.Logf("Phase 1: %d files, %d bytes", prevResult.FileCount, prevResult.TotalBytes)
+
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, prevCfg.BackupType.String(), prevCfg.BackupID, prevCfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Fatalf("PBS verify initial snapshot failed: %q", exitStatus)
+	}
+
+	// Phase 2: metadata-mode with original file unchanged + new file added
+	currCfg := defaultBackupConfig(t)
+	currCfg.DetectionMode = DetectionMetadata
+	currCfg.PreviousBackup = &PreviousBackupRef{
+		BackupType: prevCfg.BackupType,
+		BackupID:   prevCfg.BackupID,
+		BackupTime: prevCfg.BackupTime,
+		Namespace:  prevCfg.Namespace,
+	}
+	cleanupSnapshot(t, pbsCfg, currCfg)
+
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/original.txt", "/root", []byte("original"), 0o644, mtime)
+	fs2.addFileWithMtime("/root/added.txt", "/root", []byte("new file!"), 0o644, mtime)
+
+	srv2 := NewServer(fs2.provider(), store)
+	metaResult, err := srv2.RunBackupWithMode(context.Background(), "/root", currCfg)
+	if err != nil {
+		t.Fatalf("metadata backup (new file): %v", err)
+	}
+	if metaResult.FileCount != 2 {
+		t.Errorf("metadata file count = %d, want 2", metaResult.FileCount)
+	}
+
+	metaBytes, payloadBytes, _, _ := pbsRestoreSplitArchive(t, pbsCfg, currCfg.BackupType.String(), currCfg.BackupID, currCfg.BackupTime)
+	acc := accessor.NewAccessor(bytes.NewReader(metaBytes), bytes.NewReader(payloadBytes))
+	verifyFileWithAccessor(t, acc, "original.txt", "original")
+	verifyFileWithAccessor(t, acc, "added.txt", "new file!")
+
+	exitStatus2 := pbsVerifySnapshot(t, pbsCfg, currCfg.BackupType.String(), currCfg.BackupID, currCfg.BackupTime)
+	if exitStatus2 != "OK" {
+		t.Errorf("PBS verify metadata (new file) backup failed: %q", exitStatus2)
+	} else {
+		t.Log("PBS verify of metadata (new file) backup: OK")
+	}
+}
+
+func verifyFileWithAccessor(t *testing.T, acc *accessor.Accessor, path, expectedContent string) {
+	t.Helper()
+	entry, err := acc.Lookup(path)
+	if err != nil {
+		t.Fatalf("lookup %q: %v", path, err)
+	}
+	content, err := acc.ReadFileContent(entry)
+	if err != nil {
+		t.Fatalf("read %q: %v", path, err)
+	}
+	if string(content) != expectedContent {
+		t.Errorf("content of %q = %q, want %q", path, string(content), expectedContent)
+	}
+}
+
+func verifyDirWithAccessor(t *testing.T, acc *accessor.Accessor, path string) {
+	t.Helper()
+	entry, err := acc.Lookup(path)
+	if err != nil {
+		t.Fatalf("lookup dir %q: %v", path, err)
+	}
+	if !entry.IsDir() {
+		t.Errorf("expected %q to be a directory, got kind=%v", path, entry.Kind)
+	}
+}
+
+func verifySymlinkWithAccessor(t *testing.T, acc *accessor.Accessor, path, expectedTarget string) {
+	t.Helper()
+	entry, err := acc.Lookup(path)
+	if err != nil {
+		t.Fatalf("lookup symlink %q: %v", path, err)
+	}
+	if !entry.IsSymlink() {
+		t.Fatalf("expected %q to be a symlink, got kind=%v", path, entry.Kind)
+	}
+	if entry.LinkTarget != expectedTarget {
+		t.Errorf("symlink %q target = %q, want %q", path, entry.LinkTarget, expectedTarget)
+	}
+}

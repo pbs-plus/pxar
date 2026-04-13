@@ -20,8 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pbs-plus/pxar/accessor"
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
+	"github.com/pbs-plus/pxar/format"
 )
 
 // pbsConfigFromEnv reads PBS connection settings from environment variables.
@@ -1878,5 +1880,385 @@ func TestIntegration_PBSSplitArchive(t *testing.T) {
 		t.Errorf("PBS verify split archive snapshot failed with exit status: %q", exitStatus)
 	} else {
 		t.Log("PBS verify of split archive snapshot completed successfully: OK")
+	}
+}
+
+// pbsRestoreSplitArchive downloads and restores both indexes of a split archive
+// from PBS, reconstructing the metadata and payload streams. Returns the
+// reconstructed metadata bytes, payload bytes, and their parsed indexes.
+func pbsRestoreSplitArchive(t *testing.T, pbsCfg PBSConfig, backupType, backupID string, backupTime int64, store *PBSRemoteStore) (metaBytes, payloadBytes []byte, metaIdx, payloadIdx *datastore.DynamicIndexReader) {
+	t.Helper()
+
+	metaIdxData := pbsDownload(t, pbsCfg, backupType, backupID, backupTime, "root.mpxar.didx")
+	payloadIdxData := pbsDownload(t, pbsCfg, backupType, backupID, backupTime, "root.ppxar.didx")
+
+	var err error
+	metaIdx, err = datastore.ReadDynamicIndex(metaIdxData)
+	if err != nil {
+		t.Fatalf("parse metadata didx: %v", err)
+	}
+	payloadIdx, err = datastore.ReadDynamicIndex(payloadIdxData)
+	if err != nil {
+		t.Fatalf("parse payload didx: %v", err)
+	}
+
+	// Create a reader connection for chunk downloads
+	reader := NewPBSReader(pbsCfg, backupType, backupID, backupTime)
+	if err := reader.Connect(context.Background()); err != nil {
+		t.Fatalf("connect PBSReader: %v", err)
+	}
+	defer reader.Close()
+
+	// Download the metadata index to authorize chunk access
+	if _, err := reader.DownloadFile("root.mpxar.didx"); err != nil {
+		t.Fatalf("download mpxar didx: %v", err)
+	}
+
+	// Restore metadata stream
+	var metaBuf bytes.Buffer
+	if err := reader.RestoreFile(metaIdx, &metaBuf); err != nil {
+		t.Fatalf("restore metadata stream: %v", err)
+	}
+	metaBytes = metaBuf.Bytes()
+
+	// Create a fresh reader for payload chunks (new connection to avoid H2 issues)
+	reader2 := NewPBSReader(pbsCfg, backupType, backupID, backupTime)
+	if err := reader2.Connect(context.Background()); err != nil {
+		t.Fatalf("connect PBSReader for payload: %v", err)
+	}
+	defer reader2.Close()
+
+	// Download the payload index to authorize chunk access
+	if _, err := reader2.DownloadFile("root.ppxar.didx"); err != nil {
+		t.Fatalf("download ppxar didx: %v", err)
+	}
+
+	// Restore payload stream
+	var payloadBuf bytes.Buffer
+	if err := reader2.RestoreFile(payloadIdx, &payloadBuf); err != nil {
+		t.Fatalf("restore payload stream: %v", err)
+	}
+	payloadBytes = payloadBuf.Bytes()
+
+	return metaBytes, payloadBytes, metaIdx, payloadIdx
+}
+
+// TestIntegration_PBSLegacyModeBackupRestore tests legacy (v1) mode backup
+// via the Server, upload to PBS, download, and verify with accessor.
+func TestIntegration_PBSLegacyModeBackupRestore(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+	cfg := defaultBackupConfig(t)
+	cfg.DetectionMode = DetectionLegacy
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	client := &mockClient{
+		statFn: func(_ context.Context, path string) (format.Stat, error) {
+			if path == "/root" {
+				return format.Stat{Mode: format.ModeIFDIR | 0o755}, nil
+			}
+			return format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: format.StatxTimestamp{Secs: 1700000000}}, nil
+		},
+		readDirFn: func(_ context.Context, path string) ([]DirEntry, error) {
+			if path == "/root" {
+				return []DirEntry{
+					{Name: "hello.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 12},
+					{Name: "subdir", Stat: format.Stat{Mode: format.ModeIFDIR | 0o755}},
+				}, nil
+			}
+			if path == "/root/subdir" {
+				return []DirEntry{
+					{Name: "nested.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 7},
+				}, nil
+			}
+			return nil, fmt.Errorf("not found: %s", path)
+		},
+		readFileFn: func(_ context.Context, path string, _, _ int64) ([]byte, error) {
+			switch path {
+			case "/root/hello.txt":
+				return []byte("hello world"), nil
+			case "/root/subdir/nested.txt":
+				return []byte("nested"), nil
+			}
+			return nil, fmt.Errorf("not found: %s", path)
+		},
+		readLinkFn: func(_ context.Context, _ string) (string, error) { return "", nil },
+	}
+
+	srv := NewServer(client, store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode legacy: %v", err)
+	}
+
+	if result.FileCount != 2 {
+		t.Errorf("file count = %d, want 2", result.FileCount)
+	}
+	if result.DirCount != 1 {
+		t.Errorf("dir count = %d, want 1", result.DirCount)
+	}
+	t.Logf("Legacy backup: %d files, %d dirs, %d bytes in %.2fs",
+		result.FileCount, result.DirCount, result.TotalBytes, result.Duration.Seconds())
+
+	// Download and restore the archive
+	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
+	idx, err := datastore.ReadDynamicIndex(didxData)
+	if err != nil {
+		t.Fatalf("parse didx: %v", err)
+	}
+
+	// Download index to authorize chunk access, then restore
+	reader := NewPBSReader(pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if err := reader.Connect(context.Background()); err != nil {
+		t.Fatalf("connect PBSReader: %v", err)
+	}
+	defer reader.Close()
+
+	if _, err := reader.DownloadFile("root.pxar.didx"); err != nil {
+		t.Fatalf("download didx: %v", err)
+	}
+
+	var archiveBuf bytes.Buffer
+	if err := reader.RestoreFile(idx, &archiveBuf); err != nil {
+		t.Fatalf("restore archive: %v", err)
+	}
+
+	// Verify archive is valid pxar using accessor
+	acc := accessor.NewAccessor(bytes.NewReader(archiveBuf.Bytes()))
+	root, err := acc.ReadRoot()
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	if !root.IsDir() {
+		t.Error("root should be a directory")
+	}
+
+	// Verify PBS verify passes
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify legacy backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of legacy backup: OK")
+	}
+}
+
+// TestIntegration_PBSDataModeBackupRestore tests data (v2 split) mode backup
+// via the Server, upload to PBS, download, restore, and verify with accessor.
+func TestIntegration_PBSDataModeBackupRestore(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+	cfg := defaultBackupConfig(t)
+	cfg.DetectionMode = DetectionData
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	client := &mockClient{
+		statFn: func(_ context.Context, path string) (format.Stat, error) {
+			if path == "/root" {
+				return format.Stat{Mode: format.ModeIFDIR | 0o755}, nil
+			}
+			return format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: format.StatxTimestamp{Secs: 1700000000}}, nil
+		},
+		readDirFn: func(_ context.Context, path string) ([]DirEntry, error) {
+			if path == "/root" {
+				return []DirEntry{
+					{Name: "data.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 11},
+				}, nil
+			}
+			return nil, fmt.Errorf("not found: %s", path)
+		},
+		readFileFn: func(_ context.Context, path string, _, _ int64) ([]byte, error) {
+			if path == "/root/data.txt" {
+				return []byte("data mode!"), nil
+			}
+			return nil, fmt.Errorf("not found: %s", path)
+		},
+		readLinkFn: func(_ context.Context, _ string) (string, error) { return "", nil },
+	}
+
+	srv := NewServer(client, store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode data: %v", err)
+	}
+	if result.FileCount != 1 {
+		t.Errorf("file count = %d, want 1", result.FileCount)
+	}
+	t.Logf("Data mode backup: %d files, %d bytes in %.2fs",
+		result.FileCount, result.TotalBytes, result.Duration.Seconds())
+
+	// Download and restore both streams
+	metaBytes, payloadBytes, metaIdx, payloadIdx := pbsRestoreSplitArchive(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, store)
+
+	if len(metaBytes) == 0 {
+		t.Error("metadata stream should not be empty")
+	}
+	if len(payloadBytes) == 0 {
+		t.Error("payload stream should not be empty")
+	}
+	t.Logf("Restored: metadata=%d bytes, payload=%d bytes, meta chunks=%d, payload chunks=%d",
+		len(metaBytes), len(payloadBytes), metaIdx.Count(), payloadIdx.Count())
+
+	// Verify archive is valid pxar v2 using accessor
+	acc := accessor.NewAccessor(bytes.NewReader(metaBytes), bytes.NewReader(payloadBytes))
+	root, err := acc.ReadRoot()
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	if !root.IsDir() {
+		t.Error("root should be a directory")
+	}
+	t.Logf("Root entry: path=%q, kind=%v", root.Path, root.Kind)
+
+	// Verify PBS verify passes
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify data mode backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of data mode backup: OK")
+	}
+}
+
+// TestIntegration_PBSMetadataModeBackup tests metadata mode incremental backup
+// against PBS. First creates a data-mode snapshot, then creates a metadata-mode
+// snapshot referencing it, and verifies both pass PBS verify.
+func TestIntegration_PBSMetadataModeBackup(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+
+	// Phase 1: Create initial data-mode snapshot
+	prevCfg := defaultBackupConfig(t)
+	prevCfg.DetectionMode = DetectionData
+	cleanupSnapshot(t, pbsCfg, prevCfg)
+
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+	client := &mockClient{
+		statFn: func(_ context.Context, path string) (format.Stat, error) {
+			if path == "/root" {
+				return format.Stat{Mode: format.ModeIFDIR | 0o755, Mtime: mtime}, nil
+			}
+			return format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: mtime}, nil
+		},
+		readDirFn: func(_ context.Context, path string) ([]DirEntry, error) {
+			if path == "/root" {
+				return []DirEntry{
+					{Name: "unchanged.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: mtime}, Size: 8},
+					{Name: "changed.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: mtime}, Size: 4},
+				}, nil
+			}
+			return nil, fmt.Errorf("not found: %s", path)
+		},
+		readFileFn: func(_ context.Context, path string, _, _ int64) ([]byte, error) {
+			switch path {
+			case "/root/unchanged.txt":
+				return []byte("original"), nil
+			case "/root/changed.txt":
+				return []byte("old!"), nil
+			}
+			return nil, fmt.Errorf("not found: %s", path)
+		},
+		readLinkFn: func(_ context.Context, _ string) (string, error) { return "", nil },
+	}
+
+	srv := NewServer(client, store)
+
+	prevResult, err := srv.RunSplitBackup(context.Background(), "/root", prevCfg)
+	if err != nil {
+		t.Fatalf("initial data backup: %v", err)
+	}
+	if prevResult.FileCount != 2 {
+		t.Errorf("initial file count = %d, want 2", prevResult.FileCount)
+	}
+	t.Logf("Phase 1 complete: initial data backup, %d bytes", prevResult.TotalBytes)
+
+	// Verify the initial snapshot on PBS
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, prevCfg.BackupType.String(), prevCfg.BackupID, prevCfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Fatalf("PBS verify initial snapshot failed: %q", exitStatus)
+	}
+
+	// Phase 2: Create metadata-mode backup referencing the first
+	// Use PBS SnapshotReader to access the previous snapshot
+	prevSrc, err := store.NewPreviousSnapshotSource(context.Background(), prevCfg.BackupType, prevCfg.BackupID, prevCfg.BackupTime, prevCfg.Namespace)
+	if err != nil {
+		t.Fatalf("create previous snapshot source: %v", err)
+	}
+
+	// Download the previous indexes to build a catalog
+	metaIdxData, err := prevSrc.ReadArchive("root.mpxar.didx")
+	if err != nil {
+		t.Fatalf("read previous metadata index: %v", err)
+	}
+	t.Logf("Previous metadata index: %d bytes", len(metaIdxData))
+	prevSrc.Close()
+
+	// Now "modify" the filesystem: change one file, keep one the same
+	currCfg := defaultBackupConfig(t)
+	currCfg.DetectionMode = DetectionMetadata
+	currCfg.PreviousBackup = &PreviousBackupRef{
+		BackupType: prevCfg.BackupType,
+		BackupID:   prevCfg.BackupID,
+		BackupTime: prevCfg.BackupTime,
+		Namespace:  prevCfg.Namespace,
+	}
+	cleanupSnapshot(t, pbsCfg, currCfg)
+
+	newMtime := format.StatxTimestamp{Secs: 1700000001}
+	modifiedClient := &mockClient{
+		statFn: func(_ context.Context, path string) (format.Stat, error) {
+			if path == "/root" {
+				return format.Stat{Mode: format.ModeIFDIR | 0o755, Mtime: mtime}, nil
+			}
+			if path == "/root/changed.txt" {
+				return format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: newMtime}, nil
+			}
+			return format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: mtime}, nil
+		},
+		readDirFn: func(_ context.Context, path string) ([]DirEntry, error) {
+			if path == "/root" {
+				return []DirEntry{
+					{Name: "unchanged.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: mtime}, Size: 8},
+					{Name: "changed.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, Mtime: newMtime}, Size: 7},
+				}, nil
+			}
+			return nil, fmt.Errorf("not found: %s", path)
+		},
+		readFileFn: func(_ context.Context, path string, _, _ int64) ([]byte, error) {
+			switch path {
+			case "/root/unchanged.txt":
+				return []byte("original"), nil
+			case "/root/changed.txt":
+				return []byte("updated"), nil
+			}
+			return nil, fmt.Errorf("not found: %s", path)
+		},
+		readLinkFn: func(_ context.Context, _ string) (string, error) { return "", nil },
+	}
+
+	modSrv := NewServer(modifiedClient, store)
+	metaResult, err := modSrv.RunMetadataBackup(context.Background(), "/root", currCfg)
+	if err != nil {
+		t.Fatalf("metadata backup: %v", err)
+	}
+	if metaResult.FileCount != 2 {
+		t.Errorf("metadata file count = %d, want 2", metaResult.FileCount)
+	}
+	t.Logf("Phase 2 complete: metadata backup, %d bytes in %.2fs",
+		metaResult.TotalBytes, metaResult.Duration.Seconds())
+
+	// Verify the metadata snapshot on PBS
+	exitStatus2 := pbsVerifySnapshot(t, pbsCfg, currCfg.BackupType.String(), currCfg.BackupID, currCfg.BackupTime)
+	if exitStatus2 != "OK" {
+		t.Errorf("PBS verify metadata snapshot failed: %q", exitStatus2)
+	} else {
+		t.Log("PBS verify of metadata mode backup: OK")
+	}
+
+	// Download and verify the metadata snapshot's split archive
+	_, _, metaIdx2, payloadIdx2 := pbsRestoreSplitArchive(t, pbsCfg, currCfg.BackupType.String(), currCfg.BackupID, currCfg.BackupTime, store)
+	if metaIdx2.Count() == 0 {
+		t.Error("metadata index should have at least one chunk")
+	}
+	if payloadIdx2.Count() == 0 {
+		t.Error("payload index should have at least one chunk")
 	}
 }

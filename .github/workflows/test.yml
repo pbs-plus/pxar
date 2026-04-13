@@ -116,8 +116,8 @@ jobs:
       - name: Run integration tests
         id: integration-tests
         run: |
-          echo "::notice::Starting chunked upload/download didx tests with PBS..."
-          go test -tags=integration -v -timeout 180s ./backupproxy/ -run 'TestIntegration_ChunkedDidx|TestIntegration_.*Didx.*'
+          echo "::notice::Starting integration tests with PBS..."
+          go test -tags=integration -v -timeout 180s ./backupproxy/ -run 'TestIntegration_'
           TEST_EXIT=$?
           echo "test_exit_code=$TEST_EXIT" >> "$GITHUB_OUTPUT"
           exit $TEST_EXIT

@@ -291,6 +291,39 @@ func (ps *PBSRemoteStore) ReadPreviousArchive(ctx context.Context, backupType da
 	return reader.DownloadFile(filename)
 }
 
+// pbsSnapshotSource implements PreviousSnapshotSource for PBS.
+type pbsSnapshotSource struct {
+	reader *PBSReader
+}
+
+func (ps *pbsSnapshotSource) ReadArchive(filename string) ([]byte, error) {
+	return ps.reader.DownloadFile(filename)
+}
+
+func (ps *pbsSnapshotSource) ChunkSource() datastore.ChunkSource {
+	return ps.reader.AsChunkSource()
+}
+
+func (ps *pbsSnapshotSource) Close() error {
+	return ps.reader.Close()
+}
+
+// NewPreviousSnapshotSource creates a PreviousSnapshotSource connected to a PBS snapshot.
+func (ps *PBSRemoteStore) NewPreviousSnapshotSource(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace string) (PreviousSnapshotSource, error) {
+	cfg := PBSConfig{
+		BaseURL:       ps.config.BaseURL,
+		Datastore:     ps.config.Datastore,
+		AuthToken:     ps.config.AuthToken,
+		SkipTLSVerify: ps.config.SkipTLSVerify,
+		Namespace:     namespace,
+	}
+	reader := NewPBSReader(cfg, backupType.String(), backupID, backupTime)
+	if err := reader.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("connect reader: %w", err)
+	}
+	return &pbsSnapshotSource{reader: reader}, nil
+}
+
 func (s *pbsSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 	manifest := &datastore.Manifest{
 		BackupType: s.config.BackupType.String(),

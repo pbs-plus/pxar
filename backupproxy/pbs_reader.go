@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/pbs-plus/pxar/datastore"
 	"golang.org/x/net/http2"
@@ -318,15 +319,26 @@ func (c *pbsReaderConn) decodeStatus(buf *bytes.Buffer) int {
 // readBinaryResponse reads H2 frames until the response is complete, returning raw bytes.
 func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 	var (
-		status  int
-		dataBuf bytes.Buffer
-		gotEnd  bool
-		hdrBuf  bytes.Buffer
+		status     int
+		dataBuf    bytes.Buffer
+		gotEnd     bool
+		hdrBuf     bytes.Buffer
+		gotHeaders bool
 	)
+
+	// Set a deadline to prevent indefinite hanging
+	if err := c.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return nil, fmt.Errorf("set read deadline: %w", err)
+	}
+	// Clear deadline when done
+	defer c.conn.SetReadDeadline(time.Time{})
 
 	for !gotEnd {
 		frame, err := c.framer.ReadFrame()
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return nil, fmt.Errorf("timeout reading response for stream %d: %w", streamID, err)
+			}
 			return nil, fmt.Errorf("read frame: %w", err)
 		}
 
@@ -335,6 +347,7 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 			if f.StreamID != streamID {
 				continue
 			}
+			gotHeaders = true
 			hdrBuf.Write(f.HeaderBlockFragment())
 			if f.Flags.Has(http2.FlagHeadersEndHeaders) {
 				status = c.decodeStatus(&hdrBuf)
@@ -371,6 +384,9 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 				c.framer.WritePing(true, f.Data)
 			}
 
+		case *http2.WindowUpdateFrame:
+			// Handle window updates globally
+
 		case *http2.RSTStreamFrame:
 			if f.StreamID == streamID {
 				return nil, fmt.Errorf("stream reset: error code %d", f.ErrCode)
@@ -379,6 +395,10 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 		case *http2.GoAwayFrame:
 			return nil, fmt.Errorf("server GOAWAY: error code %d", f.ErrCode)
 		}
+	}
+
+	if !gotHeaders {
+		return nil, fmt.Errorf("no headers received for stream %d", streamID)
 	}
 
 	if status >= 400 {

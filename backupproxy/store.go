@@ -75,11 +75,12 @@ type SplitArchiveResult struct {
 	PayloadResult  *UploadResult
 }
 
-// SnapshotReader provides read access to existing backup snapshots for
-// metadata change detection. Both LocalStore and PBSRemoteStore implement
-// this interface.
-type SnapshotReader interface {
-	ReadPreviousArchive(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace, filename string) ([]byte, error)
+// PreviousSnapshotSource provides read access to a previous backup snapshot
+// for metadata change detection. It can read archive files and download chunks.
+type PreviousSnapshotSource interface {
+	ReadArchive(filename string) ([]byte, error)
+	ChunkSource() datastore.ChunkSource
+	Close() error
 }
 
 // RemoteStore abstracts the backup storage backend.
@@ -91,6 +92,12 @@ type RemoteStore interface {
 // RemoteStoreBase contains the session creation method.
 type RemoteStoreBase interface {
 	StartSession(ctx context.Context, config BackupConfig) (BackupSession, error)
+}
+
+// SnapshotReader can read files from previous snapshots.
+type SnapshotReader interface {
+	ReadPreviousArchive(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace, filename string) ([]byte, error)
+	NewPreviousSnapshotSource(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace string) (PreviousSnapshotSource, error)
 }
 
 // BackupSession represents an active backup upload session.
@@ -267,4 +274,37 @@ func (ls *LocalStore) ReadPreviousArchive(_ context.Context, _ datastore.BackupT
 // ReadPreviousArchiveDir reads an archive file from a directory on the local filesystem.
 func ReadPreviousArchiveDir(dir, filename string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(dir, filename))
+}
+
+// localSnapshotSource implements PreviousSnapshotSource for local filesystem storage.
+type localSnapshotSource struct {
+	dir      string
+	chunkSrc *datastore.ChunkStoreSource
+}
+
+func (ls *localSnapshotSource) ReadArchive(filename string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(ls.dir, filename))
+}
+
+func (ls *localSnapshotSource) ChunkSource() datastore.ChunkSource {
+	return ls.chunkSrc
+}
+
+func (ls *localSnapshotSource) Close() error { return nil }
+
+// NewPreviousSnapshotSource creates a PreviousSnapshotSource for a local backup snapshot.
+func (ls *LocalStore) NewPreviousSnapshotSource(_ context.Context, _ datastore.BackupType, _ string, _ int64, _ string) (PreviousSnapshotSource, error) {
+	return nil, fmt.Errorf("use Dir field in PreviousBackupRef for local store")
+}
+
+// NewPreviousSnapshotSourceFromDir creates a PreviousSnapshotSource from a local directory.
+func NewPreviousSnapshotSourceFromDir(dir string) (PreviousSnapshotSource, error) {
+	cs, err := datastore.NewChunkStore(dir)
+	if err != nil {
+		return nil, fmt.Errorf("create chunk store: %w", err)
+	}
+	return &localSnapshotSource{
+		dir:      dir,
+		chunkSrc: datastore.NewChunkStoreSource(cs),
+	}, nil
 }

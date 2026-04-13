@@ -193,30 +193,27 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 
 	prev := config.PreviousBackup
 
-	// Download previous snapshot's metadata and payload indexes
-	var metaIdxData, payloadIdxData []byte
+	// Create a snapshot source for reading previous backup data
+	var snapSrc PreviousSnapshotSource
+	var err error
 	if prev.Dir != "" {
-		// Local store: read from directory
-		var err error
-		metaIdxData, err = ReadPreviousArchiveDir(prev.Dir, "root.mpxar.didx")
-		if err != nil {
-			return nil, fmt.Errorf("read previous metadata index: %w", err)
-		}
-		payloadIdxData, err = ReadPreviousArchiveDir(prev.Dir, "root.ppxar.didx")
-		if err != nil {
-			return nil, fmt.Errorf("read previous payload index: %w", err)
-		}
+		snapSrc, err = NewPreviousSnapshotSourceFromDir(prev.Dir)
 	} else {
-		// Remote store (PBS): download via reader protocol
-		var err error
-		metaIdxData, err = s.store.ReadPreviousArchive(ctx, prev.BackupType, prev.BackupID, prev.BackupTime, prev.Namespace, "root.mpxar.didx")
-		if err != nil {
-			return nil, fmt.Errorf("download previous metadata index: %w", err)
-		}
-		payloadIdxData, err = s.store.ReadPreviousArchive(ctx, prev.BackupType, prev.BackupID, prev.BackupTime, prev.Namespace, "root.ppxar.didx")
-		if err != nil {
-			return nil, fmt.Errorf("download previous payload index: %w", err)
-		}
+		snapSrc, err = s.store.NewPreviousSnapshotSource(ctx, prev.BackupType, prev.BackupID, prev.BackupTime, prev.Namespace)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create snapshot source: %w", err)
+	}
+	defer snapSrc.Close()
+
+	// Download previous snapshot's indexes
+	metaIdxData, err := snapSrc.ReadArchive("root.mpxar.didx")
+	if err != nil {
+		return nil, fmt.Errorf("read previous metadata index: %w", err)
+	}
+	payloadIdxData, err := snapSrc.ReadArchive("root.ppxar.didx")
+	if err != nil {
+		return nil, fmt.Errorf("read previous payload index: %w", err)
 	}
 
 	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
@@ -228,20 +225,14 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 		return nil, fmt.Errorf("parse previous payload index: %w", err)
 	}
 
-	// Build a chunk source for restoring previous data
-	chunkSource, err := s.buildChunkSource(config, prev)
-	if err != nil {
-		return nil, fmt.Errorf("build chunk source: %w", err)
-	}
-
 	// Build the metadata catalog from previous backup
-	catalog, err := BuildCatalog(metaIdx, chunkSource)
+	catalog, err := BuildCatalog(metaIdx, snapSrc.ChunkSource())
 	if err != nil {
 		return nil, fmt.Errorf("build metadata catalog: %w", err)
 	}
 
 	// Build a restorer for the previous payload stream
-	restorer := datastore.NewRestorer(chunkSource)
+	restorer := datastore.NewRestorer(snapSrc.ChunkSource())
 
 	// Start the backup session
 	start := time.Now()
@@ -362,18 +353,6 @@ func (mw *metadataWalker) maybeReusePayload(enc *encoder.Encoder, name, fullPath
 
 	_, err := enc.AddFile(&prev.Metadata, name, dataBuf.Bytes())
 	return true, err
-}
-
-func (s *Server) buildChunkSource(config BackupConfig, prev *PreviousBackupRef) (datastore.ChunkSource, error) {
-	if prev.Dir != "" {
-		// Local store: use the chunk store from the previous backup's directory
-		cs, err := datastore.NewChunkStore(prev.Dir)
-		if err != nil {
-			return nil, fmt.Errorf("create chunk store: %w", err)
-		}
-		return datastore.NewChunkStoreSource(cs), nil
-	}
-	return nil, fmt.Errorf("metadata mode with remote store requires Dir in PreviousBackupRef")
 }
 
 func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encoder, mw *metadataWalker, result *BackupResult) error {

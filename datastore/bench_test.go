@@ -111,6 +111,26 @@ func BenchmarkDecodeBlobCompressed(b *testing.B) {
 	}
 }
 
+func BenchmarkDecodeBlobCompressedInto(b *testing.B) {
+	data := make([]byte, 4096)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	blob, _ := EncodeCompressedBlob(data)
+	encoded := blob.Bytes()
+	dst := make([]byte, 0, len(data)*2)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, err := DecodeBlobInto(dst[:0], encoded)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkDynamicIndexWriterAdd(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()

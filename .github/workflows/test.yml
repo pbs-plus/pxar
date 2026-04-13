@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
@@ -16,10 +19,19 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - run: go test -v -timeout 60s ./...
+      - name: Run unit tests
+        run: go test -v -timeout 60s ./...
+
+      - name: Watch workflow status
+        if: always()
+        run: |
+          echo "::notice::Unit tests completed with status: ${{ job.status }}"
 
   integration-tests:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -102,8 +114,47 @@ jobs:
           echo "PBS_TOKEN=${FULL_TOKEN}" >> "$GITHUB_ENV"
 
       - name: Run integration tests
-        run: go test -tags=integration -v -timeout 120s ./backupproxy/
+        id: integration-tests
+        run: |
+          echo "::notice::Starting chunked upload/download didx tests with PBS..."
+          go test -tags=integration -v -timeout 180s ./backupproxy/ -run 'TestIntegration_ChunkedDidx|TestIntegration_.*Didx.*'
+          TEST_EXIT=$?
+          echo "test_exit_code=$TEST_EXIT" >> "$GITHUB_OUTPUT"
+          exit $TEST_EXIT
+
+      - name: Watch test results with gh CLI
+        if: always()
+        run: |
+          echo "::group::Test Run Summary"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run Number: ${{ github.run_number }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "::endgroup::"
+
+          # Display run information using gh CLI
+          if command -v gh &> /dev/null; then
+            echo "::group::GitHub Actions Run Details"
+            gh run view ${{ github.run_id }} --repo ${{ github.repository }} || true
+            echo "::endgroup::"
+          fi
+
+          # Check test results
+          if [ "${{ steps.integration-tests.outputs.test_exit_code }}" = "0" ]; then
+            echo "::notice title=Integration Tests Passed::All chunked didx upload/download tests passed! ✓"
+          else
+            echo "::error title=Integration Tests Failed::Some tests failed. Check logs above."
+          fi
 
       - name: Dump PBS logs on failure
         if: failure()
-        run: docker logs pbs
+        run: |
+          echo "::group::PBS Container Logs"
+          docker logs pbs
+          echo "::endgroup::"
+
+          echo "::group::PBS Container Status"
+          docker ps -a | grep pbs || true
+          docker inspect pbs --format='{{.State.Status}}' || true
+          echo "::endgroup::"

@@ -221,7 +221,48 @@ func main() {
 
 The backupproxy package converts Proxmox's push-based backup protocol into a pull configuration. The server (on the PBS machine) orchestrates backups by walking the client's filesystem and uploading to storage. The client only serves raw filesystem data.
 
+#### Detection Modes
+
+The server supports three detection modes controlling how archives are created and whether unchanged files are re-read:
+
+| Mode | Format | Description |
+|------|--------|-------------|
+| `DetectionLegacy` | v1 single `.pxar` | All file data encoded into one stream. No previous backup needed. |
+| `DetectionData` | v2 split `.mpxar` + `.ppxar` | Metadata and payload in separate streams. All file data re-read. |
+| `DetectionMetadata` | v2 split `.mpxar` + `.ppxar` | Compares current file metadata (mtime, size, uid, gid, mode) against a previous backup's catalog. Unchanged files reuse payload chunks from the previous snapshot. |
+
 ```go
+// Legacy mode (single archive)
+result, err := srv.RunBackupWithMode(ctx, "/root", backupproxy.BackupConfig{
+    BackupType:    datastore.BackupHost,
+    BackupID:      "myhost",
+    DetectionMode: backupproxy.DetectionLegacy,
+})
+
+// Data mode (split archive, all data re-read)
+result, err := srv.RunBackupWithMode(ctx, "/root", backupproxy.BackupConfig{
+    BackupType:    datastore.BackupHost,
+    BackupID:      "myhost",
+    DetectionMode: backupproxy.DetectionData,
+})
+
+// Metadata mode (incremental, reuses unchanged payload)
+result, err := srv.RunBackupWithMode(ctx, "/root", backupproxy.BackupConfig{
+    BackupType:    datastore.BackupHost,
+    BackupID:      "myhost",
+    DetectionMode: backupproxy.DetectionMetadata,
+    PreviousBackup: &backupproxy.PreviousBackupRef{
+        BackupType: datastore.BackupHost,
+        BackupID:   "myhost",
+        BackupTime: 1700000000,
+        Namespace:  "",
+    },
+})
+```
+
+For local store, set `PreviousBackup.Dir` to the directory containing previous snapshot indexes. For PBS, leave `Dir` empty and the store will download them via `PBSRemoteStore`.
+
+#### Basic Usage
 package main
 
 import (
@@ -431,7 +472,15 @@ func main() {
 - `RemoteStore` / `BackupSession` — Storage backend interfaces
 - `LocalStore` — Local filesystem storage backend
 - `PBSRemoteStore` — PBS H2 backup protocol storage backend
-- `BackupConfig` / `BackupResult` / `UploadResult` — Configuration and result types
+- `PBSConfig` — PBS connection configuration (URL, datastore, auth)
+- `PBSReader` — PBS backup reader protocol client for restore
+- `BackupConfig` — Backup configuration including DetectionMode and PreviousBackup
+- `BackupResult` — Backup outcome (file count, dir count, bytes, duration)
+- `UploadResult` — Single archive upload result (filename, size, digest)
+- `DetectionMode` — Detection mode constants: `DetectionLegacy`, `DetectionData`, `DetectionMetadata`
+- `PreviousBackupRef` — Reference to a previous snapshot for metadata mode
+- `DirEntry` — Directory entry with Stat and Size for metadata comparison
+- `PreviousSnapshotSource` — Interface for reading previous backup catalogs and chunks
 
 ## Architecture
 
@@ -447,12 +496,12 @@ Backup Data Flow:
         │  Stat, ReadDir,                    │
         │  ReadFile, ReadLink                │
         │────►                               │
-                                    ┌────────▼─────────┐
-                                    │ RunBackup()       │
-                                    │                   │
-                                    │ io.Pipe()         │
-                                    │  Writer → Encoder │
-                                    │  Reader → Upload  │
+                                     ┌────────▼─────────┐
+                                     │ RunBackup()       │
+                                     │                   │
+                                     │ bytes.Buffer      │
+                                     │  Writer → Encoder │
+                                     │  Reader → Upload  │
                                     │                   │
                                     │ walkDir():        │
                                     │  dir:  Create → recurse → Finish

@@ -261,7 +261,7 @@ func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) err
 		return err
 	}
 
-	digest := sha256.Sum256(data)
+	digest := sha256.Sum256(blobData)
 	addFileInfo(&s.files, name, uint64(len(blobData)), digest)
 
 	return nil

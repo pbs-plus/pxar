@@ -14,11 +14,11 @@ import (
 
 // mockPBSProtocol implements pbsBackupProtocol for testing.
 type mockPBSProtocol struct {
-	chunks  map[string][]byte // digest -> encoded chunk data
-	blobs   map[string][]byte // filename -> blob data
-	indexes map[uint64]*mockIndex
-	nextWID uint64
-	closed  bool
+	chunks   map[string][]byte // digest -> encoded chunk data
+	blobs    map[string][]byte // filename -> blob data
+	indexes  map[uint64]*mockIndex
+	nextWID  uint64
+	closed   bool
 	finished bool
 }
 
@@ -292,7 +292,12 @@ func TestPBSManifestFileEntries(t *testing.T) {
 		t.Error("blob size should not be 0")
 	}
 
-	expectedBlobDigest := sha256.Sum256(blobData)
+	// The checksum is calculated on the encoded blob data (after datastore.EncodeBlob)
+	encodedBlob, err := datastore.EncodeBlob(blobData)
+	if err != nil {
+		t.Fatalf("encode blob: %v", err)
+	}
+	expectedBlobDigest := sha256.Sum256(encodedBlob.Bytes())
 	if blobEntry.CSum != hex.EncodeToString(expectedBlobDigest[:]) {
 		t.Errorf("blob checksum mismatch")
 	}

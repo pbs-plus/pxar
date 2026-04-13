@@ -1105,7 +1105,6 @@ func TestIntegration_ChunkedDidxUploadDownload(t *testing.T) {
 	if _, err := rand.Read(data); err != nil {
 		t.Fatalf("generate data: %v", err)
 	}
-	origDigest := sha256.Sum256(data)
 
 	// Upload archive to PBS (creates chunked .didx)
 	sess, err := store.StartSession(context.Background(), cfg)

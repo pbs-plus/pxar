@@ -25,7 +25,8 @@ type BackupConfig struct {
 	Store       string              // datastore name
 	BackupType  datastore.BackupType // vm, ct, or host
 	BackupID    string              // backup identifier
-	BackupTime  int64               // Unix timestamp for this snapshot
+	BackupTime  int64
+	Namespace   string               // Unix timestamp for this snapshot
 	Compress    bool                // compress chunks with zstd
 	ChunkConfig buzhash.Config      // buzhash chunking parameters
 }

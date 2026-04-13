@@ -61,12 +61,28 @@ func (fs memFS) addDir(path, parentPath string, mode uint64) {
 	}
 }
 
+func (fs memFS) addDirWithMtime(path, parentPath string, mode uint64, mtime format.StatxTimestamp) {
+	fs[path] = &memFile{
+		stat: format.Stat{Mode: format.ModeIFDIR | mode, Mtime: mtime},
+	}
+	if parent, ok := fs[parentPath]; ok {
+		parent.entries = append(parent.entries, DirEntry{
+			Name: baseName(path),
+			Stat: format.Stat{Mode: format.ModeIFDIR | mode, Mtime: mtime},
+		})
+	}
+}
+
 func (fs memFS) addFile(path, dirPath string, data []byte, mode uint64) {
-	fs[path] = &memFile{stat: format.Stat{Mode: format.ModeIFREG | mode}, data: data}
+	fs.addFileWithMtime(path, dirPath, data, mode, format.StatxTimestamp{})
+}
+
+func (fs memFS) addFileWithMtime(path, dirPath string, data []byte, mode uint64, mtime format.StatxTimestamp) {
+	fs[path] = &memFile{stat: format.Stat{Mode: format.ModeIFREG | mode, Mtime: mtime}, data: data}
 	if dir, ok := fs[dirPath]; ok {
 		dir.entries = append(dir.entries, DirEntry{
 			Name: baseName(path),
-			Stat: format.Stat{Mode: format.ModeIFREG | mode},
+			Stat: format.Stat{Mode: format.ModeIFREG | mode, Mtime: mtime},
 			Size: uint64(len(data)),
 		})
 	}

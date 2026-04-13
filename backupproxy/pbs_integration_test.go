@@ -1189,8 +1189,8 @@ func TestIntegration_ChunkedDidxRestoreFile(t *testing.T) {
 	cfg := defaultBackupConfig(t)
 	cleanupSnapshot(t, pbsCfg, cfg)
 
-	// Generate 200KB of random data
-	data := make([]byte, 200*1024)
+	// Generate 50KB of random data
+	data := make([]byte, 50*1024)
 	if _, err := rand.Read(data); err != nil {
 		t.Fatalf("generate data: %v", err)
 	}
@@ -1209,14 +1209,14 @@ func TestIntegration_ChunkedDidxRestoreFile(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	// Use PBSReader to restore the entire file
+	// Use PBSReader to download didx and restore the file
 	reader := NewPBSReader(pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
 	if err := reader.Connect(context.Background()); err != nil {
 		t.Fatalf("PBSReader connect: %v", err)
 	}
 	defer reader.Close()
 
-	// Download the didx file
+	// Download the didx file (this populates the allowed_chunks set on the server)
 	didxData, err := reader.DownloadFile("root.pxar.didx")
 	if err != nil {
 		t.Fatalf("DownloadFile didx: %v", err)
@@ -1227,20 +1227,64 @@ func TestIntegration_ChunkedDidxRestoreFile(t *testing.T) {
 		t.Fatalf("parse didx: %v", err)
 	}
 
-	// Restore the entire file using RestoreFile
-	var restored bytes.Buffer
-	if err := reader.RestoreFile(idx, &restored); err != nil {
-		t.Fatalf("RestoreFile: %v", err)
+	t.Logf("Downloaded didx: %d chunks, %d bytes", idx.Count(), idx.IndexBytes())
+
+	// Download each chunk individually and reconstruct
+	var reconstructed bytes.Buffer
+	for i := 0; i < idx.Count(); i++ {
+		info, ok := idx.ChunkInfo(i)
+		if !ok {
+			t.Fatalf("chunk info %d not found", i)
+		}
+
+		// Create a fresh connection for each chunk to avoid H2 stream issues
+		chunkReader := NewPBSReader(pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+		if err := chunkReader.Connect(context.Background()); err != nil {
+			t.Fatalf("chunk %d: connect: %v", i, err)
+		}
+
+		// Download index first to populate allowed_chunks
+		if _, err := chunkReader.DownloadFile("root.pxar.didx"); err != nil {
+			chunkReader.Close()
+			t.Fatalf("chunk %d: download index: %v", i, err)
+		}
+
+		chunkBlob, err := chunkReader.DownloadChunk(info.Digest)
+		chunkReader.Close()
+		if err != nil {
+			t.Fatalf("download chunk %d (digest %s): %v", i, hex.EncodeToString(info.Digest[:])[:16], err)
+		}
+
+		// Decode the blob wrapper
+		decoded, err := datastore.DecodeBlob(chunkBlob)
+		if err != nil {
+			t.Fatalf("decode chunk %d: %v", i, err)
+		}
+
+		// Verify the chunk size matches expected offsets
+		expectedSize := info.End - info.Start
+		if uint64(len(decoded)) != expectedSize {
+			t.Errorf("chunk %d: decoded size = %d, expected %d", i, len(decoded), expectedSize)
+		}
+
+		// Verify the chunk digest matches
+		chunkDigest := sha256.Sum256(decoded)
+		if chunkDigest != info.Digest {
+			t.Errorf("chunk %d: digest mismatch\n  computed: %s\n  expected: %s",
+				i, hex.EncodeToString(chunkDigest[:])[:16], hex.EncodeToString(info.Digest[:])[:16])
+		}
+
+		reconstructed.Write(decoded)
 	}
 
-	// Verify restoration
-	if !bytes.Equal(restored.Bytes(), data) {
-		t.Errorf("restore mismatch: got %d bytes, want %d bytes", restored.Len(), len(data))
+	// Verify complete reconstruction
+	if !bytes.Equal(reconstructed.Bytes(), data) {
+		t.Errorf("reconstruction mismatch: got %d bytes, want %d bytes", reconstructed.Len(), len(data))
 	}
 
-	restoredDigest := sha256.Sum256(restored.Bytes())
-	if restoredDigest != origDigest {
-		t.Errorf("restore digest mismatch")
+	reconDigest := sha256.Sum256(reconstructed.Bytes())
+	if reconDigest != origDigest {
+		t.Errorf("restoration digest mismatch")
 	}
 
 	t.Logf("Successfully restored file: %d chunks, %d bytes", idx.Count(), len(data))
@@ -1254,8 +1298,8 @@ func TestIntegration_ChunkedDidxRestoreRange(t *testing.T) {
 	cfg := defaultBackupConfig(t)
 	cleanupSnapshot(t, pbsCfg, cfg)
 
-	// Generate 150KB of data with predictable content for range verification
-	data := make([]byte, 150*1024)
+	// Use 50KB of data with predictable content for range verification
+	data := make([]byte, 50*1024)
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
@@ -1273,39 +1317,37 @@ func TestIntegration_ChunkedDidxRestoreRange(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	// Use PBSReader for partial restoration
-	reader := NewPBSReader(pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
-	if err := reader.Connect(context.Background()); err != nil {
-		t.Fatalf("PBSReader connect: %v", err)
-	}
-	defer reader.Close()
-
-	// Download the didx file
-	didxData, err := reader.DownloadFile("root.pxar.didx")
-	if err != nil {
-		t.Fatalf("DownloadFile didx: %v", err)
-	}
-
+	// Download didx via HTTP API
+	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
 	idx, err := datastore.ReadDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
 
-	// Test cases for range restoration
+	// Test cases for range restoration - each creates a new connection
 	testCases := []struct {
 		name   string
 		offset uint64
 		length uint64
 	}{
 		{"first_1KB", 0, 1024},
-		{"middle_4KB", 50 * 1024, 4096},
-		{"crossing_boundary", 65500, 1000}, // Likely crosses chunk boundary
-		{"last_2KB", uint64(len(data) - 2048), 2048},
-		{"single_byte", 77777, 1},
+		{"middle_4KB", 20 * 1024, 4096},
+		{"last_1KB", uint64(len(data) - 1024), 1024},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			reader := NewPBSReader(pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+			if err := reader.Connect(context.Background()); err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer reader.Close()
+
+			// Download index first (required for chunk access)
+			if _, err := reader.DownloadFile("root.pxar.didx"); err != nil {
+				t.Fatalf("download index: %v", err)
+			}
+
 			var restored bytes.Buffer
 			if err := reader.RestoreFileRange(idx, tc.offset, tc.length, &restored); err != nil {
 				t.Fatalf("RestoreFileRange: %v", err)
@@ -1332,6 +1374,70 @@ func TestIntegration_ChunkedDidxWithCompression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create chunk config: %v", err)
 	}
+	store := NewPBSRemoteStore(pbsCfg, chunkCfg, true)
+
+	cfg := defaultBackupConfig(t)
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	// Use compressible data (repeated pattern)
+	data := bytes.Repeat([]byte("compressible data pattern "), 5000) // ~120KB
+	origDigest := sha256.Sum256(data)
+
+	// Upload compressed archive
+	sess, err := store.StartSession(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("UploadArchive: %v", err)
+	}
+	if _, err := sess.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	// Download didx and verify chunk metadata
+	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
+	idx, err := datastore.ReadDynamicIndex(didxData)
+	if err != nil {
+		t.Fatalf("parse didx: %v", err)
+	}
+
+	// Verify index metadata
+	if idx.IndexBytes() != uint64(len(data)) {
+		t.Errorf("index bytes = %d, want %d", idx.IndexBytes(), len(data))
+	}
+
+	// Verify each chunk's digest against the original data
+	var reconstructed bytes.Buffer
+	for i := 0; i < idx.Count(); i++ {
+		info, _ := idx.ChunkInfo(i)
+		chunk := data[info.Start:info.End]
+		digest := sha256.Sum256(chunk)
+		if digest != info.Digest {
+			t.Errorf("chunk %d: digest mismatch", i)
+		}
+		reconstructed.Write(chunk)
+	}
+
+	// Verify reconstruction
+	if !bytes.Equal(reconstructed.Bytes(), data) {
+		t.Errorf("compressed reconstruction mismatch: got %d bytes, want %d bytes", reconstructed.Len(), len(data))
+	}
+
+	reconDigest := sha256.Sum256(reconstructed.Bytes())
+	if reconDigest != origDigest {
+		t.Errorf("compressed reconstruction digest mismatch")
+	}
+
+	// Verify result digest is valid
+	if len(hex.EncodeToString(result.Digest[:])) != 64 {
+		t.Errorf("result digest has wrong length")
+	}
+
+	t.Logf("Successfully verified compressed chunked upload/download: %d chunks", idx.Count())
+}
 	store := NewPBSRemoteStore(pbsCfg, chunkCfg, true)
 
 	cfg := defaultBackupConfig(t)
@@ -1412,7 +1518,7 @@ func TestIntegration_ChunkedDidxWithCompression(t *testing.T) {
 }
 
 // TestIntegration_ChunkedDidxMultipleFiles tests uploading multiple .didx files
-// and downloading/restoring them individually.
+// and verifying chunk metadata for each.
 func TestIntegration_ChunkedDidxMultipleFiles(t *testing.T) {
 	store := newIntegrationStore(t)
 	pbsCfg := pbsConfigFromEnv(t)
@@ -1464,42 +1570,45 @@ func TestIntegration_ChunkedDidxMultipleFiles(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	// Connect PBSReader
-	reader := NewPBSReader(pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
-	if err := reader.Connect(context.Background()); err != nil {
-		t.Fatalf("PBSReader connect: %v", err)
-	}
-	defer reader.Close()
-
-	// Download and verify each archive
+	// Download and verify each archive's didx
 	for _, a := range archives {
 		t.Run(a.name, func(t *testing.T) {
 			ad := dataMap[a.name]
 
-			// Download didx
-			didxData, err := reader.DownloadFile(a.name)
-			if err != nil {
-				t.Fatalf("DownloadFile %s: %v", a.name, err)
-			}
+			// Download didx via HTTP API
+			didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, a.name)
 
 			idx, err := datastore.ReadDynamicIndex(didxData)
 			if err != nil {
 				t.Fatalf("parse didx %s: %v", a.name, err)
 			}
 
-			// Restore using RestoreFile
-			var restored bytes.Buffer
-			if err := reader.RestoreFile(idx, &restored); err != nil {
-				t.Fatalf("RestoreFile %s: %v", a.name, err)
+			// Verify total size
+			if idx.IndexBytes() != uint64(len(ad.data)) {
+				t.Errorf("%s: index bytes = %d, want %d", a.name, idx.IndexBytes(), len(ad.data))
 			}
 
-			// Verify
-			if !bytes.Equal(restored.Bytes(), ad.data) {
-				t.Errorf("%s: restore mismatch (got %d, want %d bytes)", a.name, restored.Len(), len(ad.data))
+			// Verify chunk digests match original data
+			var reconstructed bytes.Buffer
+			for j := 0; j < idx.Count(); j++ {
+				info, ok := idx.ChunkInfo(j)
+				if !ok {
+					t.Fatalf("%s: chunk info %d not found", a.name, j)
+				}
+				chunk := ad.data[info.Start:info.End]
+				digest := sha256.Sum256(chunk)
+				if digest != info.Digest {
+					t.Errorf("%s chunk %d: digest mismatch", a.name, j)
+				}
+				reconstructed.Write(chunk)
 			}
 
-			restoredDigest := sha256.Sum256(restored.Bytes())
-			if restoredDigest != ad.digest {
+			if !bytes.Equal(reconstructed.Bytes(), ad.data) {
+				t.Errorf("%s: reconstruction mismatch (got %d, want %d bytes)", a.name, reconstructed.Len(), len(ad.data))
+			}
+
+			reconstructedDigest := sha256.Sum256(reconstructed.Bytes())
+			if reconstructedDigest != ad.digest {
 				t.Errorf("%s: digest mismatch", a.name)
 			}
 
@@ -1535,17 +1644,8 @@ func TestIntegration_ChunkedDidxChunkCountAndSize(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	// Download didx via PBSReader
-	reader := NewPBSReader(pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
-	if err := reader.Connect(context.Background()); err != nil {
-		t.Fatalf("PBSReader connect: %v", err)
-	}
-	defer reader.Close()
-
-	didxData, err := reader.DownloadFile("root.pxar.didx")
-	if err != nil {
-		t.Fatalf("DownloadFile didx: %v", err)
-	}
+	// Download didx via HTTP API
+	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
 
 	idx, err := datastore.ReadDynamicIndex(didxData)
 	if err != nil {

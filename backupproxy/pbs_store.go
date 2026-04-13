@@ -220,12 +220,9 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		offsets = append(offsets, chunkOffset)
 	}
 
-	// Finish local index for digest
-	raw, err := idx.Finish()
-	if err != nil {
+	if _, err := idx.Finish(); err != nil {
 		return nil, fmt.Errorf("finish index: %w", err)
 	}
-	indexDigest := sha256.Sum256(raw)
 
 	// Append chunk references to PBS dynamic index
 	if chunkCount > 0 {
@@ -234,19 +231,23 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		}
 	}
 
-	// Close PBS index
-	pbsChecksum := hex.EncodeToString(pbsHash.Sum(nil))
+	// Close PBS index — pbsHash computes SHA256(end_offset_LE || digest || ...) which
+	// is the same as PBS's compute_csum() and matches what PBS stores in the manifest.
+	pbsChecksumBytes := pbsHash.Sum(nil)
+	var indexDigest [32]byte
+	copy(indexDigest[:], pbsChecksumBytes)
+	pbsChecksum := hex.EncodeToString(pbsChecksumBytes)
 	if err := s.proto.dynamicIndexClose(wid, chunkCount, totalSize, pbsChecksum); err != nil {
 		return nil, err
 	}
 
 	result := &UploadResult{
 		Filename: name,
-		Size:     uint64(len(raw)),
+		Size:     totalSize,
 		Digest:   indexDigest,
 	}
 
-	addFileInfo(&s.files, name, uint64(len(raw)), indexDigest)
+	addFileInfo(&s.files, name, totalSize, indexDigest)
 
 	return result, nil
 }

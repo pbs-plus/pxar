@@ -140,15 +140,15 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 		return nil, fmt.Errorf("write index: %w", err)
 	}
 
-	indexDigest := sha256.Sum256(raw)
+	indexDigest := idx.Csum()
 
 	result := &UploadResult{
 		Filename: name,
-		Size:     uint64(len(raw)),
+		Size:     totalOffset,
 		Digest:   indexDigest,
 	}
 
-	addFileInfo(&s.files, name, uint64(len(raw)), indexDigest)
+	addFileInfo(&s.files, name, totalOffset, indexDigest)
 
 	return result, nil
 }

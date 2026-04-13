@@ -68,6 +68,13 @@ func addFileInfo(files *[]datastore.FileInfo, name string, size uint64, digest [
 	})
 }
 
+// SplitArchiveResult contains the results of uploading a split archive.
+// The metadata and payload are uploaded as separate .didx files.
+type SplitArchiveResult struct {
+	MetadataResult *UploadResult
+	PayloadResult  *UploadResult
+}
+
 // RemoteStore abstracts the backup storage backend.
 type RemoteStore interface {
 	StartSession(ctx context.Context, config BackupConfig) (BackupSession, error)
@@ -76,6 +83,7 @@ type RemoteStore interface {
 // BackupSession represents an active backup upload session.
 type BackupSession interface {
 	UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error)
+	UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error)
 	UploadBlob(ctx context.Context, name string, data []byte) error
 	Finish(ctx context.Context) (*datastore.Manifest, error)
 }
@@ -180,6 +188,23 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 	addFileInfo(&s.files, name, totalOffset, indexDigest)
 
 	return result, nil
+}
+
+func (s *localSession) UploadSplitArchive(_ context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error) {
+	metaResult, err := s.UploadArchive(nil, metadataName, metadataData)
+	if err != nil {
+		return nil, fmt.Errorf("metadata archive: %w", err)
+	}
+
+	payloadResult, err := s.UploadArchive(nil, payloadName, payloadData)
+	if err != nil {
+		return nil, fmt.Errorf("payload archive: %w", err)
+	}
+
+	return &SplitArchiveResult{
+		MetadataResult: metaResult,
+		PayloadResult:  payloadResult,
+	}, nil
 }
 
 func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) error {

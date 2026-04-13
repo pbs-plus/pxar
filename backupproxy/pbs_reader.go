@@ -119,6 +119,7 @@ type pbsReaderConn struct {
 	hdrBuf       *bytes.Buffer
 	nextID       uint32
 	maxFrameSize uint32
+	authority    string
 }
 
 // dialPBSReaderH2 establishes an H2 reader connection to PBS.
@@ -236,6 +237,7 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 		hdrBuf:       hdrBuf,
 		nextID:       1,
 		maxFrameSize: maxFrame,
+		authority:    u.Host,
 	}, nil
 }
 
@@ -264,6 +266,7 @@ func (c *pbsReaderConn) doBinary(method, path string, params url.Values, body []
 	c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
 	c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
 	c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
+	c.enc.WriteField(hpack.HeaderField{Name: ":authority", Value: c.authority})
 	if contentType != "" {
 		c.enc.WriteField(hpack.HeaderField{Name: "content-type", Value: contentType})
 	}

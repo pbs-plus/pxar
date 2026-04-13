@@ -137,6 +137,9 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 	params.Set("backup-type", backupType)
 	params.Set("backup-id", backupID)
 	params.Set("backup-time", strconv.FormatInt(backupTime, 10))
+	if cfg.Namespace != "" {
+		params.Set("ns", cfg.Namespace)
+	}
 
 	upgradePath := u.Path + "/reader?" + params.Encode()
 

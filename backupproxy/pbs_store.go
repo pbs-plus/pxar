@@ -118,6 +118,7 @@ type PBSConfig struct {
 	Datastore     string // target datastore name
 	AuthToken     string // PBS API token ("TOKENID:SECRET")
 	SkipTLSVerify bool   // disable TLS certificate verification
+	Namespace     string // optional namespace for the backup
 }
 
 // PBSRemoteStore implements RemoteStore via the PBS H2 backup protocol.

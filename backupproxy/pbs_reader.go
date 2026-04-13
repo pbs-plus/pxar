@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pbs-plus/pxar/datastore"
@@ -249,7 +250,11 @@ func (c *pbsReaderConn) allocID() uint32 {
 func (c *pbsReaderConn) doBinary(method, path string, params url.Values, body []byte, contentType string) ([]byte, error) {
 	streamID := c.allocID()
 
+	// Ensure path starts with "/" as required by HTTP/2
 	fullPath := path
+	if !strings.HasPrefix(fullPath, "/") {
+		fullPath = "/" + fullPath
+	}
 	if len(params) > 0 {
 		fullPath += "?" + params.Encode()
 	}

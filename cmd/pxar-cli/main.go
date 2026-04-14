@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -23,14 +24,6 @@ import (
 )
 
 type osFS struct{}
-
-var xattrPrefixes = []string{
-	"user.",
-	"security.",
-	"trusted.",
-	"system.posix_acl_access",
-	"system.posix_acl_default",
-}
 
 func isSkippedXAttr(name string) bool {
 	for _, prefix := range []string{"system.posix_acl_", "security.capability"} {
@@ -236,7 +229,7 @@ func (fs *osFS) ReadFile(path string, offset, length int64) ([]byte, error) {
 		}
 	}
 	if length < 0 {
-		return ioReadAll(f)
+		return io.ReadAll(f)
 	}
 	buf := make([]byte, length)
 	n, err := f.Read(buf)
@@ -252,22 +245,6 @@ func (fs *osFS) ReadLink(path string) (string, error) {
 		return "", err
 	}
 	return target, nil
-}
-
-func ioReadAll(f *os.File) ([]byte, error) {
-	var buf []byte
-	tmp := make([]byte, 64*1024)
-	for {
-		n, err := f.Read(tmp)
-		buf = append(buf, tmp[:n]...)
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return nil, err
-		}
-	}
-	return buf, nil
 }
 
 func parseMode(s string) backupproxy.DetectionMode {

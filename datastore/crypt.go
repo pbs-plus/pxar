@@ -103,18 +103,6 @@ func (c *CryptConfig) Fingerprint() [32]byte {
 	return [32]byte(h.Sum(nil))
 }
 
-// ChunkDigest computes the appropriate chunk digest based on encryption mode.
-// For encrypted mode: SHA-256(data || id_key)
-// For non-encrypted mode: SHA-256(data)
-func (c *CryptConfig) ChunkDigest(data []byte) [32]byte {
-	return c.ComputeDigest(data)
-}
-
-// PlainChunkDigest computes SHA-256(data) without any key.
-func PlainChunkDigest(data []byte) [32]byte {
-	return sha256.Sum256(data)
-}
-
 // KeyConfig represents an encryption key file that can be stored on disk.
 type KeyConfig struct {
 	Kdf         KeyDerivationConfig `json:"kdf"`
@@ -207,8 +195,6 @@ func GenerateKeyFile(password string) ([]byte, error) {
 	copy(configData[16:32], tag)
 	copy(configData[32:], ciphertext)
 
-	cfg := &CryptConfig{}
-	_ = cfg // We need the fingerprint
 	cc, err := NewCryptConfig(encKey)
 	if err != nil {
 		return nil, err
@@ -325,9 +311,7 @@ func deriveKeyFromConfig(kdf *KeyDerivationConfig, password []byte) ([32]byte, e
 		pbkdf2DeriveFull(password, kdf.Salt, iter, key[:])
 		return key, nil
 	case "scrypt":
-		var key [32]byte
-		scryptDerive(password, kdf.Salt, kdf.N, kdf.R, kdf.P, key[:])
-		return key, nil
+		return [32]byte{}, fmt.Errorf("scrypt key derivation is not supported; use pbkdf2 key files")
 	default:
 		return [32]byte{}, fmt.Errorf("unsupported KDF: %s", kdf.Type)
 	}
@@ -354,12 +338,6 @@ func pbkdf2DeriveFull(password, salt []byte, iterations int, out []byte) {
 }
 
 // scryptDerive implements scrypt key derivation.
-// Note: This is a placeholder that uses PBKDF2 as a fallback.
-// For full PBS compatibility with scrypt-encrypted keys, use a library.
-func scryptDerive(password, salt []byte, n, r, p int, out []byte) {
-	pbkdf2DeriveFull(password, salt, 65535, out)
-}
-
 // pbkdf2DeriveKey is a convenience wrapper for deriving a 32-byte key.
 func pbkdf2DeriveKey(password []byte, salt []byte, iterations int) [32]byte {
 	var key [32]byte
@@ -408,7 +386,10 @@ func SignManifest(manifest *Manifest, cc *CryptConfig) error {
 	unprotected := &UnprotectedInfo{
 		KeyFingerprint: FormatFingerprint(fp),
 	}
-	unprotectedJSON, _ := json.Marshal(unprotected)
+	unprotectedJSON, err := json.Marshal(unprotected)
+	if err != nil {
+		return fmt.Errorf("marshal unprotected: %w", err)
+	}
 	manifest.Unprotected = unprotectedJSON
 
 	return nil

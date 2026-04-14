@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -12,7 +11,7 @@ import (
 type BackupType int
 
 const (
-	BackupVM   BackupType = iota
+	BackupVM BackupType = iota
 	BackupCT
 	BackupHost
 )
@@ -138,67 +137,9 @@ func (d BackupDir) Info() (*BackupInfo, error) {
 	}, nil
 }
 
-// Create creates the snapshot directory on disk.
-func (d BackupDir) Create() error {
-	return os.MkdirAll(d.FullPath(), 0o755)
-}
-
 // BackupInfo holds metadata about a backup snapshot.
 type BackupInfo struct {
 	Dir       BackupDir
 	Files     []string
 	Protected bool
-}
-
-// Protect marks the backup as protected by creating a .protected file.
-func (info *BackupInfo) Protect() error {
-	path := filepath.Join(info.Dir.FullPath(), ".protected")
-	if err := os.WriteFile(path, nil, 0o644); err != nil {
-		return err
-	}
-	info.Protected = true
-	return nil
-}
-
-// Unprotect removes the protection marker.
-func (info *BackupInfo) Unprotect() error {
-	path := filepath.Join(info.Dir.FullPath(), ".protected")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	info.Protected = false
-	return nil
-}
-
-// ListBackupGroups returns all backup groups in the datastore base directory.
-func ListBackupGroups(base string) ([]BackupGroup, error) {
-	var groups []BackupGroup
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return nil, err
-	}
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		bt, err := ParseBackupType(e.Name())
-		if err != nil {
-			continue
-		}
-		typeDir := filepath.Join(base, e.Name())
-		ids, err := os.ReadDir(typeDir)
-		if err != nil {
-			continue
-		}
-		for _, id := range ids {
-			if id.IsDir() {
-				groups = append(groups, BackupGroup{
-					Type: bt,
-					ID:   id.Name(),
-					Base: base,
-				})
-			}
-		}
-	}
-	return groups, nil
 }

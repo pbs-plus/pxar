@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"time"
 )
 
@@ -200,11 +199,6 @@ type StatxTimestamp struct {
 	_pad  uint32
 }
 
-// StatxTimestampZero returns a zero-valued timestamp.
-func StatxTimestampZero() StatxTimestamp {
-	return StatxTimestamp{}
-}
-
 // StatxTimestampNew creates a timestamp from seconds and nanoseconds.
 func StatxTimestampNew(secs int64, nanos uint32) StatxTimestamp {
 	return StatxTimestamp{Secs: secs, Nanos: nanos}
@@ -349,15 +343,6 @@ type GoodbyeItem struct {
 	Size   uint64
 }
 
-// NewGoodbyeItem creates a GoodbyeItem by hashing the filename.
-func NewGoodbyeItem(name []byte, offset, size uint64) GoodbyeItem {
-	return GoodbyeItem{
-		Hash:   HashFilename(name),
-		Offset: offset,
-		Size:   size,
-	}
-}
-
 // PayloadRef references file content in a separate payload archive. 16 bytes.
 type PayloadRef struct {
 	Offset uint64
@@ -438,72 +423,6 @@ func (x XAttr) Name() []byte {
 // Value returns the attribute value.
 func (x XAttr) Value() []byte {
 	return x.Data[x.NameLen+1:]
-}
-
-// FCaps represents file capabilities.
-type FCaps struct {
-	Data []byte
-}
-
-// Prelude is an optional blob at the start of a v2 archive.
-type Prelude struct {
-	Data []byte
-}
-
-// Symlink stores the symlink target path.
-type Symlink struct {
-	Data []byte
-}
-
-// Hardlink stores a hard link target (offset + path).
-type Hardlink struct {
-	Offset uint64
-	Data   []byte
-}
-
-// ReadHeader reads a Header from the reader.
-func ReadHeader(r io.Reader) (Header, error) {
-	var h Header
-	err := binary.Read(r, binary.LittleEndian, &h)
-	return h, err
-}
-
-// WriteHeader writes a Header to the writer.
-func WriteHeader(w io.Writer, h Header) error {
-	return binary.Write(w, binary.LittleEndian, &h)
-}
-
-// ReadStat reads a Stat from the reader.
-func ReadStat(r io.Reader) (Stat, error) {
-	var s Stat
-	err := binary.Read(r, binary.LittleEndian, &s)
-	return s, err
-}
-
-// WriteStat writes a Stat to the writer.
-func WriteStat(w io.Writer, s Stat) error {
-	return binary.Write(w, binary.LittleEndian, &s)
-}
-
-// ReadDevice reads a Device from the reader.
-func ReadDevice(r io.Reader) (Device, error) {
-	var d Device
-	err := binary.Read(r, binary.LittleEndian, &d)
-	return d, err
-}
-
-// ReadGoodbyeItem reads a GoodbyeItem from the reader.
-func ReadGoodbyeItem(r io.Reader) (GoodbyeItem, error) {
-	var g GoodbyeItem
-	err := binary.Read(r, binary.LittleEndian, &g)
-	return g, err
-}
-
-// ReadPayloadRef reads a PayloadRef from the reader.
-func ReadPayloadRef(r io.Reader) (PayloadRef, error) {
-	var p PayloadRef
-	err := binary.Read(r, binary.LittleEndian, &p)
-	return p, err
 }
 
 // CheckFilename validates that a filename is a legal path component.

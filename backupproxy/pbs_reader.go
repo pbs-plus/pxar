@@ -214,8 +214,8 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 	framer.SetMaxReadFrameSize(1 << 24) // 16MB
 
 	const (
-		targetWindow   = 16 << 20 // 16 MB
-		targetMaxFrame = 1 << 24  // 16 MB
+		targetWindow   = 1 << 30 // 1 GiB
+		targetMaxFrame = 1 << 22 // 4 MiB
 	)
 
 	// Send client SETTINGS

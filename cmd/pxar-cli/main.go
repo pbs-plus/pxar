@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -11,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/backupproxy"
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
@@ -18,6 +23,165 @@ import (
 )
 
 type osFS struct{}
+
+var xattrPrefixes = []string{
+	"user.",
+	"security.",
+	"trusted.",
+	"system.posix_acl_access",
+	"system.posix_acl_default",
+}
+
+func isSkippedXAttr(name string) bool {
+	for _, prefix := range []string{"system.posix_acl_", "security.capability"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (fs *osFS) GetXAttrs(path string) ([]format.XAttr, error) {
+	size, err := unix.Llistxattr(path, nil)
+	if err != nil {
+		return nil, nil
+	}
+	if size == 0 {
+		return nil, nil
+	}
+	buf := make([]byte, size)
+	n, err := unix.Llistxattr(path, buf)
+	if err != nil {
+		return nil, nil
+	}
+	buf = buf[:n]
+
+	var result []format.XAttr
+	for _, name := range bytesToStrings(buf) {
+		if isSkippedXAttr(name) {
+			continue
+		}
+		valSize, err := unix.Lgetxattr(path, name, nil)
+		if err != nil {
+			continue
+		}
+		val := make([]byte, valSize)
+		if _, err := unix.Lgetxattr(path, name, val); err != nil {
+			continue
+		}
+		result = append(result, format.NewXAttr([]byte(name), val))
+	}
+	return result, nil
+}
+
+func (fs *osFS) GetACL(path string) (pxar.ACL, error) {
+	var acl pxar.ACL
+
+	accessACL, err := fs.parsePOSIXACL(path, "system.posix_acl_access")
+	if err == nil && accessACL != nil {
+		acl = *accessACL
+	}
+
+	defaultACL, err := fs.parsePOSIXACL(path, "system.posix_acl_default")
+	if err == nil && defaultACL != nil {
+		if len(defaultACL.Users) > 0 {
+			acl.DefaultUsers = defaultACL.Users
+		}
+		if len(defaultACL.Groups) > 0 {
+			acl.DefaultGroups = defaultACL.Groups
+		}
+		if defaultACL.GroupObj != nil {
+			acl.Default = &format.ACLDefault{
+				UserObjPermissions:  defaultACL.GroupObj.Permissions,
+				GroupObjPermissions: defaultACL.GroupObj.Permissions,
+				OtherPermissions:    0,
+				MaskPermissions:     defaultACL.GroupObj.Permissions,
+			}
+		}
+	}
+
+	return acl, nil
+}
+
+func (fs *osFS) parsePOSIXACL(path, xattrName string) (*pxar.ACL, error) {
+	valSize, err := unix.Lgetxattr(path, xattrName, nil)
+	if err != nil {
+		return nil, err
+	}
+	if valSize < 4 {
+		return nil, fmt.Errorf("ACL xattr too small")
+	}
+	val := make([]byte, valSize)
+	if _, err := unix.Lgetxattr(path, xattrName, val); err != nil {
+		return nil, err
+	}
+
+	version := binary.LittleEndian.Uint32(val[:4])
+	if version != 2 && version != 4 {
+		return nil, fmt.Errorf("unsupported ACL version %d", version)
+	}
+
+	var acl pxar.ACL
+	offset := uint32(4)
+	entrySize := uint32(12)
+	if version == 4 {
+		entrySize = 16
+	}
+
+	for offset+entrySize <= uint32(len(val)) {
+		tag := binary.LittleEndian.Uint16(val[offset:])
+		perm := binary.LittleEndian.Uint16(val[offset+2:])
+		id := binary.LittleEndian.Uint32(val[offset+4:])
+
+		permissions := format.ACLPermissions(perm)
+
+		switch tag {
+		case 1:
+			acl.GroupObj = &format.ACLGroupObject{Permissions: permissions}
+		case 2:
+			acl.Users = append(acl.Users, format.ACLUser{UID: uint64(id), Permissions: permissions})
+		case 4:
+			acl.Groups = append(acl.Groups, format.ACLGroup{GID: uint64(id), Permissions: permissions})
+		case 8:
+		case 0x20:
+		default:
+		}
+
+		offset += entrySize
+	}
+
+	return &acl, nil
+}
+
+func (fs *osFS) GetFCaps(path string) ([]byte, error) {
+	valSize, err := unix.Lgetxattr(path, "security.capability", nil)
+	if err != nil {
+		return nil, nil
+	}
+	if valSize == 0 {
+		return nil, nil
+	}
+	val := make([]byte, valSize)
+	if _, err := unix.Lgetxattr(path, "security.capability", val); err != nil {
+		return nil, nil
+	}
+	return val, nil
+}
+
+func bytesToStrings(buf []byte) []string {
+	if len(buf) == 0 {
+		return nil
+	}
+	var result []string
+	start := 0
+	for i, b := range buf {
+		if b == 0 {
+			result = append(result, string(buf[start:i]))
+			start = i + 1
+		}
+	}
+	return result
+}
 
 func (fs *osFS) Stat(path string) (format.Stat, error) {
 	var st syscall.Stat_t
@@ -128,6 +292,10 @@ func runBackup() error {
 	mode := fs.String("mode", "legacy", "detection mode: legacy, data, metadata")
 	prevID := fs.String("previous-backup-id", "", "previous backup ID for metadata mode")
 	prevTime := fs.Int64("previous-backup-time", 0, "previous backup timestamp for metadata mode")
+	cryptMode := fs.String("crypt-mode", "none", "encryption mode: none, encrypt, sign-only")
+	compressFlag := fs.Bool("compress", false, "compress chunks with zstd")
+	keyfile := fs.String("keyfile", "", "path to encryption key file (JSON)")
+	keyPassword := fs.String("key-password", "", "password for encrypted key file (or set PBS_ENCRYPTION_PASSWORD)")
 	fs.Parse(os.Args[2:])
 
 	if *repo == "" {
@@ -165,18 +333,55 @@ func runBackup() error {
 		SkipTLSVerify: *fingerprint != "",
 	}
 
-	store := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, *compressFlag)
 	client := backupproxy.NewLocalClient(&osFS{})
 	srv := backupproxy.NewServer(client, store)
 
 	detMode := parseMode(*mode)
 	backupTime := time.Now().Unix()
 
+	parsedCryptMode := datastore.CryptModeNone
+	switch *cryptMode {
+	case "encrypt":
+		parsedCryptMode = datastore.CryptModeEncrypt
+	case "sign-only":
+		parsedCryptMode = datastore.CryptModeSign
+	}
+
 	cfg := backupproxy.BackupConfig{
 		BackupType:    datastore.BackupHost,
 		BackupID:      *backupID,
 		BackupTime:    backupTime,
 		DetectionMode: detMode,
+		Compress:      *compressFlag,
+		CryptMode:     parsedCryptMode,
+	}
+
+	if parsedCryptMode != datastore.CryptModeNone {
+		if *keyfile == "" {
+			return fmt.Errorf("--crypt-mode %s requires --keyfile", *cryptMode)
+		}
+		keyData, err := os.ReadFile(*keyfile)
+		if err != nil {
+			return fmt.Errorf("read keyfile: %w", err)
+		}
+		kp := *keyPassword
+		if kp == "" {
+			kp = os.Getenv("PBS_ENCRYPTION_PASSWORD")
+		}
+		if kp != "" {
+			cc, err := datastore.LoadKeyFile(keyData, kp)
+			if err != nil {
+				return fmt.Errorf("load key file: %w", err)
+			}
+			cfg.CryptConfig = cc
+		} else {
+			cc, err := datastore.LoadKeyFileNoPassword(keyData)
+			if err != nil {
+				return fmt.Errorf("load key file (no password): %w", err)
+			}
+			cfg.CryptConfig = cc
+		}
 	}
 
 	if detMode == backupproxy.DetectionMetadata {
@@ -246,16 +451,54 @@ func parseRepo(s string) *repoInfo {
 	}
 }
 
+func runKeygen() error {
+	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
+	keyPassword := fs.String("password", "", "password to protect the key file")
+	fs.Parse(os.Args[2:])
+
+	var keyData []byte
+	var err error
+	if *keyPassword != "" {
+		keyData, err = datastore.GenerateKeyFile(*keyPassword)
+	} else {
+		key, err2 := datastore.CreateRandomKey()
+		if err2 != nil {
+			return err2
+		}
+		cc, err2 := datastore.NewCryptConfig(key)
+		if err2 != nil {
+			return err2
+		}
+		fp := cc.Fingerprint()
+		kc := &datastore.KeyConfig{
+			Kdf:         datastore.KeyDerivationConfig{Type: "none"},
+			Data:        key[:],
+			Fingerprint: datastore.FormatFingerprint(fp),
+		}
+		keyData, err = json.MarshalIndent(kc, "", "  ")
+	}
+	if err != nil {
+		return fmt.Errorf("generate key: %w", err)
+	}
+
+	fmt.Print(string(keyData))
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: pxar-cli <command> [options]\n")
-		fmt.Fprintf(os.Stderr, "Commands: backup\n")
+		fmt.Fprintf(os.Stderr, "Commands: backup, keygen\n")
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
 	case "backup":
 		if err := runBackup(); err != nil {
+			log.Fatal(err)
+		}
+	case "keygen":
+		if err := runKeygen(); err != nil {
 			log.Fatal(err)
 		}
 	default:

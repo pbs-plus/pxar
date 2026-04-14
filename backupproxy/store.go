@@ -32,8 +32,22 @@ func putBlobBuf(bp *[]byte) {
 }
 
 // encodeChunkBlob encodes a chunk as a PBS blob, optionally compressing with zstd.
+// When cc is non-nil, the chunk is encrypted with AES-256-GCM.
 // Returns the encoded bytes. Callers who need zero-alloc should use encodeChunkBlobTo.
-func encodeChunkBlob(chunk []byte, compress bool) ([]byte, error) {
+func encodeChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) ([]byte, error) {
+	if cc != nil {
+		bp := getBlobBuf()
+		dst := *bp
+		encoded, err := datastore.EncodeEncryptedBlobTo(dst, chunk, cc, compress)
+		if err != nil {
+			putBlobBuf(bp)
+			return nil, err
+		}
+		result := make([]byte, len(encoded))
+		copy(result, encoded)
+		putBlobBuf(bp)
+		return result, nil
+	}
 	bp := getBlobBuf()
 	dst := *bp
 	encoded, err := encodeChunkBlobTo(dst, chunk, compress)
@@ -41,7 +55,6 @@ func encodeChunkBlob(chunk []byte, compress bool) ([]byte, error) {
 		putBlobBuf(bp)
 		return nil, err
 	}
-	// Copy out of pooled buffer before returning to pool
 	result := make([]byte, len(encoded))
 	copy(result, encoded)
 	putBlobBuf(bp)
@@ -57,14 +70,24 @@ func encodeChunkBlobTo(dst []byte, chunk []byte, compress bool) ([]byte, error) 
 	return datastore.EncodeBlobTo(dst, chunk)
 }
 
+// chunkDigest computes the SHA-256 digest of a chunk, using the CryptConfig's
+// id_key for encrypted mode (SHA-256(data || id_key)) or plain SHA-256 otherwise.
+func chunkDigest(chunk []byte, cc *datastore.CryptConfig) [32]byte {
+	if cc != nil {
+		return cc.ChunkDigest(chunk)
+	}
+	return sha256.Sum256(chunk)
+}
+
 // addFileInfo appends a file entry to the manifest file list.
-func addFileInfo(files *[]datastore.FileInfo, name string, size uint64, digest [32]byte) {
+func addFileInfo(files *[]datastore.FileInfo, name string, size uint64, digest [32]byte, cryptMode string) {
 	var hexBuf [64]byte
 	hex.Encode(hexBuf[:], digest[:])
 	*files = append(*files, datastore.FileInfo{
-		Filename: name,
-		Size:     size,
-		CSum:     string(hexBuf[:]),
+		Filename:  name,
+		Size:      size,
+		CSum:      string(hexBuf[:]),
+		CryptMode: cryptMode,
 	})
 }
 
@@ -172,9 +195,9 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 			return nil, fmt.Errorf("chunk: %w", err)
 		}
 
-		digest := sha256.Sum256(chunk)
+		digest := chunkDigest(chunk, s.config.CryptConfig)
 
-		storeData, err := encodeChunkBlob(chunk, s.compress)
+		storeData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -205,7 +228,7 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 		Digest:   indexDigest,
 	}
 
-	addFileInfo(&s.files, name, totalOffset, indexDigest)
+	addFileInfo(&s.files, name, totalOffset, indexDigest, string(s.config.CryptMode))
 
 	return result, nil
 }
@@ -240,7 +263,7 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 	}
 
 	digest := sha256.Sum256(blobData)
-	addFileInfo(&s.files, name, uint64(len(blobData)), digest)
+	addFileInfo(&s.files, name, uint64(len(blobData)), digest, string(s.config.CryptMode))
 
 	return nil
 }
@@ -251,6 +274,13 @@ func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 		BackupID:   s.config.BackupID,
 		BackupTime: s.config.BackupTime,
 		Files:      s.files,
+		CryptMode:  string(s.config.CryptMode),
+	}
+
+	if s.config.CryptConfig != nil && s.config.CryptMode != datastore.CryptModeNone {
+		if err := datastore.SignManifest(manifest, s.config.CryptConfig); err != nil {
+			return nil, fmt.Errorf("sign manifest: %w", err)
+		}
 	}
 
 	data, err := manifest.Marshal()

@@ -94,23 +94,25 @@ func walkCatalogDir(acc *accessor.Accessor, dirPath string, dirOffset int64, cat
 
 // EntryMatches checks if a current directory entry matches a catalog entry
 // for metadata change detection. Returns true if the file metadata hasn't changed.
-func EntryMatches(current DirEntry, prev *CatalogEntry) bool {
+// Compares stat fields, file type, size, xattrs, ACLs, FCaps, and QuotaProjectID.
+func EntryMatches(current DirEntry, catalogMetadata pxar.Metadata, prev *CatalogEntry) bool {
 	if prev == nil {
 		return false
 	}
 
-	// File type must match
 	if current.Stat.FileType() != prev.Stat.FileType() {
 		return false
 	}
 
-	// For regular files, size must match
 	if current.Stat.IsRegularFile() && current.Size != prev.FileSize {
 		return false
 	}
 
-	// Stat fields must match (mode, flags, uid, gid, mtime)
 	if !current.Stat.MetadataEqual(prev.Stat) {
+		return false
+	}
+
+	if !catalogMetadata.MetadataEqual(prev.Metadata) {
 		return false
 	}
 

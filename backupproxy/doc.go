@@ -39,6 +39,7 @@
 package backupproxy
 
 import (
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
 	"github.com/pbs-plus/pxar/format"
@@ -49,6 +50,13 @@ type DirEntry struct {
 	Name string
 	Stat format.Stat
 	Size uint64 // file size in bytes (0 for non-regular files)
+
+	// Extended metadata for accurate change detection and full archive fidelity.
+	// Populated from FileSystemAccessor when available.
+	XAttrs         []format.XAttr
+	ACL            pxar.ACL
+	FCaps          []byte
+	QuotaProjectID *uint64
 }
 
 // DetectionMode controls how file changes are detected between backup runs.
@@ -103,7 +111,22 @@ type BackupConfig struct {
 
 	// PreviousBackup identifies the snapshot to compare against when
 	// DetectionMode is DetectionMetadata. Required for metadata mode.
+	// Also used for GC protection: when set, PBS will protect the
+	// referenced snapshot from garbage collection during the backup.
 	PreviousBackup *PreviousBackupRef
+
+	// CryptMode controls encryption of backup data.
+	// CryptModeNone (default) stores data in cleartext.
+	// CryptModeEncrypt encrypts all data with AEAD.
+	// CryptModeSign signs the manifest without encrypting data.
+	CryptMode datastore.CryptMode
+
+	// CryptConfig provides the encryption keys for CryptModeEncrypt or CryptModeSign.
+	// Must be set when CryptMode is not CryptModeNone.
+	CryptConfig *datastore.CryptConfig
+
+	// VerifyChunks enables chunk verification after upload (downloads and checks digest).
+	VerifyChunks bool
 }
 
 // PreviousBackupRef identifies a previous backup snapshot for metadata comparison.

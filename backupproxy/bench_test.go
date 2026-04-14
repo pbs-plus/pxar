@@ -21,7 +21,7 @@ func BenchmarkEncodeChunkBlob(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := encodeChunkBlob(chunk, false)
+		_, err := encodeChunkBlob(chunk, false, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -38,7 +38,7 @@ func BenchmarkEncodeChunkBlobCompressed(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := encodeChunkBlob(chunk, true)
+		_, err := encodeChunkBlob(chunk, true, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func BenchmarkAddFileInfo(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		var files []datastore.FileInfo
-		addFileInfo(&files, "root.pxar.didx", 65536, digest)
+		addFileInfo(&files, "root.pxar.didx", 65536, digest, string(datastore.CryptModeNone))
 	}
 }
 

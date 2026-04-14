@@ -8,6 +8,7 @@ import (
 	"os"
 	"testing"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/accessor"
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
@@ -16,10 +17,13 @@ import (
 
 // mockClient implements ClientProvider using function fields.
 type mockClient struct {
-	statFn     func(ctx context.Context, path string) (format.Stat, error)
-	readDirFn  func(ctx context.Context, path string) ([]DirEntry, error)
-	readFileFn func(ctx context.Context, path string, offset, length int64) ([]byte, error)
-	readLinkFn func(ctx context.Context, path string) (string, error)
+	statFn      func(ctx context.Context, path string) (format.Stat, error)
+	readDirFn   func(ctx context.Context, path string) ([]DirEntry, error)
+	readFileFn  func(ctx context.Context, path string, offset, length int64) ([]byte, error)
+	readLinkFn  func(ctx context.Context, path string) (string, error)
+	getXAttrsFn func(ctx context.Context, path string) ([]format.XAttr, error)
+	getACLFn    func(ctx context.Context, path string) (pxar.ACL, error)
+	getFCapsFn  func(ctx context.Context, path string) ([]byte, error)
 }
 
 func (m *mockClient) Stat(ctx context.Context, path string) (format.Stat, error) {
@@ -36,6 +40,27 @@ func (m *mockClient) ReadFile(ctx context.Context, path string, offset, length i
 
 func (m *mockClient) ReadLink(ctx context.Context, path string) (string, error) {
 	return m.readLinkFn(ctx, path)
+}
+
+func (m *mockClient) GetXAttrs(ctx context.Context, path string) ([]format.XAttr, error) {
+	if m.getXAttrsFn != nil {
+		return m.getXAttrsFn(ctx, path)
+	}
+	return nil, nil
+}
+
+func (m *mockClient) GetACL(ctx context.Context, path string) (pxar.ACL, error) {
+	if m.getACLFn != nil {
+		return m.getACLFn(ctx, path)
+	}
+	return pxar.ACL{}, nil
+}
+
+func (m *mockClient) GetFCaps(ctx context.Context, path string) ([]byte, error) {
+	if m.getFCapsFn != nil {
+		return m.getFCapsFn(ctx, path)
+	}
+	return nil, nil
 }
 
 // memFS is an in-memory filesystem for testing.
@@ -444,45 +469,65 @@ func TestEntryMatches(t *testing.T) {
 	prevEntry := &CatalogEntry{
 		Path:          "/root/file.txt",
 		Stat:          format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}},
+		Metadata:      pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
 		FileSize:      100,
 		IsRegularFile: true,
 	}
 
 	tests := []struct {
-		name    string
-		current DirEntry
-		want    bool
+		name        string
+		current     DirEntry
+		currentMeta pxar.Metadata
+		prev        *CatalogEntry
+		want        bool
 	}{
 		{
 			"matching_file",
 			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 100},
+			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
+			prevEntry,
 			true,
 		},
 		{
 			"diff_size",
 			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 200},
+			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
+			prevEntry,
 			false,
 		},
 		{
 			"diff_mtime",
 			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1800000000}}, Size: 100},
+			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1800000000}}},
+			prevEntry,
 			false,
 		},
 		{
 			"diff_type",
 			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFDIR | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 0},
+			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
+			prevEntry,
 			false,
 		},
 		{
 			"nil_prev",
 			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644}, Size: 100},
+			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
+			nil,
+			false,
+		},
+		{
+			"diff_xattr",
+			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 100, XAttrs: []format.XAttr{format.NewXAttr([]byte("user.test"), []byte("changed"))}},
+			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, XAttrs: []format.XAttr{format.NewXAttr([]byte("user.test"), []byte("changed"))}},
+			prevEntry,
 			false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := EntryMatches(tt.current, prevEntry); got != tt.want {
+			if got := EntryMatches(tt.current, tt.currentMeta, tt.prev); got != tt.want {
 				t.Errorf("EntryMatches() = %v, want %v", got, tt.want)
 			}
 		})

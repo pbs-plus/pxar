@@ -105,31 +105,52 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 	framer := http2.NewFramer(conn, br)
 	framer.SetMaxReadFrameSize(1 << 24) // 16MB
 
+	const (
+		targetWindow   = 1 << 30 // 1 GiB
+		targetMaxFrame = 1 << 22 // 4 MiB
+	)
+
 	// Send client SETTINGS
-	if err := framer.WriteSettings(); err != nil {
+	if err := framer.WriteSettings(
+		http2.Setting{ID: http2.SettingInitialWindowSize, Val: targetWindow},
+		http2.Setting{ID: http2.SettingMaxFrameSize, Val: targetMaxFrame},
+	); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("write SETTINGS: %w", err)
 	}
 
-	// Read server SETTINGS and extract max frame size
+	// Increase connection-level window (stream 0)
+	if err := framer.WriteWindowUpdate(0, uint32(targetWindow-65535)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("write connection WINDOW_UPDATE: %w", err)
+	}
+
+	// Read server SETTINGS and wait for our SETTINGS to be ACKed
 	maxFrame := uint32(1 << 14) // default 16384
 	gotSettings := false
-	for !gotSettings {
+	gotAck := false
+	for !gotSettings || !gotAck {
 		frame, err := framer.ReadFrame()
 		if err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("read server SETTINGS: %w", err)
+			return nil, fmt.Errorf("handshake: %w", err)
 		}
-		if sf, ok := frame.(*http2.SettingsFrame); ok && !sf.IsAck() {
-			if v, ok := sf.Value(http2.SettingMaxFrameSize); ok {
-				maxFrame = v
-			}
-			if err := framer.WriteSettingsAck(); err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("SETTINGS ACK: %w", err)
-			}
-			gotSettings = true
+		sf, ok := frame.(*http2.SettingsFrame)
+		if !ok {
+			continue
 		}
+		if sf.IsAck() {
+			gotAck = true
+			continue
+		}
+		if v, ok := sf.Value(http2.SettingMaxFrameSize); ok {
+			maxFrame = v
+		}
+		if err := framer.WriteSettingsAck(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("SETTINGS ACK: %w", err)
+		}
+		gotSettings = true
 	}
 
 	hdrBuf := new(bytes.Buffer)
@@ -228,10 +249,11 @@ func (c *pbsH2Conn) decodeStatus(buf *bytes.Buffer) int {
 // readResponse reads H2 frames until the response for streamID is complete.
 func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 	var (
-		status  int
-		dataBuf bytes.Buffer
-		gotEnd  bool
-		hdrBuf  bytes.Buffer
+		status      int
+		dataBuf     bytes.Buffer
+		gotEnd      bool
+		hdrBuf      bytes.Buffer
+		otherHdrBuf bytes.Buffer // To keep HPACK state for other streams
 	)
 
 	for !gotEnd {
@@ -243,6 +265,12 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 		switch f := frame.(type) {
 		case *http2.HeadersFrame:
 			if f.StreamID != streamID {
+				if f.Flags.Has(http2.FlagHeadersEndHeaders) {
+					c.dec.DecodeFull(f.HeaderBlockFragment())
+				} else {
+					otherHdrBuf.Reset()
+					otherHdrBuf.Write(f.HeaderBlockFragment())
+				}
 				continue
 			}
 			hdrBuf.Write(f.HeaderBlockFragment())
@@ -255,6 +283,11 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 
 		case *http2.ContinuationFrame:
 			if f.StreamID != streamID {
+				otherHdrBuf.Write(f.HeaderBlockFragment())
+				if f.Flags.Has(http2.FlagHeadersEndHeaders) {
+					c.dec.DecodeFull(otherHdrBuf.Bytes())
+					otherHdrBuf.Reset()
+				}
 				continue
 			}
 			hdrBuf.Write(f.HeaderBlockFragment())

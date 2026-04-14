@@ -183,7 +183,85 @@ func main() {
 }
 ```
 
-For chunked archives, use `ChunkedArchiveReader` or `SplitArchiveReader` (both lazy by default). For encrypted archives, wrap the chunk source with `DecryptingChunkSource`. For PBS remote, use `PBSArchiveReader`.
+#### Building a New PBS Snapshot from Multiple Existing Snapshots
+
+A common use case is creating a new backup snapshot that assembles files from several previous snapshots on the same datastore. This avoids re-uploading chunks that already exist:
+
+```go
+package main
+
+import (
+    "context"
+
+    pxar "github.com/pbs-plus/pxar"
+    "github.com/pbs-plus/pxar/backupproxy"
+    "github.com/pbs-plus/pxar/buzhash"
+    "github.com/pbs-plus/pxar/format"
+    "github.com/pbs-plus/pxar/transfer"
+)
+
+func main() {
+    ctx := context.Background()
+
+    pbsCfg := backupproxy.PBSConfig{
+        BaseURL:       "https://pbs:8007/api2/json",
+        Datastore:     "backup",
+        AuthToken:     "TOKENID:SECRET",
+        SkipTLSVerify: true,
+    }
+
+    // Open PBS remote store
+    pbsStore := backupproxy.NewPBSRemoteStore(pbsCfg, buzhash.DefaultConfig(), true)
+
+    // Start a new backup session
+    session, _ := pbsStore.StartSession(ctx, backupproxy.BackupConfig{
+        BackupType: backupproxy.BackupHost,
+        BackupID:   "myhost",
+    })
+
+    // Open multiple existing snapshots as sources
+    snap1, _ := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+        Config:      pbsCfg,
+        BackupType:  "host",
+        BackupID:    "myhost",
+        BackupTime:  1700000000,
+        ArchiveName: "root.pxar.didx",
+    })
+    defer snap1.Close()
+
+    snap2, _ := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+        Config:      pbsCfg,
+        BackupType:  "host",
+        BackupID:    "myhost",
+        BackupTime:  1700100000,
+        ArchiveName: "root.pxar.didx",
+    })
+    defer snap2.Close()
+
+    // Write a new v2 split archive into the session
+    dst := transfer.NewSplitSessionArchiveWriter(ctx, session, "root.mpxar.didx", "root.ppxar.didx")
+    rootMeta := pxar.DirMetadata(0o755).Build()
+    dst.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2})
+
+    // Copy /etc from snapshot 1 and /var from snapshot 2
+    transfer.Copy(snap1, dst, []transfer.PathMapping{
+        {Src: "/etc", Dst: "/etc"},
+    }, transfer.TransferOption{})
+    transfer.Copy(snap2, dst, []transfer.PathMapping{
+        {Src: "/var", Dst: "/var"},
+    }, transfer.TransferOption{})
+
+    dst.Finish()
+
+    // Finalize the backup session
+    manifest, _ := session.Finish(ctx)
+    _ = manifest
+}
+```
+
+For same-datastore transfers, use `DedupSplitArchiveWriter` with a local `ChunkStore` to avoid re-uploading payload chunks that already exist on disk.
+
+For chunked archives, use `ChunkedArchiveReader` or `SplitArchiveReader` (both lazy by default). For encrypted archives, wrap the chunk source with `DecryptingChunkSource`.
 
 #### Same-Datastore Dedup Transfer
 

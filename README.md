@@ -539,25 +539,31 @@ All PBS benchmarks run against a PBS Docker container on localhost (AMD Ryzen 5 
 | Metadata all changed | 564 μs | 2.6 MB | 267 |
 | Metadata mixed | 539 μs | 2.8 MB | 222 |
 
-### pxar library vs proxmox-backup-client (PBS, localhost)
+### pxar-cli vs proxmox-backup-client (PBS, same container, wall-clock)
+
+Fair comparison: both tools run inside the same Docker container against the
+same PBS instance, wall-clock timing (includes auth + startup), best of 3 runs.
 
 Test data: 50 files × 8KB (≈400KB total).
 
-| Tool | Mode | Best Time/op | Notes |
-|------|------|-------------|-------|
-| **pxar** | DetectionLegacy | **33 ms** | Single archive, full re-read |
-| **pxar** | DetectionData | **22 ms** | Split metadata/payload, full re-read |
-| **pxar** | DetectionMetadata | **44 ms** | Includes initial + incremental cycle |
-| proxmox-backup-client | legacy | 121 ms | Single archive, full re-read |
-| proxmox-backup-client | (no other modes) | — | Only supports legacy mode |
+| Tool | Mode | Wall (best) | Duration | Speedup |
+|------|------|-------------|----------|---------|
+| **pxar-cli** | legacy | **75 ms** | 29 ms | — |
+| **pxar-cli** | data | **73 ms** | 28 ms | — |
+| **pxar-cli** | metadata | **80 ms** | 28 ms | — |
+| proxmox-backup-client | legacy | 140 ms | 80 ms | 1.9× |
+| proxmox-backup-client | data | 126 ms | 70 ms | 1.7× |
+| proxmox-backup-client | metadata | 128 ms | 70 ms | 1.6× |
 
-For larger files (10MB, 10 files):
+Small dataset (10 files × 8KB ≈ 80KB):
 
-| Tool | Best Time/op |
-|------|-------------|
-| **pxar** (raw 1MB upload) | 75 ms |
-| **pxar** (raw split 1MB+1MB) | 130 ms |
-| proxmox-backup-client (10MB) | 154 ms |
+| Tool | Mode | Wall (best) | Duration |
+|------|------|-------------|----------|
+| **pxar-cli** | legacy | **61 ms** | 17 ms |
+| proxmox-backup-client | legacy | 122 ms | 60 ms |
+
+Both tools support all three detection modes (`legacy`, `data`, `metadata`).
+Wall = total time from process start to finish. Duration = self-reported backup time.
 
 ### Raw Throughput (LocalStore, no network)
 
@@ -622,7 +628,14 @@ print(f\"{d['tokenid']}:{d['value']}\")
 docker exec pbs-bench proxmox-backup-manager acl update / Admin --auth-id root@pam!bench
 ```
 
-3. Run pxar PBS Go benchmarks:
+3. Build and deploy the pxar-cli binary:
+
+```bash
+CGO_ENABLED=0 go build -o /tmp/pxar-cli ./cmd/pxar-cli/
+docker cp /tmp/pxar-cli pbs-bench:/usr/local/bin/pxar-cli
+```
+
+4. Run pxar PBS Go benchmarks:
 
 ```bash
 PBS_URL=https://localhost:8007/api2/json \
@@ -631,32 +644,19 @@ PBS_TOKEN="$TOKEN" \
 go test -tags=integration -bench=BenchmarkPBS -benchmem -count=3 ./backupproxy/
 ```
 
-4. Run proxmox-backup-client comparison (from inside the container):
+5. Fair comparison (pxar-cli vs proxmox-backup-client, same container, same timing):
 
 ```bash
-# Get the server certificate fingerprint
-FINGERPRINT=$(docker exec pbs-bench bash -c \
-  'cat /etc/proxmox-backup/proxy.pem | openssl x509 -fingerprint -sha256 -noout' \
-  | grep -oP 'Fingerprint=\K.*')
-
-# Create test data and run
+# Create test data inside the container
 docker exec pbs-bench bash -c "
   mkdir -p /tmp/bench-data/small /tmp/bench-data/medium /tmp/bench-data/large
   for i in \$(seq 1 10); do dd if=/dev/urandom of=/tmp/bench-data/small/file\$i bs=8192 count=1 2>/dev/null; done
   for i in \$(seq 1 50); do dd if=/dev/urandom of=/tmp/bench-data/medium/file\$i bs=8192 count=1 2>/dev/null; done
   for i in \$(seq 1 10); do dd if=/dev/urandom of=/tmp/bench-data/large/file\$i bs=1048576 count=1 2>/dev/null; done
-
-  PBS_FINGERPRINT=\"\$FINGERPRINT\" PBS_PASSWORD=testpassword \
-  proxmox-backup-client backup small.pxar:/tmp/bench-data/small \
-    --repository root@pam@localhost:8007:bench-store --backup-id bench-pbc-small
 "
-```
 
-Or use the provided scripts:
-
-```bash
-./scripts/bench_pbs_client.sh pbs-bench     # proxmox-backup-client only
-./scripts/bench_pbs_compare.sh pbs-bench     # full comparison
+# Run fair comparison
+./scripts/bench_fair_compare.sh pbs-bench
 ```
 
 ## License

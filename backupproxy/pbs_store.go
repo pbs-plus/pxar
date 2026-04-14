@@ -22,6 +22,7 @@ type pbsBackupProtocol interface {
 	dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error
 	dynamicIndexClose(wid uint64, chunkCount int, size uint64, csum string) error
 	blobUpload(fileName string, encodedSize int, data []byte) error
+	verifyChunk(digest string) ([]byte, error)
 	finish() error
 	close()
 }
@@ -111,6 +112,16 @@ func (p *h2Protocol) close() {
 	p.conn.close()
 }
 
+func (p *h2Protocol) verifyChunk(digest string) ([]byte, error) {
+	params := url.Values{}
+	params.Set("digest", digest)
+	data, err := p.conn.do("GET", "chunk", params, nil, "")
+	if err != nil {
+		return nil, fmt.Errorf("verify chunk %s: %w", digest[:12]+"...", err)
+	}
+	return data, nil
+}
+
 // PBSConfig holds configuration for connecting to a Proxmox Backup Server.
 type PBSConfig struct {
 	BaseURL       string // PBS API base URL (e.g. "https://pbs:8007/api2/json")
@@ -188,9 +199,9 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 			return nil, fmt.Errorf("chunk: %w", err)
 		}
 
-		digest := sha256.Sum256(chunk)
+		digest := chunkDigest(chunk, s.config.CryptConfig)
 
-		blobData, err := encodeChunkBlob(chunk, s.compress)
+		blobData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -204,6 +215,28 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		hex.Encode(hexBuf[:], digest[:])
 		if err := s.proto.dynamicChunkUpload(wid, string(hexBuf[:]), len(chunk), len(blobData), blobData); err != nil {
 			return nil, err
+		}
+
+		if s.config.VerifyChunks {
+			stored, err := s.proto.verifyChunk(string(hexBuf[:]))
+			if err != nil {
+				return nil, fmt.Errorf("verify chunk %s: %w", string(hexBuf[:24]), err)
+			}
+			decoded, err := datastore.DecodeBlob(stored)
+			if err != nil {
+				if s.config.CryptConfig != nil {
+					decoded, err = datastore.DecodeEncryptedBlob(stored, s.config.CryptConfig)
+					if err != nil {
+						return nil, fmt.Errorf("verify decode chunk %s: %w", string(hexBuf[:24]), err)
+					}
+				} else {
+					return nil, fmt.Errorf("verify decode chunk %s: %w", string(hexBuf[:24]), err)
+				}
+			}
+			storedDigest := chunkDigest(decoded, s.config.CryptConfig)
+			if storedDigest != digest {
+				return nil, fmt.Errorf("chunk verification failed: digest mismatch for %s", string(hexBuf[:24]))
+			}
 		}
 
 		digests = append(digests, string(hexBuf[:]))
@@ -235,7 +268,7 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		Digest:   indexDigest,
 	}
 
-	addFileInfo(&s.files, name, totalSize, indexDigest)
+	addFileInfo(&s.files, name, totalSize, indexDigest, string(s.config.CryptMode))
 
 	return result, nil
 }
@@ -269,7 +302,7 @@ func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) err
 	}
 
 	digest := sha256.Sum256(blobData)
-	addFileInfo(&s.files, name, uint64(len(blobData)), digest)
+	addFileInfo(&s.files, name, uint64(len(blobData)), digest, string(s.config.CryptMode))
 
 	return nil
 }
@@ -330,18 +363,35 @@ func (s *pbsSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 		BackupID:   s.config.BackupID,
 		BackupTime: s.config.BackupTime,
 		Files:      s.files,
+		CryptMode:  string(s.config.CryptMode),
 	}
 
-	// Upload manifest blob before finishing
+	if s.config.CryptConfig != nil && s.config.CryptMode != datastore.CryptModeNone {
+		if err := datastore.SignManifest(manifest, s.config.CryptConfig); err != nil {
+			return nil, fmt.Errorf("sign manifest: %w", err)
+		}
+	}
+
 	manifestData, err := json.Marshal(manifest)
 	if err != nil {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
-	manifestBlob, err := datastore.EncodeBlob(manifestData)
-	if err != nil {
-		return nil, fmt.Errorf("encode manifest blob: %w", err)
+
+	var manifestBlobBytes []byte
+	if s.config.CryptConfig != nil && s.config.CryptMode == datastore.CryptModeEncrypt {
+		blob, err := datastore.EncodeEncryptedBlob(manifestData, s.config.CryptConfig, false)
+		if err != nil {
+			return nil, fmt.Errorf("encode encrypted manifest blob: %w", err)
+		}
+		manifestBlobBytes = blob.Bytes()
+	} else {
+		blob, err := datastore.EncodeBlob(manifestData)
+		if err != nil {
+			return nil, fmt.Errorf("encode manifest blob: %w", err)
+		}
+		manifestBlobBytes = blob.Bytes()
 	}
-	manifestBlobBytes := manifestBlob.Bytes()
+
 	if err := s.proto.blobUpload("index.json.blob", len(manifestBlobBytes), manifestBlobBytes); err != nil {
 		return nil, fmt.Errorf("upload manifest: %w", err)
 	}

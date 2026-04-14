@@ -96,6 +96,10 @@ func (m *mockPBSProtocol) close() {
 	m.closed = true
 }
 
+func (m *mockPBSProtocol) verifyChunk(digest string) ([]byte, error) {
+	return nil, nil
+}
+
 func newTestPBSSession(t *testing.T) (*pbsSession, *mockPBSProtocol) {
 	t.Helper()
 	cfg, err := buzhash.NewConfig(4096)

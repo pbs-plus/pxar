@@ -3,6 +3,7 @@ package backupproxy
 import (
 	"context"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/format"
 )
 
@@ -14,7 +15,30 @@ type FileSystemAccessor interface {
 	ReadDir(path string) ([]DirEntry, error)
 	ReadFile(path string, offset, length int64) ([]byte, error)
 	ReadLink(path string) (string, error)
+
+	// Extended metadata methods. Implementations that don't support these
+	// should return nil/empty values. The default implementations below
+	// return zero values, allowing partial implementations to embed
+	// NoExtendedAttrs for convenience.
+
+	// GetXAttrs returns the extended attributes for the given path.
+	GetXAttrs(path string) ([]format.XAttr, error)
+
+	// GetACL returns the POSIX ACL entries for the given path.
+	GetACL(path string) (pxar.ACL, error)
+
+	// GetFCaps returns the file capabilities for the given path.
+	GetFCaps(path string) ([]byte, error)
 }
+
+// NoExtendedAttrs provides no-op implementations of the extended metadata
+// methods. Embed this in FileSystemAccessor implementations that don't
+// support xattrs, ACLs, or file capabilities.
+type NoExtendedAttrs struct{}
+
+func (NoExtendedAttrs) GetXAttrs(string) ([]format.XAttr, error) { return nil, nil }
+func (NoExtendedAttrs) GetACL(string) (pxar.ACL, error)          { return pxar.ACL{}, nil }
+func (NoExtendedAttrs) GetFCaps(string) ([]byte, error)          { return nil, nil }
 
 // ClientProvider is the interface the server uses to access client data.
 // Transport implementations bridge this to the actual network.
@@ -24,6 +48,11 @@ type ClientProvider interface {
 	ReadDir(ctx context.Context, path string) ([]DirEntry, error)
 	ReadFile(ctx context.Context, path string, offset, length int64) ([]byte, error)
 	ReadLink(ctx context.Context, path string) (string, error)
+
+	// Extended metadata methods for full archive fidelity.
+	GetXAttrs(ctx context.Context, path string) ([]format.XAttr, error)
+	GetACL(ctx context.Context, path string) (pxar.ACL, error)
+	GetFCaps(ctx context.Context, path string) ([]byte, error)
 }
 
 // LocalClient implements ClientProvider by delegating to a FileSystemAccessor.
@@ -59,4 +88,19 @@ func (lc *LocalClient) ReadFile(_ context.Context, path string, offset, length i
 // underlying FileSystemAccessor.
 func (lc *LocalClient) ReadLink(_ context.Context, path string) (string, error) {
 	return lc.fs.ReadLink(path)
+}
+
+// GetXAttrs returns the extended attributes for the given path.
+func (lc *LocalClient) GetXAttrs(_ context.Context, path string) ([]format.XAttr, error) {
+	return lc.fs.GetXAttrs(path)
+}
+
+// GetACL returns the POSIX ACL entries for the given path.
+func (lc *LocalClient) GetACL(_ context.Context, path string) (pxar.ACL, error) {
+	return lc.fs.GetACL(path)
+}
+
+// GetFCaps returns the file capabilities for the given path.
+func (lc *LocalClient) GetFCaps(_ context.Context, path string) ([]byte, error) {
+	return lc.fs.GetFCaps(path)
 }

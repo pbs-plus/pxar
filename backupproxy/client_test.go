@@ -10,6 +10,7 @@ import (
 
 // mockFS is a test FileSystemAccessor using function fields.
 type mockFS struct {
+	NoExtendedAttrs
 	statFn     func(path string) (format.Stat, error)
 	readDirFn  func(path string) ([]DirEntry, error)
 	readFileFn func(path string, offset, length int64) ([]byte, error)

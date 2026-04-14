@@ -13,6 +13,61 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
+type catalogBuilder struct {
+	w        *datastore.CatalogWriter
+	dirStack []string
+}
+
+func newCatalogBuilder(buf *bytes.Buffer) *catalogBuilder {
+	cb := &catalogBuilder{
+		w: datastore.NewCatalogWriter(buf),
+	}
+	cb.w.StartDirectory("")
+	return cb
+}
+
+func (cb *catalogBuilder) finish() error {
+	return cb.w.Finish()
+}
+
+func (cb *catalogBuilder) startDir(name string) {
+	cb.dirStack = append(cb.dirStack, name)
+	cb.w.StartDirectory(name)
+}
+
+func (cb *catalogBuilder) endDir() {
+	cb.dirStack = cb.dirStack[:len(cb.dirStack)-1]
+	cb.w.EndDirectory()
+}
+
+func (cb *catalogBuilder) addFile(name string, size uint64, mtime int64) {
+	cb.w.AddFile(name, size, mtime)
+}
+
+func (cb *catalogBuilder) addSymlink(name string) {
+	cb.w.AddSymlink(name)
+}
+
+func (cb *catalogBuilder) addHardlink(name string) {
+	cb.w.AddHardlink(name)
+}
+
+func (cb *catalogBuilder) addBlockDevice(name string) {
+	cb.w.AddBlockDevice(name)
+}
+
+func (cb *catalogBuilder) addCharDevice(name string) {
+	cb.w.AddCharDevice(name)
+}
+
+func (cb *catalogBuilder) addFifo(name string) {
+	cb.w.AddFifo(name)
+}
+
+func (cb *catalogBuilder) addSocket(name string) {
+	cb.w.AddSocket(name)
+}
+
 // Server orchestrates pull backups: walks the client filesystem, encodes a pxar
 // archive, chunks it with buzhash, and uploads to a RemoteStore.
 type Server struct {
@@ -27,11 +82,12 @@ func NewServer(client ClientProvider, store RemoteStore) *Server {
 
 // BackupResult describes the outcome of a backup operation.
 type BackupResult struct {
-	Manifest   *datastore.Manifest
-	TotalBytes int64
-	FileCount  int
-	DirCount   int
-	Duration   time.Duration
+	Manifest        *datastore.Manifest
+	TotalBytes      int64
+	FileCount       int
+	DirCount        int
+	Duration        time.Duration
+	CatalogUploaded bool
 }
 
 type uploadResult struct {
@@ -81,7 +137,9 @@ func (s *Server) RunBackup(ctx context.Context, root string, config BackupConfig
 	enc := encoder.NewEncoder(pipeWriter, nil, rootMeta, nil)
 
 	result := &BackupResult{}
-	if err := s.walkDir(ctx, root, enc, nil, result); err != nil {
+	var catBuf bytes.Buffer
+	catBuilder := newCatalogBuilder(&catBuf)
+	if err := s.walkDir(ctx, root, enc, nil, catBuilder, result); err != nil {
 		pipeWriter.CloseWithError(err)
 		<-uploadErrCh
 		return nil, err
@@ -99,6 +157,16 @@ func (s *Server) RunBackup(ctx context.Context, root string, config BackupConfig
 		return nil, fmt.Errorf("upload archive: %w", upload.err)
 	}
 	result.TotalBytes = int64(upload.result.Size)
+
+	if err := catBuilder.finish(); err != nil {
+		return nil, fmt.Errorf("finish catalog: %w", err)
+	}
+	if catBuf.Len() > 0 {
+		if _, err := sess.UploadArchive(ctx, "catalog.pcat1.didx", bytes.NewReader(catBuf.Bytes())); err != nil {
+			return nil, fmt.Errorf("upload catalog: %w", err)
+		}
+		result.CatalogUploaded = true
+	}
 
 	manifest, err := sess.Finish(ctx)
 	if err != nil {
@@ -133,7 +201,9 @@ func (s *Server) RunSplitBackup(ctx context.Context, root string, config BackupC
 	enc := encoder.NewEncoder(&metaBuf, &payloadBuf, rootMeta, nil)
 
 	result := &BackupResult{}
-	if err := s.walkDir(ctx, root, enc, nil, result); err != nil {
+	var catBuf bytes.Buffer
+	catBuilder := newCatalogBuilder(&catBuf)
+	if err := s.walkDir(ctx, root, enc, nil, catBuilder, result); err != nil {
 		return nil, err
 	}
 
@@ -150,6 +220,16 @@ func (s *Server) RunSplitBackup(ctx context.Context, root string, config BackupC
 	}
 
 	result.TotalBytes = int64(splitResult.MetadataResult.Size + splitResult.PayloadResult.Size)
+
+	if err := catBuilder.finish(); err != nil {
+		return nil, fmt.Errorf("finish catalog: %w", err)
+	}
+	if catBuf.Len() > 0 {
+		if _, err := sess.UploadArchive(ctx, "catalog.pcat1.didx", bytes.NewReader(catBuf.Bytes())); err != nil {
+			return nil, fmt.Errorf("upload catalog: %w", err)
+		}
+		result.CatalogUploaded = true
+	}
 
 	manifest, err := sess.Finish(ctx)
 	if err != nil {
@@ -237,7 +317,9 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 		restorer:   restorer,
 		ctx:        ctx,
 	}
-	if err := s.walkDir(ctx, root, enc, mw, result); err != nil {
+	var catBuf bytes.Buffer
+	catBuilder := newCatalogBuilder(&catBuf)
+	if err := s.walkDir(ctx, root, enc, mw, catBuilder, result); err != nil {
 		return nil, err
 	}
 
@@ -254,6 +336,16 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 	}
 
 	result.TotalBytes = int64(splitResult.MetadataResult.Size + splitResult.PayloadResult.Size)
+
+	if err := catBuilder.finish(); err != nil {
+		return nil, fmt.Errorf("finish catalog: %w", err)
+	}
+	if catBuf.Len() > 0 {
+		if _, err := sess.UploadArchive(ctx, "catalog.pcat1.didx", bytes.NewReader(catBuf.Bytes())); err != nil {
+			return nil, fmt.Errorf("upload catalog: %w", err)
+		}
+		result.CatalogUploaded = true
+	}
 
 	manifest, err := sess.Finish(ctx)
 	if err != nil {
@@ -277,15 +369,15 @@ type metadataWalker struct {
 
 // shouldReusePayload checks if a file's metadata matches the catalog entry.
 // If so, it writes the previous payload data into the encoder and returns true.
-func (mw *metadataWalker) maybeReusePayload(enc *encoder.Encoder, name, fullPath string, current DirEntry) (bool, error) {
+func (mw *metadataWalker) maybeReusePayload(enc *encoder.Encoder, name, fullPath string, current DirEntry, currentMeta pxar.Metadata) (bool, error) {
 	// Look up path in the catalog
 	prev, ok := mw.catalog[fullPath]
 	if !ok {
 		return false, nil
 	}
 
-	// Check if metadata matches
-	if !EntryMatches(current, prev) {
+	// Check if metadata matches (stat + xattrs + ACLs + FCaps)
+	if !EntryMatches(current, currentMeta, prev) {
 		return false, nil
 	}
 
@@ -309,7 +401,7 @@ func (mw *metadataWalker) maybeReusePayload(enc *encoder.Encoder, name, fullPath
 	return true, err
 }
 
-func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encoder, mw *metadataWalker, result *BackupResult) error {
+func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encoder, mw *metadataWalker, catBuilder *catalogBuilder, result *BackupResult) error {
 	entries, err := s.client.ReadDir(ctx, dirPath)
 	if err != nil {
 		return fmt.Errorf("readdir %q: %w", dirPath, err)
@@ -325,24 +417,45 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 		meta := &pxar.Metadata{Stat: entry.Stat}
 		fullPath := dirPath + "/" + entry.Name
 
+		// Collect extended metadata (xattrs, ACLs, FCaps)
+		if xattrs, err := s.client.GetXAttrs(ctx, fullPath); err == nil {
+			meta.XAttrs = xattrs
+		}
+		if acl, err := s.client.GetACL(ctx, fullPath); err == nil {
+			meta.ACL = acl
+		}
+		if fcaps, err := s.client.GetFCaps(ctx, fullPath); err == nil {
+			if len(fcaps) > 0 {
+				meta.FCaps = fcaps
+			}
+		}
+
+		// Propagate extended metadata to DirEntry for change detection
+		entry.XAttrs = meta.XAttrs
+		entry.ACL = meta.ACL
+		entry.FCaps = meta.FCaps
+		entry.QuotaProjectID = meta.QuotaProjectID
+
 		switch {
 		case entry.Stat.IsDir():
 			result.DirCount++
+			catBuilder.startDir(entry.Name)
 			if err := enc.CreateDirectory(entry.Name, meta); err != nil {
 				return fmt.Errorf("create dir %q: %w", entry.Name, err)
 			}
-			if err := s.walkDir(ctx, fullPath, enc, mw, result); err != nil {
+			if err := s.walkDir(ctx, fullPath, enc, mw, catBuilder, result); err != nil {
 				return err
 			}
 			if err := enc.Finish(); err != nil {
 				return fmt.Errorf("finish dir %q: %w", entry.Name, err)
 			}
+			catBuilder.endDir()
 
 		case entry.Stat.IsRegularFile():
 			result.FileCount++
+			catBuilder.addFile(entry.Name, entry.Size, entry.Stat.Mtime.Secs)
 			if mw != nil {
-				// In metadata mode: try to reuse payload from previous backup
-				if reused, err := mw.maybeReusePayload(enc, entry.Name, fullPath, entry); reused || err != nil {
+				if reused, err := mw.maybeReusePayload(enc, entry.Name, fullPath, entry, *meta); reused || err != nil {
 					if err != nil {
 						return fmt.Errorf("reuse payload for %q: %w", entry.Name, err)
 					}
@@ -358,21 +471,29 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 			if err != nil {
 				return fmt.Errorf("readlink %q: %w", fullPath, err)
 			}
+			catBuilder.addSymlink(entry.Name)
 			if err := enc.AddSymlink(meta, entry.Name, target); err != nil {
 				return fmt.Errorf("symlink %q: %w", entry.Name, err)
 			}
 
 		case entry.Stat.IsDevice():
+			if entry.Stat.IsCharDev() {
+				catBuilder.addCharDevice(entry.Name)
+			} else {
+				catBuilder.addBlockDevice(entry.Name)
+			}
 			if err := enc.AddDevice(meta, entry.Name, format.Device{}); err != nil {
 				return fmt.Errorf("device %q: %w", entry.Name, err)
 			}
 
 		case entry.Stat.IsFIFO():
+			catBuilder.addFifo(entry.Name)
 			if err := enc.AddFIFO(meta, entry.Name); err != nil {
 				return fmt.Errorf("fifo %q: %w", entry.Name, err)
 			}
 
 		case entry.Stat.IsSocket():
+			catBuilder.addSocket(entry.Name)
 			if err := enc.AddSocket(meta, entry.Name); err != nil {
 				return fmt.Errorf("socket %q: %w", entry.Name, err)
 			}

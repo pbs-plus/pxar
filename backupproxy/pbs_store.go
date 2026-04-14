@@ -18,6 +18,7 @@ import (
 // pbsBackupProtocol abstracts PBS backup protocol operations for testability.
 type pbsBackupProtocol interface {
 	dynamicIndexCreate(archiveName string) (uint64, error)
+	dynamicChunkExists(wid uint64, digest string) (bool, error)
 	dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error
 	dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error
 	dynamicIndexClose(wid uint64, chunkCount int, size uint64, csum string) error
@@ -43,6 +44,22 @@ func (p *h2Protocol) dynamicIndexCreate(archiveName string) (uint64, error) {
 		return 0, fmt.Errorf("parse wid: %w (body: %s)", err, data)
 	}
 	return wid, nil
+}
+
+func (p *h2Protocol) dynamicChunkExists(wid uint64, digest string) (bool, error) {
+	params := url.Values{}
+	params.Set("wid", strconv.FormatUint(wid, 10))
+	params.Set("digest", digest)
+	// This optimization tells the server to only check for chunk existence
+	// when no body is provided.
+	params.Set("speed-up-chunk-upload", "1")
+
+	_, err := p.conn.do("POST", "dynamic_chunk", params, nil, "")
+	if err != nil {
+		// PBS returns 404 (via HTTP status or error body) if the chunk is missing
+		return false, nil
+	}
+	return true, nil
 }
 
 func (p *h2Protocol) dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error {
@@ -190,11 +207,6 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 
 		digest := chunkDigest(chunk, s.config.CryptConfig)
 
-		blobData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
-		if err != nil {
-			return nil, err
-		}
-
 		chunkOffset := totalSize
 		totalSize += uint64(len(chunk))
 		chunkCount++
@@ -202,11 +214,26 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		idx.Add(totalSize, digest)
 
 		hex.Encode(hexBuf[:], digest[:])
-		if err := s.proto.dynamicChunkUpload(wid, string(hexBuf[:]), len(chunk), len(blobData), blobData); err != nil {
-			return nil, err
+		hexDigest := string(hexBuf[:])
+
+		exists, err := s.proto.dynamicChunkExists(wid, hexDigest)
+		if err != nil {
+			// If check fails, we proceed with upload just in case.
+			exists = false
 		}
 
-		digests = append(digests, string(hexBuf[:]))
+		if !exists {
+			blobData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
+			if err != nil {
+				return nil, err
+			}
+
+			if err := s.proto.dynamicChunkUpload(wid, hexDigest, len(chunk), len(blobData), blobData); err != nil {
+				return nil, err
+			}
+		}
+
+		digests = append(digests, hexDigest)
 		offsets = append(offsets, chunkOffset)
 	}
 

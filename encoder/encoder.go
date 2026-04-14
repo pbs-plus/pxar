@@ -7,9 +7,9 @@ import (
 	"io"
 	"sort"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/binarytree"
 	"github.com/pbs-plus/pxar/format"
-	pxar "github.com/pbs-plus/pxar"
 )
 
 // LinkOffset represents a file offset usable with AddHardlink.
@@ -26,6 +26,7 @@ type Encoder struct {
 	finished   bool
 	version    format.FormatVersion
 	copyBuf    []byte
+	err        error
 }
 
 type encoderState struct {
@@ -52,7 +53,10 @@ func NewEncoder(output, payloadOut io.Writer, metadata *pxar.Metadata, prelude [
 		enc.version = format.FormatVersion2
 		// Write payload start marker
 		h := format.HeaderWithContentSize(format.PXARPayloadStartMarker, 0)
-		binary.Write(payloadOut, binary.LittleEndian, &h)
+		if err := binary.Write(payloadOut, binary.LittleEndian, &h); err != nil {
+			enc.err = err
+			return enc
+		}
 		enc.pushState(0, -1)
 		enc.state[0].payloadWritePos = format.HeaderSize
 		enc.encodeFormatVersion()
@@ -64,7 +68,9 @@ func NewEncoder(output, payloadOut io.Writer, metadata *pxar.Metadata, prelude [
 		enc.pushState(0, -1)
 	}
 
-	enc.encodeMetadata(metadata)
+	if enc.err == nil {
+		enc.err = enc.encodeMetadata(metadata)
+	}
 	return enc
 }
 
@@ -110,89 +116,141 @@ func (e *Encoder) encodeFormatVersion() {
 		return
 	}
 	data := e.version.Serialize()
-	e.writeHeader(format.PXARFormatVersion, uint64(len(data)))
-	e.writeAll(data)
+	if e.err = e.writeHeader(format.PXARFormatVersion, uint64(len(data))); e.err != nil {
+		return
+	}
+	e.err = e.writeAll(data)
 }
 
 func (e *Encoder) encodePrelude(prelude []byte) {
-	e.writeHeader(format.PXARPrelude, uint64(len(prelude)))
-	e.writeAll(prelude)
+	if e.err = e.writeHeader(format.PXARPrelude, uint64(len(prelude))); e.err != nil {
+		return
+	}
+	e.err = e.writeAll(prelude)
 }
 
 func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
-	// Write ENTRY header + Stat
-	statBytes := marshalStat(metadata.Stat)
-	e.writeHeader(format.PXAREntry, uint64(len(statBytes)))
-	e.writeAll(statBytes)
-
-	// Write XAttrs
-	for _, xattr := range metadata.XAttrs {
-		e.writeHeader(format.PXARXAttr, uint64(len(xattr.Data)))
-		e.writeAll(xattr.Data)
+	if e.err != nil {
+		return e.err
 	}
 
-	// Write ACLs
+	statBytes := marshalStat(metadata.Stat)
+	if e.err = e.writeHeader(format.PXAREntry, uint64(len(statBytes))); e.err != nil {
+		return e.err
+	}
+	if e.err = e.writeAll(statBytes); e.err != nil {
+		return e.err
+	}
+
+	for _, xattr := range metadata.XAttrs {
+		if e.err = e.writeHeader(format.PXARXAttr, uint64(len(xattr.Data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(xattr.Data); e.err != nil {
+			return e.err
+		}
+	}
+
 	for _, acl := range metadata.ACL.Users {
 		data := marshalACLUser(acl)
-		e.writeHeader(format.PXARACLUser, uint64(len(data)))
-		e.writeAll(data)
+		if e.err = e.writeHeader(format.PXARACLUser, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
 	}
 	for _, acl := range metadata.ACL.Groups {
 		data := marshalACLGroup(acl)
-		e.writeHeader(format.PXARACLGroup, uint64(len(data)))
-		e.writeAll(data)
+		if e.err = e.writeHeader(format.PXARACLGroup, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
 	}
 	if metadata.ACL.GroupObj != nil {
 		data := marshalACLGroupObject(*metadata.ACL.GroupObj)
-		e.writeHeader(format.PXARACLGroupObj, uint64(len(data)))
-		e.writeAll(data)
+		if e.err = e.writeHeader(format.PXARACLGroupObj, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
 	}
 	if metadata.ACL.Default != nil {
 		data := marshalACLDefault(*metadata.ACL.Default)
-		e.writeHeader(format.PXARACLDefault, uint64(len(data)))
-		e.writeAll(data)
+		if e.err = e.writeHeader(format.PXARACLDefault, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
 	}
 	for _, acl := range metadata.ACL.DefaultUsers {
 		data := marshalACLUser(acl)
-		e.writeHeader(format.PXARACLDefaultUser, uint64(len(data)))
-		e.writeAll(data)
+		if e.err = e.writeHeader(format.PXARACLDefaultUser, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
 	}
 	for _, acl := range metadata.ACL.DefaultGroups {
 		data := marshalACLGroup(acl)
-		e.writeHeader(format.PXARACLDefaultGroup, uint64(len(data)))
-		e.writeAll(data)
+		if e.err = e.writeHeader(format.PXARACLDefaultGroup, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
 	}
 
-	// Write FCaps
 	if len(metadata.FCaps) > 0 {
-		e.writeHeader(format.PXARFCaps, uint64(len(metadata.FCaps)))
-		e.writeAll(metadata.FCaps)
+		if e.err = e.writeHeader(format.PXARFCaps, uint64(len(metadata.FCaps))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(metadata.FCaps); e.err != nil {
+			return e.err
+		}
 	}
 
-	// Write QuotaProjectID
 	if metadata.QuotaProjectID != nil {
 		data := marshalQuotaProjectID(*metadata.QuotaProjectID)
-		e.writeHeader(format.PXARQuotaProjID, uint64(len(data)))
-		e.writeAll(data)
+		if e.err = e.writeHeader(format.PXARQuotaProjID, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
 	}
 
 	return nil
 }
 
 func (e *Encoder) encodeFilename(name []byte) error {
+	if e.err != nil {
+		return e.err
+	}
 	if err := format.CheckFilename(name); err != nil {
 		return err
 	}
-	// filename + null terminator
 	contentSize := uint64(len(name) + 1)
-	e.writeHeader(format.PXARFilename, contentSize)
-	e.writeAll(name)
-	e.writeAll([]byte{0})
-	return nil
+	if e.err = e.writeHeader(format.PXARFilename, contentSize); e.err != nil {
+		return e.err
+	}
+	if e.err = e.writeAll(name); e.err != nil {
+		return e.err
+	}
+	e.err = e.writeAll([]byte{0})
+	return e.err
 }
 
 // AddFile adds a complete file to the archive.
 func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) (LinkOffset, error) {
+	if e.err != nil {
+		return 0, e.err
+	}
 	fileOffset := e.currentState().writePosition
 
 	if err := e.encodeFilename([]byte(name)); err != nil {
@@ -207,18 +265,30 @@ func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) 
 		payloadOffset := e.currentState().payloadWritePos
 		payloadRef := format.PayloadRef{Offset: payloadOffset, Size: uint64(len(content))}
 		prData := payloadRef.Bytes()
-		e.writeHeader(format.PXARPayloadRef, uint64(len(prData)))
-		e.writeAll(prData)
+		if e.err = e.writeHeader(format.PXARPayloadRef, uint64(len(prData))); e.err != nil {
+			return 0, e.err
+		}
+		if e.err = e.writeAll(prData); e.err != nil {
+			return 0, e.err
+		}
 
-		// Write payload header + data to payload stream
 		h := format.HeaderWithContentSize(format.PXARPayload, uint64(len(content)))
-		binary.Write(e.payloadOut, binary.LittleEndian, &h)
-		e.payloadOut.Write(content)
+		if err := binary.Write(e.payloadOut, binary.LittleEndian, &h); err != nil {
+			e.err = err
+			return 0, err
+		}
+		if _, err := e.payloadOut.Write(content); err != nil {
+			e.err = err
+			return 0, err
+		}
 		e.currentState().payloadWritePos += format.HeaderSize + uint64(len(content))
 	} else {
-		// Unified: write payload inline
-		e.writeHeader(format.PXARPayload, uint64(len(content)))
-		e.writeAll(content)
+		if e.err = e.writeHeader(format.PXARPayload, uint64(len(content))); e.err != nil {
+			return 0, e.err
+		}
+		if e.err = e.writeAll(content); e.err != nil {
+			return 0, e.err
+		}
 	}
 
 	endOffset := e.currentState().writePosition
@@ -235,6 +305,9 @@ func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) 
 
 // CreateFile returns a FileWriter for streaming file content.
 func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) (*FileWriter, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
 	fileOffset := e.currentState().writePosition
 
 	if err := e.encodeFilename([]byte(name)); err != nil {
@@ -248,14 +321,23 @@ func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) 
 		payloadOffset := e.currentState().payloadWritePos
 		payloadRef := format.PayloadRef{Offset: payloadOffset, Size: size}
 		prData := payloadRef.Bytes()
-		e.writeHeader(format.PXARPayloadRef, uint64(len(prData)))
-		e.writeAll(prData)
+		if e.err = e.writeHeader(format.PXARPayloadRef, uint64(len(prData))); e.err != nil {
+			return nil, e.err
+		}
+		if e.err = e.writeAll(prData); e.err != nil {
+			return nil, e.err
+		}
 
 		h := format.HeaderWithContentSize(format.PXARPayload, size)
-		binary.Write(e.payloadOut, binary.LittleEndian, &h)
+		if err := binary.Write(e.payloadOut, binary.LittleEndian, &h); err != nil {
+			e.err = err
+			return nil, err
+		}
 		e.currentState().payloadWritePos += format.HeaderSize
 	} else {
-		e.writeHeader(format.PXARPayload, size)
+		if e.err = e.writeHeader(format.PXARPayload, size); e.err != nil {
+			return nil, e.err
+		}
 	}
 
 	return &FileWriter{
@@ -323,6 +405,9 @@ func (fw *FileWriter) Close() error {
 
 // AddSymlink adds a symbolic link.
 func (e *Encoder) AddSymlink(metadata *pxar.Metadata, name string, target string) error {
+	if e.err != nil {
+		return e.err
+	}
 	fileOffset := e.currentState().writePosition
 
 	if err := e.encodeFilename([]byte(name)); err != nil {
@@ -332,12 +417,18 @@ func (e *Encoder) AddSymlink(metadata *pxar.Metadata, name string, target string
 		return err
 	}
 
-	// Write symlink target + null terminator
 	targetBytes := []byte(target)
 	contentSize := uint64(len(targetBytes) + 1)
-	e.writeHeader(format.PXARSymlink, contentSize)
-	e.writeAll(targetBytes)
-	e.writeAll([]byte{0})
+	if e.err = e.writeHeader(format.PXARSymlink, contentSize); e.err != nil {
+		return e.err
+	}
+	if e.err = e.writeAll(targetBytes); e.err != nil {
+		return e.err
+	}
+	e.err = e.writeAll([]byte{0})
+	if e.err != nil {
+		return e.err
+	}
 
 	endOffset := e.currentState().writePosition
 	s := e.currentState()
@@ -351,6 +442,9 @@ func (e *Encoder) AddSymlink(metadata *pxar.Metadata, name string, target string
 
 // AddHardlink adds a hard link.
 func (e *Encoder) AddHardlink(name string, target string, targetOffset LinkOffset) error {
+	if e.err != nil {
+		return e.err
+	}
 	currentOffset := e.currentState().writePosition
 	if currentOffset <= uint64(targetOffset) {
 		return fmt.Errorf("hardlink offset must point to a prior file")
@@ -367,10 +461,19 @@ func (e *Encoder) AddHardlink(name string, target string, targetOffset LinkOffse
 	binary.LittleEndian.PutUint64(relBytes, relOffset)
 	targetBytes := []byte(target)
 	contentSize := uint64(8 + len(targetBytes) + 1)
-	e.writeHeader(format.PXARHardlink, contentSize)
-	e.writeAll(relBytes)
-	e.writeAll(targetBytes)
-	e.writeAll([]byte{0})
+	if e.err = e.writeHeader(format.PXARHardlink, contentSize); e.err != nil {
+		return e.err
+	}
+	if e.err = e.writeAll(relBytes); e.err != nil {
+		return e.err
+	}
+	if e.err = e.writeAll(targetBytes); e.err != nil {
+		return e.err
+	}
+	e.err = e.writeAll([]byte{0})
+	if e.err != nil {
+		return e.err
+	}
 
 	endOffset := e.currentState().writePosition
 	s := e.currentState()
@@ -384,6 +487,9 @@ func (e *Encoder) AddHardlink(name string, target string, targetOffset LinkOffse
 
 // AddDevice adds a device node.
 func (e *Encoder) AddDevice(metadata *pxar.Metadata, name string, device format.Device) error {
+	if e.err != nil {
+		return e.err
+	}
 	if !metadata.IsDevice() {
 		return fmt.Errorf("device metadata must have device mode flag")
 	}
@@ -397,8 +503,13 @@ func (e *Encoder) AddDevice(metadata *pxar.Metadata, name string, device format.
 	}
 
 	data := marshalDevice(device)
-	e.writeHeader(format.PXARDevice, uint64(len(data)))
-	e.writeAll(data)
+	if e.err = e.writeHeader(format.PXARDevice, uint64(len(data))); e.err != nil {
+		return e.err
+	}
+	e.err = e.writeAll(data)
+	if e.err != nil {
+		return e.err
+	}
 
 	endOffset := e.currentState().writePosition
 	s := e.currentState()
@@ -412,6 +523,9 @@ func (e *Encoder) AddDevice(metadata *pxar.Metadata, name string, device format.
 
 // AddFIFO adds a named pipe.
 func (e *Encoder) AddFIFO(metadata *pxar.Metadata, name string) error {
+	if e.err != nil {
+		return e.err
+	}
 	if !metadata.IsFIFO() {
 		return fmt.Errorf("FIFO metadata must have FIFO mode flag")
 	}
@@ -420,6 +534,9 @@ func (e *Encoder) AddFIFO(metadata *pxar.Metadata, name string) error {
 
 // AddSocket adds a named socket.
 func (e *Encoder) AddSocket(metadata *pxar.Metadata, name string) error {
+	if e.err != nil {
+		return e.err
+	}
 	if !metadata.IsSocket() {
 		return fmt.Errorf("socket metadata must have socket mode flag")
 	}
@@ -447,6 +564,9 @@ func (e *Encoder) addSimpleEntry(metadata *pxar.Metadata, name string) error {
 
 // CreateDirectory pushes a new directory onto the stack.
 func (e *Encoder) CreateDirectory(name string, metadata *pxar.Metadata) error {
+	if e.err != nil {
+		return e.err
+	}
 	if !metadata.IsDir() {
 		return fmt.Errorf("directory metadata must have directory mode flag")
 	}
@@ -482,18 +602,22 @@ func (e *Encoder) CreateDirectory(name string, metadata *pxar.Metadata) error {
 
 // Finish finalizes the current directory (pops state, writes goodbye table).
 func (e *Encoder) Finish() error {
+	if e.err != nil {
+		return e.err
+	}
 	if len(e.state) <= 1 {
 		return fmt.Errorf("no directory to finish")
 	}
 
 	childState := e.currentState()
 
-	// Build goodbye table
 	goodbyeBytes := e.buildGoodbyeTable()
-
-	// Write GOODBYE header + data
-	e.writeHeader(format.PXARGoodbye, uint64(len(goodbyeBytes)))
-	e.writeAll(goodbyeBytes)
+	if e.err = e.writeHeader(format.PXARGoodbye, uint64(len(goodbyeBytes))); e.err != nil {
+		return e.err
+	}
+	if e.err = e.writeAll(goodbyeBytes); e.err != nil {
+		return e.err
+	}
 
 	endOffset := e.currentState().writePosition
 	endPayloadOffset := e.currentState().payloadWritePos
@@ -558,16 +682,33 @@ func (e *Encoder) Close() error {
 	if e.finished {
 		return fmt.Errorf("encoder already finished")
 	}
+	if e.err != nil {
+		e.state = e.state[:0]
+		e.finished = true
+		return e.err
+	}
 
 	// Write root goodbye table
 	goodbyeBytes := e.buildGoodbyeTable()
-	e.writeHeader(format.PXARGoodbye, uint64(len(goodbyeBytes)))
-	e.writeAll(goodbyeBytes)
+	if e.err = e.writeHeader(format.PXARGoodbye, uint64(len(goodbyeBytes))); e.err != nil {
+		e.state = e.state[:0]
+		e.finished = true
+		return e.err
+	}
+	if e.err = e.writeAll(goodbyeBytes); e.err != nil {
+		e.state = e.state[:0]
+		e.finished = true
+		return e.err
+	}
 
 	// Write payload tail marker if split archive
 	if e.payloadOut != nil {
 		h := format.HeaderWithContentSize(format.PXARPayloadTailMarker, 0)
-		binary.Write(e.payloadOut, binary.LittleEndian, &h)
+		if err := binary.Write(e.payloadOut, binary.LittleEndian, &h); err != nil {
+			e.state = e.state[:0]
+			e.finished = true
+			return err
+		}
 	}
 
 	// Clear state
@@ -580,9 +721,9 @@ func (e *Encoder) Close() error {
 // Marshal helpers
 
 func marshalStat(s format.Stat) []byte         { return format.MarshalStatBytes(s) }
-func marshalDevice(d format.Device) []byte      { return format.MarshalDeviceBytes(d) }
-func marshalACLUser(u format.ACLUser) []byte    { return format.MarshalACLUserBytes(u) }
-func marshalACLGroup(g format.ACLGroup) []byte  { return format.MarshalACLGroupBytes(g) }
+func marshalDevice(d format.Device) []byte     { return format.MarshalDeviceBytes(d) }
+func marshalACLUser(u format.ACLUser) []byte   { return format.MarshalACLUserBytes(u) }
+func marshalACLGroup(g format.ACLGroup) []byte { return format.MarshalACLGroupBytes(g) }
 func marshalACLGroupObject(o format.ACLGroupObject) []byte {
 	return format.MarshalACLGroupObjectBytes(o)
 }

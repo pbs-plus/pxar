@@ -343,6 +343,9 @@ func (c *pbsReaderConn) decodeStatus(buf *bytes.Buffer) int {
 }
 
 // readBinaryResponse reads H2 frames until the response is complete, returning raw bytes.
+// It manages HTTP/2 flow control by sending WINDOW_UPDATE frames when the
+// receive window drops below half the initial value, preventing the server
+// from stalling.
 func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 	var (
 		status     int
@@ -351,6 +354,16 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 		hdrBuf     bytes.Buffer
 		gotHeaders bool
 	)
+
+	// Per-stream flow-control window. Starts at the initial window size
+	// (or the value advertised by the server's SETTINGS_INITIAL_WINDOW_SIZE).
+	streamWin := c.streamWindow
+
+	// Threshold at which we send WINDOW_UPDATE: when the window drops below
+	// half its initial value. This follows the common H2 pattern of sending
+	// updates early rather than waiting for exhaustion.
+	streamThreshold := c.streamWindow / 2
+	connThreshold := c.connWindow / 2
 
 	// Set a deadline to prevent indefinite hanging
 	if err := c.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
@@ -392,16 +405,56 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 			}
 
 		case *http2.DataFrame:
-			if f.StreamID != streamID {
-				continue
+			dataLen := uint32(len(f.Data()))
+
+			// Update connection-level flow control window.
+			if dataLen > c.connWindow {
+				return nil, fmt.Errorf("connection flow-control violation: received %d bytes but window is %d", dataLen, c.connWindow)
 			}
-			dataBuf.Write(f.Data())
-			if f.StreamEnded() {
-				gotEnd = true
+			c.connWindow -= dataLen
+
+			// Update stream-level flow control window.
+			if f.StreamID == streamID {
+				if dataLen > streamWin {
+					return nil, fmt.Errorf("stream flow-control violation: received %d bytes but window is %d", dataLen, streamWin)
+				}
+				streamWin -= dataLen
+
+				dataBuf.Write(f.Data())
+				if f.StreamEnded() {
+					gotEnd = true
+				}
+			}
+
+			// Send WINDOW_UPDATE for connection window if below threshold.
+			if c.connWindow < connThreshold {
+				incr := c.streamWindow - c.connWindow // restore to initial
+				if err := c.framer.WriteWindowUpdate(0, incr); err != nil {
+					return nil, fmt.Errorf("write connection WINDOW_UPDATE: %w", err)
+				}
+				c.connWindow += incr
+			}
+
+			// Send WINDOW_UPDATE for stream window if below threshold.
+			if f.StreamID == streamID && streamWin < streamThreshold {
+				incr := c.streamWindow - streamWin // restore to initial
+				if err := c.framer.WriteWindowUpdate(streamID, incr); err != nil {
+					return nil, fmt.Errorf("write stream WINDOW_UPDATE: %w", err)
+				}
+				streamWin += incr
 			}
 
 		case *http2.SettingsFrame:
 			if !f.IsAck() {
+				// Handle SETTINGS_INITIAL_WINDOW_SIZE changes per RFC 7540 §6.9.2.
+				if v, ok := f.Value(http2.SettingInitialWindowSize); ok {
+					diff := int32(v) - int32(c.streamWindow)
+					c.streamWindow = v
+					streamWin = uint32(int32(streamWin) + diff)
+					// Recalculate thresholds based on new initial window size.
+					streamThreshold = v / 2
+					connThreshold = c.connWindow / 2
+				}
 				c.framer.WriteSettingsAck()
 			}
 
@@ -411,6 +464,9 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 			}
 
 		case *http2.WindowUpdateFrame:
+			// Server is telling us its receive window increased — this
+			// expands our send window for request bodies. We don't track
+			// our send window since we only send small requests.
 
 		case *http2.RSTStreamFrame:
 			if f.StreamID == streamID {

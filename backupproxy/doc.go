@@ -7,6 +7,25 @@
 // interfaces and message types. Users provide their own transport implementation
 // (gRPC, HTTP, SSH, etc.).
 //
+// # Features
+//
+// All backup modes automatically generate and upload a catalog.pcat1.didx file,
+// enabling PBS's web UI to browse backup contents without downloading the
+// full archive.
+//
+// The library supports three crypt modes:
+//   - CryptModeNone: no encryption or signing (default)
+//   - CryptModeEncrypt: AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing
+//   - CryptModeSign: no encryption, but HMAC-SHA256 manifest signing for integrity verification
+//
+// Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM for chunk
+// encryption. Manifests are signed but never encrypted (PBS must read them).
+//
+// Extended attributes, POSIX ACLs, and file capabilities are collected from the
+// filesystem via the FileSystemAccessor interface and encoded into archives.
+// Metadata change detection compares all extended metadata fields (stat, xattrs,
+// ACLs, fcaps) to trigger re-upload when they change.
+//
 // # PBS Reader Protocol
 //
 // For restoring backups, the PBSReader type provides access to the Proxmox Backup
@@ -94,7 +113,6 @@ func (d DetectionMode) String() string {
 
 // BackupConfig holds parameters for a single backup operation.
 type BackupConfig struct {
-	Store       string               // datastore name
 	BackupType  datastore.BackupType // vm, ct, or host
 	BackupID    string               // backup identifier
 	BackupTime  int64                // Unix timestamp for this snapshot
@@ -111,8 +129,6 @@ type BackupConfig struct {
 
 	// PreviousBackup identifies the snapshot to compare against when
 	// DetectionMode is DetectionMetadata. Required for metadata mode.
-	// Also used for GC protection: when set, PBS will protect the
-	// referenced snapshot from garbage collection during the backup.
 	PreviousBackup *PreviousBackupRef
 
 	// CryptMode controls encryption of backup data.
@@ -124,9 +140,6 @@ type BackupConfig struct {
 	// CryptConfig provides the encryption keys for CryptModeEncrypt or CryptModeSign.
 	// Must be set when CryptMode is not CryptModeNone.
 	CryptConfig *datastore.CryptConfig
-
-	// VerifyChunks enables chunk verification after upload (downloads and checks digest).
-	VerifyChunks bool
 }
 
 // PreviousBackupRef identifies a previous backup snapshot for metadata comparison.

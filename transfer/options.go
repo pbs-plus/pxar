@@ -26,6 +26,12 @@ type TransferOption struct {
 	ProgressCallback func(path string, bytes uint64)
 }
 
+// PathMapping maps a source path to a destination path inside the archives.
+type PathMapping struct {
+	Src string // path in the source archive
+	Dst string // path in the target archive
+}
+
 // WalkFunc is called for each entry encountered during WalkTree.
 // entry is the archive entry. content is the file data (nil for non-files).
 // Return nil to continue, or an error to stop.

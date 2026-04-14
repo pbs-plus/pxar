@@ -8,37 +8,43 @@ import (
 	pxar "github.com/pbs-plus/pxar"
 )
 
-// Copy copies specific files from the source archive to the target writer.
-// Each path in paths is looked up in the source and written to the target.
-// Paths should be relative to the archive root (e.g., "etc/hosts", "var/log/syslog").
-func Copy(src ArchiveReader, dst ArchiveWriter, paths []string, opts TransferOption) error {
-	for _, p := range paths {
-		entry, err := src.Lookup(p)
+// Copy copies files from the source archive to the target writer.
+// Each PathMapping specifies a source path (inside the source archive) and
+// a destination path (inside the target archive). If the source entry is a
+// directory, the entire subtree is copied with paths remapped from Src to Dst
+// prefix. If the source entry is a file, the file is written with its path
+// remapped.
+func Copy(src ArchiveReader, dst ArchiveWriter, mappings []PathMapping, opts TransferOption) error {
+	for _, m := range mappings {
+		entry, err := src.Lookup(m.Src)
 		if err != nil {
-			return fmt.Errorf("lookup %q in source: %w", p, err)
+			return fmt.Errorf("lookup %q in source: %w", m.Src, err)
 		}
 
 		if entry.IsDir() {
-			// Copy entire directory tree
-			if err := copyDir(src, dst, entry, opts); err != nil {
+			if err := CopyTree(src, dst, m.Src, m.Dst, opts); err != nil {
 				return err
 			}
 		} else {
+			// Remap entry path from Src to Dst prefix
+			if m.Dst != "" && m.Dst != m.Src {
+				entry.Path = m.Dst + strings.TrimPrefix(entry.Path, m.Src)
+			}
 			if err := copyEntry(src, dst, entry, opts); err != nil {
 				return err
 			}
 		}
 
 		if opts.ProgressCallback != nil {
-			opts.ProgressCallback(p, 0)
+			opts.ProgressCallback(m.Src, 0)
 		}
 	}
 	return nil
 }
 
 // CopyTree copies a directory tree from srcPath in the source archive to
-// dstPath in the target. If dstPath is empty, entries are copied to the same
-// path in the target.
+// dstPath in the target. All entries under the source directory have their
+// paths remapped from the srcPath prefix to the dstPath prefix.
 func CopyTree(src ArchiveReader, dst ArchiveWriter, srcPath, dstPath string, opts TransferOption) error {
 	root, err := src.Lookup(srcPath)
 	if err != nil {
@@ -50,34 +56,6 @@ func CopyTree(src ArchiveReader, dst ArchiveWriter, srcPath, dstPath string, opt
 	}
 
 	return walkAndCopy(src, dst, root, srcPath, dstPath, opts)
-}
-
-// Merge merges the entire source archive tree into the target.
-// All entries from the source are written to the target.
-func Merge(src ArchiveReader, dst ArchiveWriter, opts TransferOption) error {
-	root, err := src.ReadRoot()
-	if err != nil {
-		return fmt.Errorf("read source root: %w", err)
-	}
-
-	entries, err := src.ListDirectory(int64(root.ContentOffset))
-	if err != nil {
-		return fmt.Errorf("list source root: %w", err)
-	}
-
-	for i := range entries {
-		child := &entries[i]
-		if child.IsDir() {
-			if err := copyDir(src, dst, child, opts); err != nil {
-				return err
-			}
-		} else {
-			if err := copyEntry(src, dst, child, opts); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // copyEntry copies a single non-directory entry to the target.
@@ -93,8 +71,9 @@ func copyEntry(src ArchiveReader, dst ArchiveWriter, entry *pxar.Entry, opts Tra
 	return dst.WriteEntry(entry, content)
 }
 
-// copyDir copies a directory and all its contents to the target.
-func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, opts TransferOption) error {
+// copyDir copies a directory and all its contents to the target,
+// remapping paths from srcPath prefix to dstPath prefix.
+func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, srcPath, dstPath string, opts TransferOption) error {
 	if err := dst.BeginDirectory(dir.FileName(), &dir.Metadata); err != nil {
 		return fmt.Errorf("begin directory %q: %w", dir.Path, err)
 	}
@@ -106,8 +85,16 @@ func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, opts Transfe
 
 	for i := range entries {
 		child := &entries[i]
+		// Remap path for the target
+		if dstPath != "" && dstPath != srcPath {
+			childPath := child.Path
+			if strings.HasPrefix(childPath, srcPath) {
+				child.Path = dstPath + strings.TrimPrefix(childPath, srcPath)
+			}
+		}
+
 		if child.IsDir() {
-			if err := copyDir(src, dst, child, opts); err != nil {
+			if err := copyDir(src, dst, child, srcPath, dstPath, opts); err != nil {
 				return err
 			}
 		} else {
@@ -123,25 +110,29 @@ func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, opts Transfe
 // walkAndCopy walks a source directory tree and copies entries to dst,
 // remapping paths from srcPath to dstPath.
 func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath, dstPath string, opts TransferOption) error {
-	dirName := root.FileName()
-	if dstPath != "" {
-		// Use the destination path's basename as the directory name
-		dirName = filepath.Base(dstPath)
-	}
-
-	if err := dst.BeginDirectory(dirName, &root.Metadata); err != nil {
-		return fmt.Errorf("begin directory %q: %w", dirName, err)
-	}
-
 	entries, err := src.ListDirectory(int64(root.ContentOffset))
 	if err != nil {
 		return fmt.Errorf("list directory %q: %w", root.Path, err)
 	}
 
+	// When srcPath is "/", we're copying from the archive root — don't create
+	// a new directory since the target writer already has one from Begin.
+	needDir := srcPath != "/"
+
+	if needDir {
+		dirName := root.FileName()
+		if dstPath != "" && dstPath != srcPath {
+			dirName = filepath.Base(dstPath)
+		}
+		if err := dst.BeginDirectory(dirName, &root.Metadata); err != nil {
+			return fmt.Errorf("begin directory %q: %w", dirName, err)
+		}
+	}
+
 	for i := range entries {
 		child := &entries[i]
 		// Remap path for the target
-		if dstPath != "" {
+		if dstPath != "" && dstPath != srcPath {
 			childPath := child.Path
 			if strings.HasPrefix(childPath, srcPath) {
 				child.Path = dstPath + strings.TrimPrefix(childPath, srcPath)
@@ -149,7 +140,7 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 		}
 
 		if child.IsDir() {
-			if err := copyDir(src, dst, child, opts); err != nil {
+			if err := copyDir(src, dst, child, srcPath, dstPath, opts); err != nil {
 				return err
 			}
 		} else {
@@ -159,5 +150,8 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 		}
 	}
 
-	return dst.EndDirectory()
+	if needDir {
+		return dst.EndDirectory()
+	}
+	return nil
 }

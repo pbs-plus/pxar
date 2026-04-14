@@ -261,7 +261,7 @@ func TestCopySingleFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := transfer.Copy(srcReader, dstWriter, []string{"/hello.txt"}, transfer.TransferOption{})
+	err := transfer.Copy(srcReader, dstWriter, []transfer.PathMapping{{Src: "/hello.txt", Dst: "/hello.txt"}}, transfer.TransferOption{})
 	if err != nil {
 		t.Fatalf("Copy: %v", err)
 	}
@@ -351,9 +351,9 @@ func TestMergeArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := transfer.Merge(srcReader, dstWriter, transfer.TransferOption{})
+	err := transfer.CopyTree(srcReader, dstWriter, "/", "/", transfer.TransferOption{})
 	if err != nil {
-		t.Fatalf("Merge: %v", err)
+		t.Fatalf("CopyTree: %v", err)
 	}
 
 	if err := dstWriter.Finish(); err != nil {
@@ -468,9 +468,9 @@ func TestV2CopyToV1(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = transfer.Merge(srcReader, dstWriter, transfer.TransferOption{})
+	err = transfer.CopyTree(srcReader, dstWriter, "/", "/", transfer.TransferOption{})
 	if err != nil {
-		t.Fatalf("Merge: %v", err)
+		t.Fatalf("CopyTree: %v", err)
 	}
 
 	if err := dstWriter.Finish(); err != nil {

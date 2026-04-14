@@ -429,6 +429,14 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d: %s", status, dataBuf.String())
 	}
 
+	if c.recvWindow < 32768 {
+		c.framer.WriteWindowUpdate(streamID, 32768)
+		c.recvWindow += 32768
+		if c.recvWindow > 65535 {
+			c.recvWindow = 65535
+		}
+	}
+
 	return dataBuf.Bytes(), nil
 }
 

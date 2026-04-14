@@ -180,7 +180,40 @@ func main() {
 }
 ```
 
-For chunked archives, use `ChunkedArchiveReader` or `SplitArchiveReader`. For encrypted archives, wrap the chunk source with `DecryptingChunkSource`. For PBS remote, use `PBSArchiveReader`.
+For chunked archives, use `ChunkedArchiveReader` or `SplitArchiveReader` (both lazy by default). For encrypted archives, wrap the chunk source with `DecryptingChunkSource`. For PBS remote, use `PBSArchiveReader`.
+
+#### Same-Datastore Dedup Transfer
+
+When source and target are in the same chunk store (e.g., same PBS datastore), the `DedupSplitArchiveWriter` avoids re-uploading payload chunks that already exist on disk. This is the primary optimization for same-datastore transfers:
+
+```go
+// Source is a v2 split archive in the same store
+payloadIdx, _ := datastore.ReadDynamicIndex(sourcePayloadIdxData)
+
+writer := transfer.NewDedupSplitArchiveWriter(store, source, config, false, payloadIdx)
+rootMeta := pxar.DirMetadata(0o755).Build()
+writer.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2})
+
+// Write entries — payload chunks with identical content are deduplicated
+// by ChunkStore.InsertChunk (no-op for existing digests)
+writer.WriteEntry(entry, content)
+
+writer.Finish()
+
+// Check dedup statistics
+hits, total := writer.DedupStats()
+fmt.Printf("%d/%d payload chunks reused\n", hits, total)
+```
+
+The package also provides utilities for working with source payload chunks without full stream reconstruction:
+
+- **`MapFileToPayloadChunks`** — maps a file's payload range to the chunk digests that contain it
+- **`ReadFileContentFromChunks`** — reads a file's content by loading only the necessary payload chunks via `RestoreRange`
+- **`ComputeContentDigest`** — SHA-256 of a file's content without reconstructing the entire payload stream
+
+#### Lazy Chunk Loading
+
+`ChunkedReadSeeker` implements `io.ReadSeeker` over a chunked archive stream, loading and decoding chunks on demand instead of reconstructing the entire stream into memory. `ChunkedArchiveReader` and `SplitArchiveReader` use this by default — only chunks needed for `Lookup` and `ReadFileContent` calls are loaded. For small archives where full in-memory reconstruction is acceptable, use `NewChunkedArchiveReaderEager` and `NewSplitArchiveReaderEager`.
 
 #### CLI Commands
 

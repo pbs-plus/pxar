@@ -213,50 +213,71 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 	framer := http2.NewFramer(conn, br)
 	framer.SetMaxReadFrameSize(1 << 24) // 16MB
 
+	const (
+		targetWindow   = 16 << 20 // 16 MB
+		targetMaxFrame = 1 << 24  // 16 MB
+	)
+
 	// Send client SETTINGS
-	if err := framer.WriteSettings(); err != nil {
+	if err := framer.WriteSettings(
+		http2.Setting{ID: http2.SettingInitialWindowSize, Val: targetWindow},
+		http2.Setting{ID: http2.SettingMaxFrameSize, Val: targetMaxFrame},
+	); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("write SETTINGS: %w", err)
 	}
 
-	// Read server SETTINGS
+	// Increase connection-level window (stream 0)
+	if err := framer.WriteWindowUpdate(0, uint32(targetWindow-65535)); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("write connection WINDOW_UPDATE: %w", err)
+	}
+
+	// Read server SETTINGS and wait for our SETTINGS to be ACKed
 	maxFrame := uint32(1 << 14) // default 16384
 	initialWin := uint32(65535) // default per H2 spec
 	gotSettings := false
-	for !gotSettings {
+	gotAck := false
+	for !gotSettings || !gotAck {
 		frame, err := framer.ReadFrame()
 		if err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("read server SETTINGS: %w", err)
+			return nil, fmt.Errorf("handshake: %w", err)
 		}
-		if sf, ok := frame.(*http2.SettingsFrame); ok && !sf.IsAck() {
-			if v, ok := sf.Value(http2.SettingMaxFrameSize); ok {
-				maxFrame = v
-			}
-			if v, ok := sf.Value(http2.SettingInitialWindowSize); ok {
-				initialWin = v
-			}
-			if err := framer.WriteSettingsAck(); err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("SETTINGS ACK: %w", err)
-			}
-			gotSettings = true
+		sf, ok := frame.(*http2.SettingsFrame)
+		if !ok {
+			continue
 		}
+		if sf.IsAck() {
+			gotAck = true
+			continue
+		}
+		if v, ok := sf.Value(http2.SettingMaxFrameSize); ok {
+			maxFrame = v
+		}
+		if v, ok := sf.Value(http2.SettingInitialWindowSize); ok {
+			initialWin = v
+		}
+		if err := framer.WriteSettingsAck(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("SETTINGS ACK: %w", err)
+		}
+		gotSettings = true
 	}
 
 	hdrBuf := new(bytes.Buffer)
 	dec := hpack.NewDecoder(4096, nil)
 	return &pbsReaderConn{
-		conn:         conn,
-		framer:       framer,
-		enc:          hpack.NewEncoder(hdrBuf),
-		dec:          dec,
-		hdrBuf:       hdrBuf,
-		nextID:       1,
-		maxFrameSize: maxFrame,
-		authority:    u.Host,
-		connWindow:        65535, // our initial connection-level window (H2 default)
-		connInitialWindow: 65535,
+		conn:              conn,
+		framer:            framer,
+		enc:               hpack.NewEncoder(hdrBuf),
+		dec:               dec,
+		hdrBuf:            hdrBuf,
+		nextID:            1,
+		maxFrameSize:      maxFrame,
+		authority:         u.Host,
+		connWindow:        uint32(targetWindow),
+		connInitialWindow: uint32(targetWindow),
 		streamWindow:      initialWin,
 	}, nil
 }
@@ -350,11 +371,12 @@ func (c *pbsReaderConn) decodeStatus(buf *bytes.Buffer) int {
 // from stalling.
 func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 	var (
-		status     int
-		dataBuf    bytes.Buffer
-		gotEnd     bool
-		hdrBuf     bytes.Buffer
-		gotHeaders bool
+		status      int
+		dataBuf     bytes.Buffer
+		gotEnd      bool
+		hdrBuf      bytes.Buffer
+		gotHeaders  bool
+		otherHdrBuf bytes.Buffer // To keep HPACK state for other streams
 	)
 
 	// Per-stream flow-control window. Starts at the initial window size
@@ -384,14 +406,15 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 		}
 	}
 
-	// Set a deadline to prevent indefinite hanging
-	if err := c.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		return nil, fmt.Errorf("set read deadline: %w", err)
-	}
 	// Clear deadline when done
 	defer c.conn.SetReadDeadline(time.Time{})
 
 	for !gotEnd {
+		// Set a per-frame deadline to prevent indefinite hanging
+		if err := c.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			return nil, fmt.Errorf("set read deadline: %w", err)
+		}
+
 		frame, err := c.framer.ReadFrame()
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -403,6 +426,12 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 		switch f := frame.(type) {
 		case *http2.HeadersFrame:
 			if f.StreamID != streamID {
+				if f.Flags.Has(http2.FlagHeadersEndHeaders) {
+					c.dec.DecodeFull(f.HeaderBlockFragment())
+				} else {
+					otherHdrBuf.Reset()
+					otherHdrBuf.Write(f.HeaderBlockFragment())
+				}
 				continue
 			}
 			gotHeaders = true
@@ -416,6 +445,11 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 
 		case *http2.ContinuationFrame:
 			if f.StreamID != streamID {
+				otherHdrBuf.Write(f.HeaderBlockFragment())
+				if f.Flags.Has(http2.FlagHeadersEndHeaders) {
+					c.dec.DecodeFull(otherHdrBuf.Bytes())
+					otherHdrBuf.Reset()
+				}
 				continue
 			}
 			hdrBuf.Write(f.HeaderBlockFragment())

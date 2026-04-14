@@ -126,6 +126,12 @@ type pbsReaderConn struct {
 	nextID       uint32
 	maxFrameSize uint32
 	authority    string
+
+	// Flow-control: tracks how many bytes the server is allowed to send us.
+	// connWindow is the connection-level window; per-stream windows are
+	// tracked via streamWindow when readBinaryResponse is active.
+	connWindow   uint32
+	streamWindow uint32 // initial per-stream window (from server SETTINGS)
 }
 
 // dialPBSReaderH2 establishes an H2 reader connection to PBS.
@@ -214,6 +220,7 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 
 	// Read server SETTINGS
 	maxFrame := uint32(1 << 14) // default 16384
+	initialWin := uint32(65535) // default per H2 spec
 	gotSettings := false
 	for !gotSettings {
 		frame, err := framer.ReadFrame()
@@ -224,6 +231,9 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 		if sf, ok := frame.(*http2.SettingsFrame); ok && !sf.IsAck() {
 			if v, ok := sf.Value(http2.SettingMaxFrameSize); ok {
 				maxFrame = v
+			}
+			if v, ok := sf.Value(http2.SettingInitialWindowSize); ok {
+				initialWin = v
 			}
 			if err := framer.WriteSettingsAck(); err != nil {
 				conn.Close()
@@ -244,6 +254,8 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 		nextID:       1,
 		maxFrameSize: maxFrame,
 		authority:    u.Host,
+		connWindow:   65535, // our initial connection-level window (H2 default)
+		streamWindow: initialWin,
 	}, nil
 }
 

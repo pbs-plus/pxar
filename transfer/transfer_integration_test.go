@@ -805,7 +805,7 @@ func verifyPBSSnapshot(t *testing.T, cfg backupproxy.PBSConfig, bc backupproxy.B
 	t.Helper()
 
 	exitStatus := pbsVerifySnapshot(t, cfg, bc.BackupType.String(), bc.BackupID, bc.BackupTime)
-	if exitStatus != "ok" {
+	if exitStatus != "OK" {
 		t.Errorf("PBS verify failed for %s/%s/%d: exit status %q", bc.BackupType, bc.BackupID, bc.BackupTime, exitStatus)
 	} else {
 		t.Logf("PBS verify OK for %s/%s/%d", bc.BackupType, bc.BackupID, bc.BackupTime)

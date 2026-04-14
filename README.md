@@ -192,10 +192,13 @@ package main
 
 import (
     "context"
+    "fmt"
+    "time"
 
     pxar "github.com/pbs-plus/pxar"
     "github.com/pbs-plus/pxar/backupproxy"
     "github.com/pbs-plus/pxar/buzhash"
+    "github.com/pbs-plus/pxar/datastore"
     "github.com/pbs-plus/pxar/format"
     "github.com/pbs-plus/pxar/transfer"
 )
@@ -213,51 +216,80 @@ func main() {
     // Open PBS remote store
     pbsStore := backupproxy.NewPBSRemoteStore(pbsCfg, buzhash.DefaultConfig(), true)
 
-    // Start a new backup session
-    session, _ := pbsStore.StartSession(ctx, backupproxy.BackupConfig{
-        BackupType: backupproxy.BackupHost,
+    // Start a new backup session — this creates a new snapshot
+    now := time.Now().Unix()
+    session, err := pbsStore.StartSession(ctx, backupproxy.BackupConfig{
+        BackupType: datastore.BackupHost,
         BackupID:   "myhost",
+        BackupTime: now,
     })
+    if err != nil {
+        panic(err)
+    }
 
-    // Open multiple existing snapshots as sources
-    snap1, _ := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+    // Open existing snapshots as sources (lazy — only needed chunks are downloaded)
+    snap1, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
         Config:      pbsCfg,
         BackupType:  "host",
         BackupID:    "myhost",
-        BackupTime:  1700000000,
+        BackupTime:  1700000000, // previous snapshot 1
         ArchiveName: "root.pxar.didx",
     })
+    if err != nil {
+        panic(err)
+    }
     defer snap1.Close()
 
-    snap2, _ := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+    snap2, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
         Config:      pbsCfg,
         BackupType:  "host",
         BackupID:    "myhost",
-        BackupTime:  1700100000,
+        BackupTime:  1700100000, // previous snapshot 2
         ArchiveName: "root.pxar.didx",
     })
+    if err != nil {
+        panic(err)
+    }
     defer snap2.Close()
 
     // Write a new v2 split archive into the session
     dst := transfer.NewSplitSessionArchiveWriter(ctx, session, "root.mpxar.didx", "root.ppxar.didx")
     rootMeta := pxar.DirMetadata(0o755).Build()
-    dst.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2})
+    if err := dst.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+        panic(err)
+    }
 
     // Copy /etc from snapshot 1 and /var from snapshot 2
-    transfer.Copy(snap1, dst, []transfer.PathMapping{
+    if err := transfer.Copy(snap1, dst, []transfer.PathMapping{
         {Src: "/etc", Dst: "/etc"},
-    }, transfer.TransferOption{})
-    transfer.Copy(snap2, dst, []transfer.PathMapping{
+    }, transfer.TransferOption{}); err != nil {
+        panic(err)
+    }
+    if err := transfer.Copy(snap2, dst, []transfer.PathMapping{
         {Src: "/var", Dst: "/var"},
-    }, transfer.TransferOption{})
+    }, transfer.TransferOption{}); err != nil {
+        panic(err)
+    }
 
-    dst.Finish()
+    if err := dst.Finish(); err != nil {
+        panic(err)
+    }
 
-    // Finalize the backup session
-    manifest, _ := session.Finish(ctx)
-    _ = manifest
+    // Finalize the backup session — this commits the new snapshot to the datastore
+    manifest, err := session.Finish(ctx)
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Printf("New snapshot created: %s/%s/%d\n",
+        manifest.BackupType, manifest.BackupID, manifest.BackupTime)
+    for _, f := range manifest.Files {
+        fmt.Printf("  %s (%d bytes)\n", f.Filename, f.Size)
+    }
 }
 ```
+
+The new snapshot is now visible in the datastore alongside the existing ones. PBS's server-side deduplication means chunks that already exist in the datastore are not re-uploaded — the `SplitSessionArchiveWriter` uploads the metadata and payload streams, and the PBS server skips chunks with digests it already has.
 
 For same-datastore transfers, use `DedupSplitArchiveWriter` with a local `ChunkStore` to avoid re-uploading payload chunks that already exist on disk.
 

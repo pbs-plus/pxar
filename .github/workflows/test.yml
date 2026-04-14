@@ -118,9 +118,20 @@ jobs:
         run: |
           echo "::notice::Starting integration tests with PBS..."
           go test -tags=integration -v -timeout 180s ./backupproxy/ -run 'TestIntegration_'
-          TEST_EXIT=$?
-          echo "test_exit_code=$TEST_EXIT" >> "$GITHUB_OUTPUT"
-          exit $TEST_EXIT
+          BACKUP_EXIT=$?
+          go test -tags=integration -v -timeout 180s ./transfer/ -run 'TestIntegration_'
+          TRANSFER_EXIT=$?
+          if [ "$BACKUP_EXIT" -ne 0 ]; then
+            echo "backupproxy integration tests failed (exit $BACKUP_EXIT)"
+            echo "test_exit_code=$BACKUP_EXIT" >> "$GITHUB_OUTPUT"
+            exit $BACKUP_EXIT
+          fi
+          if [ "$TRANSFER_EXIT" -ne 0 ]; then
+            echo "transfer integration tests failed (exit $TRANSFER_EXIT)"
+            echo "test_exit_code=$TRANSFER_EXIT" >> "$GITHUB_OUTPUT"
+            exit $TRANSFER_EXIT
+          fi
+          echo "test_exit_code=0" >> "$GITHUB_OUTPUT"
 
       - name: Watch test results with gh CLI
         if: always()

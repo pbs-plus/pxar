@@ -21,6 +21,7 @@ import (
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
 	"github.com/pbs-plus/pxar/format"
+	"github.com/pbs-plus/pxar/transfer"
 )
 
 type osFS struct{}
@@ -462,10 +463,254 @@ func runKeygen() error {
 	return nil
 }
 
+func openArchiveReader(path string) (transfer.ArchiveReader, error) {
+	// Determine format from extension
+	switch {
+	case strings.HasSuffix(path, ".mpxar.didx"):
+		// Split archive metadata — need payload too
+		return nil, fmt.Errorf("split archive requires both .mpxar.didx and .ppxar.didx; use the .mpxar.didx path and provide --payload")
+	case strings.HasSuffix(path, ".ppxar.didx"):
+		// Split archive payload — need metadata too
+		return nil, fmt.Errorf("split archive requires both .mpxar.didx and .ppxar.didx; use the .mpxar.didx path and provide --payload")
+	case strings.HasSuffix(path, ".pxar.didx"):
+		// Chunked v1 archive
+		idxData, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read index: %w", err)
+		}
+		// Use the chunk store relative to the index file
+		baseDir := filepath.Dir(path)
+		chunkStore, err := datastore.NewChunkStore(baseDir)
+		if err != nil {
+			return nil, fmt.Errorf("create chunk store: %w", err)
+		}
+		chunkSource := datastore.NewChunkStoreSource(chunkStore)
+		return transfer.NewChunkedArchiveReader(idxData, chunkSource)
+	case strings.HasSuffix(path, ".pxar"):
+		// Standalone v1 archive
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("open archive: %w", err)
+		}
+		return transfer.NewFileArchiveReader(f), nil
+	default:
+		// Try as standalone .pxar
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("open archive: %w", err)
+		}
+		return transfer.NewFileArchiveReader(f), nil
+	}
+}
+
+func runLs() error {
+	fs := flag.NewFlagSet("ls", flag.ExitOnError)
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: pxar-cli ls <archive> [path]")
+	}
+	archivePath := fs.Arg(0)
+	listPath := ""
+	if fs.NArg() > 1 {
+		listPath = fs.Arg(1)
+	}
+
+	reader, err := openArchiveReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	if listPath == "" || listPath == "/" {
+		root, err := reader.ReadRoot()
+		if err != nil {
+			return fmt.Errorf("read root: %w", err)
+		}
+		entries, err := reader.ListDirectory(int64(root.ContentOffset))
+		if err != nil {
+			return fmt.Errorf("list root: %w", err)
+		}
+		for _, e := range entries {
+			fmt.Printf("%s\n", e.Path)
+		}
+	} else {
+		entry, err := reader.Lookup(listPath)
+		if err != nil {
+			return fmt.Errorf("lookup %q: %w", listPath, err)
+		}
+		if entry.IsDir() {
+			entries, err := reader.ListDirectory(int64(entry.ContentOffset))
+			if err != nil {
+				return fmt.Errorf("list directory: %w", err)
+			}
+			for _, e := range entries {
+				fmt.Printf("%s\n", e.Path)
+			}
+		} else {
+			fmt.Printf("%s (size=%d)\n", entry.Path, entry.FileSize)
+		}
+	}
+	return nil
+}
+
+func runExtract() error {
+	fs := flag.NewFlagSet("extract", flag.ExitOnError)
+	output := fs.String("o", "", "output file (default: stdout)")
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 2 {
+		return fmt.Errorf("usage: pxar-cli extract <archive> <path> [-o output]")
+	}
+	archivePath := fs.Arg(0)
+	filePath := fs.Arg(1)
+
+	reader, err := openArchiveReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	entry, err := reader.Lookup(filePath)
+	if err != nil {
+		return fmt.Errorf("lookup %q: %w", filePath, err)
+	}
+
+	if !entry.IsRegularFile() {
+		return fmt.Errorf("%q is not a regular file (kind: %v)", filePath, entry.Kind)
+	}
+
+	content, err := reader.ReadFileContent(entry)
+	if err != nil {
+		return fmt.Errorf("read file content: %w", err)
+	}
+
+	if *output != "" {
+		if err := os.WriteFile(*output, content, 0o644); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Extracted %d bytes to %s\n", len(content), *output)
+	} else {
+		os.Stdout.Write(content)
+	}
+	return nil
+}
+
+func runCp() error {
+	fs := flag.NewFlagSet("cp", flag.ExitOnError)
+	formatFlag := fs.String("format", "v1", "output format: v1 or v2")
+	outputPath := fs.String("o", "", "output file (required)")
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 2 || *outputPath == "" {
+		return fmt.Errorf("usage: pxar-cli cp <source_archive> <path> -o <output_archive> [-format v1|v2]")
+	}
+	srcPath := fs.Arg(0)
+	srcFilePath := fs.Arg(1)
+
+	reader, err := openArchiveReader(srcPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	var targetFormat format.FormatVersion = format.FormatVersion1
+	if *formatFlag == "v2" {
+		targetFormat = format.FormatVersion2
+	}
+
+	outFile, err := os.Create(*outputPath)
+	if err != nil {
+		return fmt.Errorf("create output: %w", err)
+	}
+	defer outFile.Close()
+
+	writer := transfer.NewStreamArchiveWriter(outFile)
+	rootMeta := pxar.DirMetadata(0o755).Build()
+	if err := writer.Begin(&rootMeta, transfer.WriterOptions{Format: targetFormat}); err != nil {
+		return fmt.Errorf("begin writer: %w", err)
+	}
+
+	entry, err := reader.Lookup(srcFilePath)
+	if err != nil {
+		return fmt.Errorf("lookup %q: %w", srcFilePath, err)
+	}
+
+	if entry.IsDir() {
+		if err := transfer.CopyTree(reader, writer, srcFilePath, srcFilePath, transfer.TransferOption{
+			TargetFormat: targetFormat,
+		}); err != nil {
+			return fmt.Errorf("copy tree: %w", err)
+		}
+	} else {
+		var content []byte
+		if entry.IsRegularFile() {
+			content, err = reader.ReadFileContent(entry)
+			if err != nil {
+				return fmt.Errorf("read file: %w", err)
+			}
+		}
+		if err := writer.WriteEntry(entry, content); err != nil {
+			return fmt.Errorf("write entry: %w", err)
+		}
+	}
+
+	if err := writer.Finish(); err != nil {
+		return fmt.Errorf("finish writer: %w", err)
+	}
+	return nil
+}
+
+func runMerge() error {
+	fs := flag.NewFlagSet("merge", flag.ExitOnError)
+	formatFlag := fs.String("format", "v1", "output format: v1 or v2")
+	outputPath := fs.String("o", "", "output file (required)")
+	fs.Parse(os.Args[2:])
+
+	if fs.NArg() < 1 || *outputPath == "" {
+		return fmt.Errorf("usage: pxar-cli merge <source_archive> -o <output_archive> [-format v1|v2]")
+	}
+	srcPath := fs.Arg(0)
+
+	reader, err := openArchiveReader(srcPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	var targetFormat format.FormatVersion = format.FormatVersion1
+	if *formatFlag == "v2" {
+		targetFormat = format.FormatVersion2
+	}
+
+	outFile, err := os.Create(*outputPath)
+	if err != nil {
+		return fmt.Errorf("create output: %w", err)
+	}
+	defer outFile.Close()
+
+	writer := transfer.NewStreamArchiveWriter(outFile)
+	rootMeta := pxar.DirMetadata(0o755).Build()
+	if err := writer.Begin(&rootMeta, transfer.WriterOptions{Format: targetFormat}); err != nil {
+		return fmt.Errorf("begin writer: %w", err)
+	}
+
+	if err := transfer.Merge(reader, writer, transfer.TransferOption{
+		TargetFormat: targetFormat,
+	}); err != nil {
+		return fmt.Errorf("merge: %w", err)
+	}
+
+	if err := writer.Finish(); err != nil {
+		return fmt.Errorf("finish writer: %w", err)
+	}
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: pxar-cli <command> [options]\n")
-		fmt.Fprintf(os.Stderr, "Commands: backup, keygen\n")
+		fmt.Fprintf(os.Stderr, "Commands: backup, keygen, ls, extract, cp, merge\n")
 		os.Exit(1)
 	}
 
@@ -476,6 +721,22 @@ func main() {
 		}
 	case "keygen":
 		if err := runKeygen(); err != nil {
+			log.Fatal(err)
+		}
+	case "ls":
+		if err := runLs(); err != nil {
+			log.Fatal(err)
+		}
+	case "extract":
+		if err := runExtract(); err != nil {
+			log.Fatal(err)
+		}
+	case "cp":
+		if err := runCp(); err != nil {
+			log.Fatal(err)
+		}
+	case "merge":
+		if err := runMerge(); err != nil {
 			log.Fatal(err)
 		}
 	default:

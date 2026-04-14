@@ -45,6 +45,7 @@ type CatalogWriter struct {
 	w        io.Writer
 	dirstack []catalogDirInfo
 	pos      int64
+	err      error
 }
 
 // NewCatalogWriter creates a catalog writer and writes the pcat1 magic header.
@@ -119,6 +120,9 @@ func (cw *CatalogWriter) AddSocket(name string) {
 // EndDirectory encodes the current directory block and adds a Dir entry
 // to the parent directory.
 func (cw *CatalogWriter) EndDirectory() {
+	if cw.err != nil {
+		return
+	}
 	dir := cw.dirstack[len(cw.dirstack)-1]
 	cw.dirstack = cw.dirstack[:len(cw.dirstack)-1]
 
@@ -143,6 +147,9 @@ func (cw *CatalogWriter) EndDirectory() {
 // Finish encodes the root directory block and writes the 8-byte
 // little-endian root directory offset at the end of the stream.
 func (cw *CatalogWriter) Finish() error {
+	if cw.err != nil {
+		return cw.err
+	}
 	root := cw.dirstack[len(cw.dirstack)-1]
 	cw.dirstack = cw.dirstack[:len(cw.dirstack)-1]
 
@@ -158,7 +165,7 @@ func (cw *CatalogWriter) Finish() error {
 	binary.LittleEndian.PutUint64(buf[:], uint64(rootStart))
 	cw.write(buf[:])
 
-	return nil
+	return cw.err
 }
 
 func (cw *CatalogWriter) encodeEntries(entries []catalogDirEntry) {
@@ -178,10 +185,13 @@ func (cw *CatalogWriter) encodeEntries(entries []catalogDirEntry) {
 }
 
 func (cw *CatalogWriter) write(data []byte) {
+	if cw.err != nil {
+		return
+	}
 	n, err := cw.w.Write(data)
 	cw.pos += int64(n)
 	if err != nil {
-		panic(err)
+		cw.err = err
 	}
 }
 
@@ -200,6 +210,9 @@ func (cw *CatalogWriter) writeString(s string) {
 // catalogEncodeU64 writes a u64 in custom variable-length encoding:
 // each byte carries 7 bits of data; the high bit signals more bytes follow.
 func catalogEncodeU64(cw *CatalogWriter, v uint64) {
+	if cw.err != nil {
+		return
+	}
 	for {
 		b := byte(v & 0x7f)
 		v >>= 7
@@ -216,6 +229,9 @@ func catalogEncodeU64(cw *CatalogWriter, v uint64) {
 // catalogEncodeI64 writes an i64. Positive values use the same encoding as u64.
 // Negative values OR each byte with 0x80 and terminate with 0x00.
 func catalogEncodeI64(cw *CatalogWriter, v int64) {
+	if cw.err != nil {
+		return
+	}
 	if v >= 0 {
 		catalogEncodeU64(cw, uint64(v))
 		return

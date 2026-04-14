@@ -18,7 +18,6 @@ import (
 // pbsBackupProtocol abstracts PBS backup protocol operations for testability.
 type pbsBackupProtocol interface {
 	dynamicIndexCreate(archiveName string) (uint64, error)
-	dynamicChunkExists(wid uint64, digest string) (bool, error)
 	dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error
 	dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error
 	dynamicIndexClose(wid uint64, chunkCount int, size uint64, csum string) error
@@ -44,22 +43,6 @@ func (p *h2Protocol) dynamicIndexCreate(archiveName string) (uint64, error) {
 		return 0, fmt.Errorf("parse wid: %w (body: %s)", err, data)
 	}
 	return wid, nil
-}
-
-func (p *h2Protocol) dynamicChunkExists(wid uint64, digest string) (bool, error) {
-	params := url.Values{}
-	params.Set("wid", strconv.FormatUint(wid, 10))
-	params.Set("digest", digest)
-	// This optimization tells the server to only check for chunk existence
-	// when no body is provided.
-	params.Set("speed-up-chunk-upload", "1")
-
-	_, err := p.conn.do("POST", "dynamic_chunk", params, nil, "")
-	if err != nil {
-		// PBS returns 404 (via HTTP status or error body) if the chunk is missing
-		return false, nil
-	}
-	return true, nil
 }
 
 func (p *h2Protocol) dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error {
@@ -161,6 +144,7 @@ func (ps *PBSRemoteStore) StartSession(ctx context.Context, config BackupConfig)
 	}
 
 	return &pbsSession{
+		store:    ps,
 		proto:    &h2Protocol{conn: h2Conn},
 		config:   config,
 		compress: ps.compress,
@@ -171,14 +155,37 @@ func (ps *PBSRemoteStore) StartSession(ctx context.Context, config BackupConfig)
 
 // pbsSession implements BackupSession for PBS.
 type pbsSession struct {
-	proto    pbsBackupProtocol
-	config   BackupConfig
-	compress bool
-	chunkCfg buzhash.Config
-	files    []datastore.FileInfo
+	store       *PBSRemoteStore
+	proto       pbsBackupProtocol
+	config      BackupConfig
+	compress    bool
+	chunkCfg    buzhash.Config
+	files       []datastore.FileInfo
+	knownChunks map[[32]byte]bool // client-side deduplication cache
 }
 
-func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reader) (*UploadResult, error) {
+func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error) {
+	// Populate deduplication cache from previous snapshot if available
+	if s.knownChunks == nil {
+		s.knownChunks = make(map[[32]byte]bool)
+		
+		if s.config.PreviousBackup != nil {
+			prev := s.config.PreviousBackup
+			
+			// Try to download previous index for this specific archive name
+			data, err := s.store.ReadPreviousArchive(ctx, prev.BackupType, prev.BackupID, prev.BackupTime, prev.Namespace, name)
+			if err == nil {
+				if idx, err := datastore.ReadDynamicIndex(data); err == nil {
+					for i := 0; i < idx.Count(); i++ {
+						if info, ok := idx.ChunkInfo(i); ok {
+							s.knownChunks[info.Digest] = true
+						}
+					}
+				}
+			}
+		}
+	}
+
 	wid, err := s.proto.dynamicIndexCreate(name)
 	if err != nil {
 		return nil, err
@@ -216,11 +223,8 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 		hex.Encode(hexBuf[:], digest[:])
 		hexDigest := string(hexBuf[:])
 
-		exists, err := s.proto.dynamicChunkExists(wid, hexDigest)
-		if err != nil {
-			// If check fails, we proceed with upload just in case.
-			exists = false
-		}
+		// Deduplication: only upload if chunk is not in our local cache
+		exists := s.knownChunks != nil && s.knownChunks[digest]
 
 		if !exists {
 			blobData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
@@ -230,6 +234,11 @@ func (s *pbsSession) UploadArchive(_ context.Context, name string, data io.Reade
 
 			if err := s.proto.dynamicChunkUpload(wid, hexDigest, len(chunk), len(blobData), blobData); err != nil {
 				return nil, err
+			}
+			
+			// Add to cache so we don't upload the same chunk twice in this session
+			if s.knownChunks != nil {
+				s.knownChunks[digest] = true
 			}
 		}
 

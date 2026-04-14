@@ -568,31 +568,29 @@ Test data: 50 files × 8KB (≈400KB total).
 
 | Tool | Mode | Wall (best) | Duration | Speedup |
 |------|------|-------------|----------|---------|
-| **pxar-cli** | legacy | **63 ms** | 22 ms | 2.3× |
-| **pxar-cli** | data | **64 ms** | 24 ms | 2.0× |
-| **pxar-cli** | metadata | **71 ms** | 24 ms | 1.8× |
-| proxmox-backup-client | legacy | 147 ms | 90 ms | — |
-| proxmox-backup-client | data | 132 ms | 80 ms | — |
-| proxmox-backup-client | metadata | 132 ms | 70 ms | — |
+| **pxar-cli** | legacy | **69 ms** | 27 ms | 2.0× |
+| **pxar-cli** | data | **77 ms** | 36 ms | 1.6× |
+| **pxar-cli** | metadata | **78 ms** | 29 ms | 1.6× |
+| proxmox-backup-client | legacy | 135 ms | 80 ms | — |
+| proxmox-backup-client | data | 127 ms | 70 ms | — |
+| proxmox-backup-client | metadata | 125 ms | 70 ms | — |
 
 Small dataset (10 files × 8KB ≈ 80KB):
 
 | Tool | Mode | Wall (best) | Duration |
 |------|------|-------------|----------|
-| **pxar-cli** | legacy | **61 ms** | 20 ms |
-| proxmox-backup-client | legacy | 132 ms | 70 ms |
+| **pxar-cli** | legacy | **62 ms** | 19 ms |
+| proxmox-backup-client | legacy | 128 ms | 70 ms |
 
 Large dataset (10 files × 1MB ≈ 10MB):
 
 | Tool | Mode | Wall (best) | Duration |
 |------|------|-------------|----------|
-| **pxar-cli** | legacy | 221 ms | 173 ms |
-| proxmox-backup-client | legacy | **181 ms** | 120 ms |
+| **pxar-cli** | legacy | 177 ms | 134 ms |
+| proxmox-backup-client | legacy | **167 ms** | 110 ms |
 
 Both tools support all three detection modes (`legacy`, `data`, `metadata`).
 Wall = total time from process start to finish. Duration = self-reported backup time.
-
-*Note: pxar-cli and proxmox-backup-client both perform full server-side deduplication checks and use 4MB average chunk sizes, making this a fair comparison of the Go and Rust implementations.*
 
 ### Raw Throughput (LocalStore, no network)
 

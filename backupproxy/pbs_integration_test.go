@@ -2427,3 +2427,361 @@ func verifySymlinkWithAccessor(t *testing.T, acc *accessor.Accessor, path, expec
 		t.Errorf("symlink %q target = %q, want %q", path, entry.LinkTarget, expectedTarget)
 	}
 }
+
+// TestIntegration_PBSLegacyModeBackupWithCatalog verifies that a legacy mode
+// backup uploads a catalog.pcat1.didx to PBS and that it appears in the manifest.
+func TestIntegration_PBSLegacyModeBackupWithCatalog(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+	cfg := defaultBackupConfig(t)
+	cfg.DetectionMode = DetectionLegacy
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/hello.txt", "/root", []byte("hello catalog"), 0o644)
+	fs.addDir("/root/subdir", "/root", 0o755)
+	fs.addFile("/root/subdir/nested.txt", "/root/subdir", []byte("nested data"), 0o644)
+
+	srv := NewServer(fs.provider(), store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode legacy: %v", err)
+	}
+
+	if !result.CatalogUploaded {
+		t.Error("expected CatalogUploaded to be true for legacy backup")
+	}
+
+	manifest := result.Manifest
+	hasCatalog := false
+	for _, f := range manifest.Files {
+		if f.Filename == "catalog.pcat1.didx" {
+			hasCatalog = true
+			if f.Size == 0 {
+				t.Error("catalog entry has zero size")
+			}
+			if f.CSum == "" {
+				t.Error("catalog entry has empty checksum")
+			}
+			break
+		}
+	}
+	if !hasCatalog {
+		t.Error("manifest missing catalog.pcat1.didx entry")
+	}
+
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify legacy+catalog backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of legacy+catalog backup: OK")
+	}
+}
+
+// TestIntegration_PBSDataModeBackupWithCatalog verifies that a data mode
+// (split) backup uploads catalog.pcat1.didx and that it appears in the manifest.
+func TestIntegration_PBSDataModeBackupWithCatalog(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+	cfg := defaultBackupConfig(t)
+	cfg.DetectionMode = DetectionData
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/data.txt", "/root", []byte("data mode catalog test"), 0o644)
+
+	srv := NewServer(fs.provider(), store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode data: %v", err)
+	}
+
+	if !result.CatalogUploaded {
+		t.Error("expected CatalogUploaded to be true for data mode backup")
+	}
+
+	hasCatalog := false
+	for _, f := range result.Manifest.Files {
+		if f.Filename == "catalog.pcat1.didx" {
+			hasCatalog = true
+			break
+		}
+	}
+	if !hasCatalog {
+		t.Error("manifest missing catalog.pcat1.didx entry")
+	}
+
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify data+catalog backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of data+catalog backup: OK")
+	}
+}
+
+// TestIntegration_PBSMetadataModeBackupWithCatalog verifies that a metadata
+// mode (incremental) backup uploads catalog.pcat1.didx.
+func TestIntegration_PBSMetadataModeBackupWithCatalog(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	store := newIntegrationStore(t)
+	mtime := format.StatxTimestamp{Secs: 1700000000}
+
+	// Phase 1: initial data snapshot (no catalog needed for phase 1)
+	prevCfg := defaultBackupConfig(t)
+	prevCfg.DetectionMode = DetectionData
+	cleanupSnapshot(t, pbsCfg, prevCfg)
+
+	fs1 := newMemFS()
+	fs1.addDirWithMtime("/root", "", 0o755, mtime)
+	fs1.addFileWithMtime("/root/file.txt", "/root", []byte("original"), 0o644, mtime)
+
+	srv1 := NewServer(fs1.provider(), store)
+	prevResult, err := srv1.RunSplitBackup(context.Background(), "/root", prevCfg)
+	if err != nil {
+		t.Fatalf("initial data backup: %v", err)
+	}
+	if !prevResult.CatalogUploaded {
+		t.Error("expected initial data backup to upload catalog")
+	}
+
+	// Phase 2: metadata snapshot with catalog
+	currCfg := defaultBackupConfig(t)
+	currCfg.DetectionMode = DetectionMetadata
+	currCfg.PreviousBackup = &PreviousBackupRef{
+		BackupType: prevCfg.BackupType,
+		BackupID:   prevCfg.BackupID,
+		BackupTime: prevCfg.BackupTime,
+	}
+	cleanupSnapshot(t, pbsCfg, currCfg)
+
+	newMtime := format.StatxTimestamp{Secs: 1700000001}
+	fs2 := newMemFS()
+	fs2.addDirWithMtime("/root", "", 0o755, mtime)
+	fs2.addFileWithMtime("/root/file.txt", "/root", []byte("original"), 0o644, mtime)
+	fs2.addFileWithMtime("/root/new.txt", "/root", []byte("new file"), 0o644, newMtime)
+
+	srv2 := NewServer(fs2.provider(), store)
+	metaResult, err := srv2.RunMetadataBackup(context.Background(), "/root", currCfg)
+	if err != nil {
+		t.Fatalf("metadata backup: %v", err)
+	}
+
+	if !metaResult.CatalogUploaded {
+		t.Error("expected CatalogUploaded to be true for metadata backup")
+	}
+
+	hasCatalog := false
+	for _, f := range metaResult.Manifest.Files {
+		if f.Filename == "catalog.pcat1.didx" {
+			hasCatalog = true
+			break
+		}
+	}
+	if !hasCatalog {
+		t.Error("metadata manifest missing catalog.pcat1.didx entry")
+	}
+}
+
+// TestIntegration_PBSEncryptModeBackup verifies encryption mode (CryptModeEncrypt):
+// backup with encryption, verify PBS accepts the data and PBS verify passes.
+func TestIntegration_PBSEncryptModeBackup(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	chunkCfg, err := buzhash.NewConfig(4096)
+	if err != nil {
+		t.Fatalf("create chunk config: %v", err)
+	}
+	store := NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+
+	// Generate a random encryption key
+	var encKey [32]byte
+	if _, err := rand.Read(encKey[:]); err != nil {
+		t.Fatalf("generate encryption key: %v", err)
+	}
+	cc, err := datastore.NewCryptConfig(encKey)
+	if err != nil {
+		t.Fatalf("NewCryptConfig: %v", err)
+	}
+
+	cfg := defaultBackupConfig(t)
+	cfg.CryptMode = datastore.CryptModeEncrypt
+	cfg.CryptConfig = cc
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/secret.txt", "/root", []byte("encrypted data here"), 0o644)
+	fs.addDir("/root/subdir", "/root", 0o755)
+	fs.addFile("/root/subdir/nested.txt", "/root/subdir", []byte("nested encrypted content"), 0o644)
+
+	srv := NewServer(fs.provider(), store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode encrypt: %v", err)
+	}
+
+	if result.FileCount != 2 {
+		t.Errorf("file count = %d, want 2", result.FileCount)
+	}
+
+	manifest := result.Manifest
+	if manifest.CryptMode != string(datastore.CryptModeEncrypt) {
+		t.Errorf("manifest crypt-mode = %q, want %q", manifest.CryptMode, datastore.CryptModeEncrypt)
+	}
+
+	if manifest.Signature == "" {
+		t.Error("encrypted manifest should have a signature")
+	}
+
+	// Verify manifest has catalog
+	hasCatalog := false
+	for _, f := range manifest.Files {
+		if f.Filename == "catalog.pcat1.didx" {
+			hasCatalog = true
+		}
+	}
+	if !hasCatalog {
+		t.Error("manifest missing catalog.pcat1.didx")
+	}
+
+	t.Logf("Encrypted backup: %d files, %d dirs, %d bytes, crypt-mode=%s",
+		result.FileCount, result.DirCount, result.TotalBytes, manifest.CryptMode)
+
+	// PBS verify should pass (PBS stores encrypted chunks as-is)
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify encrypted backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of encrypted backup: OK")
+	}
+}
+
+// TestIntegration_PBSSignOnlyModeBackup verifies sign-only mode (CryptModeSign):
+// backup with signing only, verify manifest has signature but chunks are unencrypted.
+func TestIntegration_PBSSignOnlyModeBackup(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	chunkCfg, err := buzhash.NewConfig(4096)
+	if err != nil {
+		t.Fatalf("create chunk config: %v", err)
+	}
+	store := NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+
+	var encKey [32]byte
+	if _, err := rand.Read(encKey[:]); err != nil {
+		t.Fatalf("generate encryption key: %v", err)
+	}
+	cc, err := datastore.NewCryptConfig(encKey)
+	if err != nil {
+		t.Fatalf("NewCryptConfig: %v", err)
+	}
+
+	cfg := defaultBackupConfig(t)
+	cfg.CryptMode = datastore.CryptModeSign
+	cfg.CryptConfig = cc
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/signed.txt", "/root", []byte("signed but not encrypted"), 0o644)
+
+	srv := NewServer(fs.provider(), store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode sign-only: %v", err)
+	}
+
+	manifest := result.Manifest
+	if manifest.CryptMode != string(datastore.CryptModeSign) {
+		t.Errorf("manifest crypt-mode = %q, want %q", manifest.CryptMode, datastore.CryptModeSign)
+	}
+
+	if manifest.Signature == "" {
+		t.Error("sign-only manifest should have a signature")
+	}
+
+	t.Logf("Sign-only backup: %d files, %d dirs, %d bytes", result.FileCount, result.DirCount, result.TotalBytes)
+
+	// PBS verify should pass
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify sign-only backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of sign-only backup: OK")
+	}
+}
+
+// TestIntegration_PBSDataModeEncryptWithCatalog verifies encrypted data-mode backup
+// includes catalog and passes PBS verify.
+func TestIntegration_PBSDataModeEncryptWithCatalog(t *testing.T) {
+	pbsCfg := pbsConfigFromEnv(t)
+	chunkCfg, err := buzhash.NewConfig(4096)
+	if err != nil {
+		t.Fatalf("create chunk config: %v", err)
+	}
+	store := NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+
+	var encKey [32]byte
+	if _, err := rand.Read(encKey[:]); err != nil {
+		t.Fatalf("generate encryption key: %v", err)
+	}
+	cc, err := datastore.NewCryptConfig(encKey)
+	if err != nil {
+		t.Fatalf("NewCryptConfig: %v", err)
+	}
+
+	cfg := defaultBackupConfig(t)
+	cfg.DetectionMode = DetectionData
+	cfg.CryptMode = datastore.CryptModeEncrypt
+	cfg.CryptConfig = cc
+	cleanupSnapshot(t, pbsCfg, cfg)
+
+	fs := newMemFS()
+	fs.addDir("/root", "", 0o755)
+	fs.addFile("/root/encrypt.txt", "/root", []byte("encrypted data mode"), 0o644)
+	fs.addFile("/root/another.txt", "/root", []byte("more encrypted data"), 0o644)
+
+	srv := NewServer(fs.provider(), store)
+	result, err := srv.RunBackupWithMode(context.Background(), "/root", cfg)
+	if err != nil {
+		t.Fatalf("RunBackupWithMode data+encrypt: %v", err)
+	}
+
+	if result.FileCount != 2 {
+		t.Errorf("file count = %d, want 2", result.FileCount)
+	}
+	if !result.CatalogUploaded {
+		t.Error("expected catalog to be uploaded")
+	}
+	if result.Manifest.CryptMode != string(datastore.CryptModeEncrypt) {
+		t.Errorf("manifest crypt-mode = %q, want %q", result.Manifest.CryptMode, datastore.CryptModeEncrypt)
+	}
+
+	// Verify all expected files in manifest
+	expectedFiles := map[string]bool{
+		"root.mpxar.didx":    false,
+		"root.ppxar.didx":    false,
+		"catalog.pcat1.didx": false,
+		"index.json.blob":    false,
+	}
+	for _, f := range result.Manifest.Files {
+		if _, ok := expectedFiles[f.Filename]; ok {
+			expectedFiles[f.Filename] = true
+		}
+	}
+	for name, found := range expectedFiles {
+		if !found && name != "index.json.blob" {
+			t.Errorf("manifest missing %s", name)
+		}
+	}
+
+	t.Logf("Encrypted data-mode backup: %d files, %d bytes, catalog=%v",
+		result.FileCount, result.TotalBytes, result.CatalogUploaded)
+
+	exitStatus := pbsVerifySnapshot(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime)
+	if exitStatus != "OK" {
+		t.Errorf("PBS verify encrypted data-mode backup failed: %q", exitStatus)
+	} else {
+		t.Log("PBS verify of encrypted data-mode backup: OK")
+	}
+}

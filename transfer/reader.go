@@ -78,17 +78,41 @@ func (r *FileArchiveReader) Close() error {
 }
 
 // ChunkedArchiveReader reads from a chunked archive (.pxar.didx).
-// It reconstructs the stream from chunks using a ChunkSource, then
-// delegates to a FileArchiveReader.
+// It lazily loads chunks on demand using a ChunkedReadSeeker, avoiding
+// full-stream-in-memory reconstruction. For small archives where full
+// reconstruction is acceptable, use NewChunkedArchiveReaderEager.
 type ChunkedArchiveReader struct {
 	inner   *FileArchiveReader
 	idx     *datastore.DynamicIndexReader
 	source  datastore.ChunkSource
 	closers []io.Closer
+	lazy    *ChunkedReadSeeker // track for cleanup
 }
 
-// NewChunkedArchiveReader creates a reader for a chunked .pxar.didx archive.
+// NewChunkedArchiveReader creates a reader for a chunked .pxar.didx archive
+// using lazy on-demand chunk loading. This avoids reconstructing the entire
+// stream into memory — only chunks needed for Lookups and ReadFileContent
+// calls are loaded.
 func NewChunkedArchiveReader(idxData []byte, source datastore.ChunkSource) (*ChunkedArchiveReader, error) {
+	idx, err := datastore.ReadDynamicIndex(idxData)
+	if err != nil {
+		return nil, fmt.Errorf("read dynamic index: %w", err)
+	}
+
+	// Use lazy read-seeker instead of full reconstruction
+	lazyReader := NewChunkedReadSeeker(idx, source, 64)
+	return &ChunkedArchiveReader{
+		inner:  NewFileArchiveReader(lazyReader),
+		idx:    idx,
+		source: source,
+		lazy:   lazyReader,
+	}, nil
+}
+
+// NewChunkedArchiveReaderEager creates a reader that reconstructs the entire
+// stream into memory upfront. Use this for small archives or when you need
+// guaranteed sequential access performance.
+func NewChunkedArchiveReaderEager(idxData []byte, source datastore.ChunkSource) (*ChunkedArchiveReader, error) {
 	idx, err := datastore.ReadDynamicIndex(idxData)
 	if err != nil {
 		return nil, fmt.Errorf("read dynamic index: %w", err)
@@ -127,6 +151,11 @@ func (r *ChunkedArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error
 
 func (r *ChunkedArchiveReader) Close() error {
 	var err error
+	if r.lazy != nil {
+		if closeErr := r.lazy.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
 	if closeErr := r.inner.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}
@@ -139,18 +168,52 @@ func (r *ChunkedArchiveReader) Close() error {
 }
 
 // SplitArchiveReader reads from a split chunked archive (.mpxar.didx + .ppxar.didx).
-// It reconstructs both metadata and payload streams, then delegates to a
-// FileArchiveReader with the payload stream.
+// It uses lazy on-demand chunk loading for both metadata and payload streams,
+// avoiding full-stream-in-memory reconstruction. For small archives, use
+// NewSplitArchiveReaderEager.
 type SplitArchiveReader struct {
-	inner       *FileArchiveReader
-	metaIdx     *datastore.DynamicIndexReader
-	payloadIdx  *datastore.DynamicIndexReader
-	source      datastore.ChunkSource
-	closers     []io.Closer
+	inner          *FileArchiveReader
+	metaIdx        *datastore.DynamicIndexReader
+	payloadIdx     *datastore.DynamicIndexReader
+	source         datastore.ChunkSource
+	closers        []io.Closer
+	metaLazy       *ChunkedReadSeeker
+	payloadLazy    *ChunkedReadSeeker
 }
 
-// NewSplitArchiveReader creates a reader for a split chunked archive.
+// NewSplitArchiveReader creates a reader for a split chunked archive using
+// lazy on-demand chunk loading. Only chunks needed for Lookups and
+// ReadFileContent calls are loaded, which is critical for same-datastore
+// PBS transfers where downloading the entire payload stream is expensive.
 func NewSplitArchiveReader(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
+	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
+	if err != nil {
+		return nil, fmt.Errorf("read metadata index: %w", err)
+	}
+
+	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	if err != nil {
+		return nil, fmt.Errorf("read payload index: %w", err)
+	}
+
+	// Use lazy read-seekers for both streams
+	metaLazy := NewChunkedReadSeeker(metaIdx, source, 32)
+	payloadLazy := NewChunkedReadSeeker(payloadIdx, source, 64)
+
+	return &SplitArchiveReader{
+		inner:       NewSplitFileArchiveReader(metaLazy, payloadLazy),
+		metaIdx:     metaIdx,
+		payloadIdx:  payloadIdx,
+		source:      source,
+		metaLazy:    metaLazy,
+		payloadLazy: payloadLazy,
+	}, nil
+}
+
+// NewSplitArchiveReaderEager creates a reader that reconstructs both streams
+// into memory upfront. Use for small archives or when you need guaranteed
+// sequential access performance.
+func NewSplitArchiveReaderEager(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
 	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read metadata index: %w", err)
@@ -204,6 +267,16 @@ func (r *SplitArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) 
 
 func (r *SplitArchiveReader) Close() error {
 	var err error
+	if r.metaLazy != nil {
+		if closeErr := r.metaLazy.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	if r.payloadLazy != nil {
+		if closeErr := r.payloadLazy.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
 	if closeErr := r.inner.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}

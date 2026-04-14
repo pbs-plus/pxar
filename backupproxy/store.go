@@ -74,7 +74,7 @@ func encodeChunkBlobTo(dst []byte, chunk []byte, compress bool) ([]byte, error) 
 // id_key for encrypted mode (SHA-256(data || id_key)) or plain SHA-256 otherwise.
 func chunkDigest(chunk []byte, cc *datastore.CryptConfig) [32]byte {
 	if cc != nil {
-		return cc.ChunkDigest(chunk)
+		return cc.ComputeDigest(chunk)
 	}
 	return sha256.Sum256(chunk)
 }
@@ -251,11 +251,20 @@ func (s *localSession) UploadSplitArchive(_ context.Context, metadataName string
 }
 
 func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) error {
-	blob, err := datastore.EncodeBlob(data)
-	if err != nil {
-		return fmt.Errorf("encode blob: %w", err)
+	var blobData []byte
+	if s.config.CryptConfig != nil && s.config.CryptMode == datastore.CryptModeEncrypt {
+		enc, err := datastore.EncodeEncryptedBlob(data, s.config.CryptConfig, false)
+		if err != nil {
+			return fmt.Errorf("encode encrypted blob: %w", err)
+		}
+		blobData = enc.Bytes()
+	} else {
+		blob, err := datastore.EncodeBlob(data)
+		if err != nil {
+			return fmt.Errorf("encode blob: %w", err)
+		}
+		blobData = blob.Bytes()
 	}
-	blobData := blob.Bytes()
 
 	blobPath := filepath.Join(s.baseDir, name)
 	if err := os.WriteFile(blobPath, blobData, 0o644); err != nil {
@@ -288,6 +297,9 @@ func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
 
+	// Manifest is never encrypted — even in encrypt mode, the manifest
+	// must remain readable so that file listings and metadata are accessible.
+
 	manifestPath := filepath.Join(s.baseDir, "index.json")
 	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
 		return nil, fmt.Errorf("write manifest: %w", err)
@@ -299,11 +311,6 @@ func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 // ReadPreviousArchive reads an archive file from a previous local backup snapshot.
 func (ls *LocalStore) ReadPreviousArchive(_ context.Context, _ datastore.BackupType, _ string, _ int64, _, filename string) ([]byte, error) {
 	return nil, fmt.Errorf("local store: use Dir field in PreviousBackupRef for file lookup")
-}
-
-// ReadPreviousArchiveDir reads an archive file from a directory on the local filesystem.
-func ReadPreviousArchiveDir(dir, filename string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(dir, filename))
 }
 
 // localSnapshotSource implements PreviousSnapshotSource for local filesystem storage.

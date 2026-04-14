@@ -1,6 +1,7 @@
 package datastore
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"testing"
 )
@@ -71,7 +72,7 @@ func TestCryptConfigComputeDigest(t *testing.T) {
 
 	data := []byte("chunk data")
 	digest := cc.ComputeDigest(data)
-	plainDigest := PlainChunkDigest(data)
+	plainDigest := sha256.Sum256(data)
 
 	if digest == plainDigest {
 		t.Error("encrypted digest should differ from plain digest")

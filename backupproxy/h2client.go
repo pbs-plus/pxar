@@ -49,14 +49,6 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 	if cfg.Namespace != "" {
 		params.Set("ns", cfg.Namespace)
 	}
-	if cfg.PreviousBackup != nil {
-		params.Set("previous-backup-type", cfg.PreviousBackup.BackupType.String())
-		params.Set("previous-backup-id", cfg.PreviousBackup.BackupID)
-		params.Set("previous-backup-time", strconv.FormatInt(cfg.PreviousBackup.BackupTime, 10))
-	}
-	if cfg.CryptMode != "" {
-		params.Set("crypt-mode", string(cfg.CryptMode))
-	}
 	upgradePath := u.Path + "/backup?" + params.Encode()
 
 	// TLS dial (use http/1.1 ALPN for upgrade)

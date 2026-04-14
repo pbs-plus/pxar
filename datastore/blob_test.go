@@ -2,6 +2,7 @@ package datastore
 
 import (
 	"bytes"
+	"encoding/binary"
 	"hash/crc32"
 	"testing"
 )
@@ -13,14 +14,18 @@ func TestBlobEncodeUncompressed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if blob.Magic() != MagicUncompressedBlob {
-		t.Errorf("magic = %x, want uncompressed", blob.Magic())
+	raw := blob.Bytes()
+	var magic [8]byte
+	copy(magic[:], raw[:8])
+	if magic != MagicUncompressedBlob {
+		t.Errorf("magic = %x, want uncompressed", magic)
 	}
 
 	// CRC should be over the data
 	expectedCRC := crc32.ChecksumIEEE(data)
-	if blob.CRC() != expectedCRC {
-		t.Errorf("crc = %x, want %x", blob.CRC(), expectedCRC)
+	storedCRC := binary.LittleEndian.Uint32(raw[8:12])
+	if storedCRC != expectedCRC {
+		t.Errorf("crc = %x, want %x", storedCRC, expectedCRC)
 	}
 }
 

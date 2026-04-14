@@ -17,7 +17,7 @@ var (
 
 const (
 	BlobHeaderSize          = 12 // magic(8) + crc32(4)
-	EncryptedBlobHeaderSize = 48 // magic(8) + crc32(4) + iv(16) + tag(16)
+	EncryptedBlobHeaderSize = 44 // magic(8) + crc32(4) + iv(16) + tag(16)
 	IndexHeaderSize         = 4096
 	DynamicEntrySize        = 40 // end_offset(8) + digest(32)
 	FixedDigestSize         = 32

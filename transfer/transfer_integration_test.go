@@ -5,10 +5,13 @@ package transfer_test
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,6 +118,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 		t.Fatalf("Finish session 1: %v", err)
 	}
 	t.Logf("Snap1 created: %s/%s/%d, files=%d", manifest1.BackupType, manifest1.BackupID, manifest1.BackupTime, len(manifest1.Files))
+	verifyPBSSnapshot(t, pbsCfg, snap1Cfg)
 
 	// --- Phase 2: Create second snapshot (snap2) with /opt/app/config.yml ---
 	snap2Time := time.Now().Unix() + 1 // different timestamp
@@ -168,6 +172,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 		t.Fatalf("Finish session 2: %v", err)
 	}
 	t.Logf("Snap2 created: %s/%s/%d, files=%d", manifest2.BackupType, manifest2.BackupID, manifest2.BackupTime, len(manifest2.Files))
+	verifyPBSSnapshot(t, pbsCfg, snap2Cfg)
 
 	// Cleanup both snapshots after the test
 	t.Cleanup(func() {
@@ -243,6 +248,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 		t.Fatalf("Finish merged session: %v", err)
 	}
 	t.Logf("Merged snapshot created: %s/%s/%d, files=%d", manifest3.BackupType, manifest3.BackupID, manifest3.BackupTime, len(manifest3.Files))
+	verifyPBSSnapshot(t, pbsCfg, mergedCfg)
 
 	// --- Phase 4: Read back the merged snapshot and verify content ---
 	mergedReader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
@@ -364,6 +370,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	if _, err := sess1.Finish(ctx); err != nil {
 		t.Fatalf("Finish session 1: %v", err)
 	}
+	verifyPBSSnapshot(t, pbsCfg, snap1Cfg)
 
 	// --- Phase 2: Create snap2 with /opt/app/config.yml ---
 	snap2Time := snap1Cfg.BackupTime + 1
@@ -414,6 +421,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	if _, err := sess2.Finish(ctx); err != nil {
 		t.Fatalf("Finish session 2: %v", err)
 	}
+	verifyPBSSnapshot(t, pbsCfg, snap2Cfg)
 
 	// Cleanup
 	t.Cleanup(func() {
@@ -490,6 +498,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	if _, err := sess3.Finish(ctx); err != nil {
 		t.Fatalf("Finish merged session: %v", err)
 	}
+	verifyPBSSnapshot(t, pbsCfg, mergedCfg)
 
 	// --- Phase 4: Verify the merged snapshot ---
 	mergedReader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
@@ -585,6 +594,7 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	if _, err := sess.Finish(ctx); err != nil {
 		t.Fatalf("Finish session: %v", err)
 	}
+	verifyPBSSnapshot(t, pbsCfg, srcCfg)
 
 	t.Cleanup(func() {
 		deletePBSSnapshot(t, pbsCfg, srcCfg)
@@ -637,6 +647,7 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	if _, err := sess2.Finish(ctx); err != nil {
 		t.Fatalf("Finish remap session: %v", err)
 	}
+	verifyPBSSnapshot(t, pbsCfg, remapCfg)
 
 	// Verify the remapped snapshot
 	remapReader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
@@ -672,6 +683,133 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	}
 
 	t.Log("Path remapping transfer integration test PASSED")
+}
+
+// pbsHTTPClient returns an HTTP client that skips TLS verification for PBS.
+func pbsHTTPClient(t *testing.T) *http.Client {
+	t.Helper()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig.InsecureSkipVerify = true
+	return &http.Client{Transport: transport}
+}
+
+// pbsVerifySnapshot triggers a verify job on PBS for the given snapshot and
+// waits for it to complete. It returns the verify task exit status ("ok" or "failed").
+func pbsVerifySnapshot(t *testing.T, cfg backupproxy.PBSConfig, backupType string, backupID string, backupTime int64) string {
+	t.Helper()
+
+	verifyURL := fmt.Sprintf("%s/admin/datastore/%s/verify", cfg.BaseURL, cfg.Datastore)
+	form := url.Values{
+		"backup-type":     {backupType},
+		"backup-id":       {backupID},
+		"backup-time":     {fmt.Sprintf("%d", backupTime)},
+		"ignore-verified": {"true"},
+		"outdated-after":  {"0"},
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, verifyURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("create verify request: %v", err)
+	}
+	req.Header.Set("Authorization", "PBSAPIToken "+cfg.AuthToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := pbsHTTPClient(t)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("verify request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("verify: HTTP %d: %s", resp.StatusCode, body)
+	}
+
+	var result struct {
+		Data string `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode verify response: %v", err)
+	}
+
+	upid := result.Data
+	if upid == "" {
+		t.Fatal("verify returned empty UPID")
+	}
+	t.Logf("verify task UPID: %s", upid)
+
+	encodedUPID := url.PathEscape(upid)
+	taskURL := fmt.Sprintf("%s/nodes/localhost/tasks/%s/status", cfg.BaseURL, encodedUPID)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, taskURL, nil)
+		if err != nil {
+			t.Fatalf("create task status request: %v", err)
+		}
+		req.Header.Set("Authorization", "PBSAPIToken "+cfg.AuthToken)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Logf("task status request error: %v, retrying", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			t.Logf("read task status body: %v, retrying", readErr)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Logf("parse task status: %v, retrying", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		dataRaw, ok := raw["data"]
+		if !ok || string(dataRaw) == "null" {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var taskStatus struct {
+			Status     string `json:"status"`
+			ExitStatus string `json:"exitstatus"`
+		}
+		if err := json.Unmarshal(dataRaw, &taskStatus); err != nil {
+			t.Logf("decode task status data: %v, retrying", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		if taskStatus.Status == "stopped" {
+			return taskStatus.ExitStatus
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+
+	t.Fatal("verify task did not complete within 60 seconds")
+	return ""
+}
+
+// verifyPBSSnapshot is a convenience wrapper that verifies a snapshot and fails
+// the test if PBS verification does not return "ok".
+func verifyPBSSnapshot(t *testing.T, cfg backupproxy.PBSConfig, bc backupproxy.BackupConfig) {
+	t.Helper()
+
+	exitStatus := pbsVerifySnapshot(t, cfg, bc.BackupType.String(), bc.BackupID, bc.BackupTime)
+	if exitStatus != "ok" {
+		t.Errorf("PBS verify failed for %s/%s/%d: exit status %q", bc.BackupType, bc.BackupID, bc.BackupTime, exitStatus)
+	} else {
+		t.Logf("PBS verify OK for %s/%s/%d", bc.BackupType, bc.BackupID, bc.BackupTime)
+	}
 }
 
 // deletePBSSnapshot removes a backup snapshot from PBS (for cleanup).

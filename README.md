@@ -283,6 +283,8 @@ All backup modes automatically generate and upload a `catalog.pcat1.didx` file a
 The `FileSystemAccessor` interface includes `GetXAttrs`, `GetACL`, and `GetFCaps` methods for collecting extended attributes, POSIX ACLs, and file capabilities. The `osFS` implementation in `cmd/pxar-cli` reads real xattrs and ACLs from the filesystem using `unix.Llistxattr`/`unix.Lgetxattr`. Metadata change detection in `DetectionMetadata` mode compares all extended metadata fields, ensuring xattr/ACL changes trigger re-upload.
 
 #### Basic Usage
+
+```go
 package main
 
 import (
@@ -537,154 +539,9 @@ Backup Data Flow:
                                       └── PBSRemoteStore (PBS H2 Protocol)
 ```
 
-## Benchmarks
+## Disclaimer
 
-All PBS benchmarks run against a PBS Docker container on localhost (AMD Ryzen 5 PRO 5650U).
-
-### LocalStore (no network)
-
-| Benchmark | Time/op | Memory/op | Allocs/op |
-|-----------|---------|-----------|-----------|
-| Legacy empty dir | 366 μs | 2.2 MB | 66 |
-| Legacy 1KB file | 390 μs | 2.3 MB | 75 |
-| Legacy 1MB file | 10.8 ms | 4.5 MB | 6005 |
-| Legacy 100 files × 4KB | 4.0 ms | 3.7 MB | 4733 |
-| Legacy 1000 files × 4KB | 42.3 ms | 15.3 MB | 49193 |
-| Data empty dir | 427 μs | 2.6 MB | 104 |
-| Data 1KB file | 431 μs | 2.6 MB | 118 |
-| Data 1MB file | 11.5 ms | 6.5 MB | 6315 |
-| Data 100 files × 4KB | 3.7 ms | 6.2 MB | 6591 |
-| Data 1000 files × 4KB | 29.6 ms | 27.6 MB | 51670 |
-| Metadata all unchanged | 596 μs | 2.7 MB | 290 |
-| Metadata all changed | 564 μs | 2.6 MB | 267 |
-| Metadata mixed | 539 μs | 2.8 MB | 222 |
-
-### pxar-cli vs proxmox-backup-client (PBS, same container, wall-clock)
-
-Fair comparison: both tools run inside the same Docker container against the
-same PBS instance, wall-clock timing (includes auth + startup), best of 3 runs.
-
-Test data: 50 files × 8KB (≈400KB total).
-
-| Tool | Mode | Wall (best) | Duration | Speedup |
-|------|------|-------------|----------|---------|
-| **pxar-cli** | legacy | **69 ms** | 27 ms | 2.0× |
-| **pxar-cli** | data | **77 ms** | 36 ms | 1.6× |
-| **pxar-cli** | metadata | **78 ms** | 29 ms | 1.6× |
-| proxmox-backup-client | legacy | 135 ms | 80 ms | — |
-| proxmox-backup-client | data | 127 ms | 70 ms | — |
-| proxmox-backup-client | metadata | 125 ms | 70 ms | — |
-
-Small dataset (10 files × 8KB ≈ 80KB):
-
-| Tool | Mode | Wall (best) | Duration |
-|------|------|-------------|----------|
-| **pxar-cli** | legacy | **62 ms** | 19 ms |
-| proxmox-backup-client | legacy | 128 ms | 70 ms |
-
-Large dataset (10 files × 1MB ≈ 10MB):
-
-| Tool | Mode | Wall (best) | Duration |
-|------|------|-------------|----------|
-| **pxar-cli** | legacy | 177 ms | 134 ms |
-| proxmox-backup-client | legacy | **167 ms** | 110 ms |
-
-Both tools support all three detection modes (`legacy`, `data`, `metadata`).
-Wall = total time from process start to finish. Duration = self-reported backup time.
-
-### Raw Throughput (LocalStore, no network)
-
-| Component | Throughput |
-|-----------|-----------|
-| Buzhash chunker | 441 MB/s |
-| In-memory chunk pipeline | 366 MB/s |
-| Store chunker (disk I/O) | 200 MB/s |
-
-### Reproducing Benchmarks
-
-#### LocalStore benchmarks (no PBS needed)
-
-```bash
-go test -bench=BenchmarkE2E -benchmem ./backupproxy/
-```
-
-#### PBS benchmarks (requires PBS Docker container)
-
-1. Start a PBS container:
-
-```bash
-docker run -d \
-  --name pbs-bench \
-  --hostname pbs \
-  -e ROOT_PASSWORD=testpassword \
-  -p 8007:8007 \
-  --tmpfs /run/proxmox-backup:size=64M \
-  -v pbs-config:/etc/proxmox-backup \
-  -v pbs-data:/var/lib/proxmox-backup \
-  ghcr.io/pbs-plus/proxmox-backup-docker
-```
-
-2. Wait for PBS to be ready and configure it:
-
-```bash
-# Wait for PBS
-for i in $(seq 1 60); do
-  curl -sk https://localhost:8007/api2/json/version 2>/dev/null && break
-  sleep 2
-done
-
-# Create datastore
-docker exec pbs-bench proxmox-backup-manager datastore create bench-store /var/lib/proxmox-backup/bench-store
-
-# Create API token
-AUTH=$(curl -sk -X POST https://localhost:8007/api2/json/access/ticket \
-  -d "username=root@pam&password=testpassword")
-TICKET=$(echo "$AUTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['ticket'])")
-CSRF=$(echo "$AUTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['CSRFPreventionToken'])")
-
-TOKEN_RESP=$(curl -sk -X POST \
-  https://localhost:8007/api2/json/access/users/root@pam/token/bench \
-  -H "CSRFPreventionToken: $CSRF" \
-  -b "PBSAuthCookie=$TICKET")
-TOKEN=$(echo "$TOKEN_RESP" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)['data']
-print(f\"{d['tokenid']}:{d['value']}\")
-")
-
-docker exec pbs-bench proxmox-backup-manager acl update / Admin --auth-id root@pam!bench
-```
-
-3. Build and deploy the pxar-cli binary:
-
-```bash
-CGO_ENABLED=0 go build -o /tmp/pxar-cli ./cmd/pxar-cli/
-docker cp /tmp/pxar-cli pbs-bench:/usr/local/bin/pxar-cli
-```
-
-4. Run pxar PBS Go benchmarks:
-
-```bash
-PBS_URL=https://localhost:8007/api2/json \
-PBS_DATASTORE=bench-store \
-PBS_TOKEN="$TOKEN" \
-go test -tags=integration -bench=BenchmarkPBS -benchmem -count=3 ./backupproxy/
-```
-
-5. Fair comparison (pxar-cli vs proxmox-backup-client, same container, same timing):
-
-```bash
-# Create test data inside the container
-docker exec pbs-bench bash -c "
-  mkdir -p /tmp/bench-data/small /tmp/bench-data/medium /tmp/bench-data/large
-  for i in \$(seq 1 10); do dd if=/dev/urandom of=/tmp/bench-data/small/file\$i bs=8192 count=1 2>/dev/null; done
-  for i in \$(seq 1 50); do dd if=/dev/urandom of=/tmp/bench-data/medium/file\$i bs=8192 count=1 2>/dev/null; done
-  for i in \$(seq 1 10); do dd if=/dev/urandom of=/tmp/bench-data/large/file\$i bs=1048576 count=1 2>/dev/null; done
-"
-
-# Run fair comparison
-./scripts/bench_fair_compare.sh pbs-bench
-```
+**This library is not yet battle-tested.** It is under active development and should not be used in production environments. The API may change without notice, and there may be bugs or edge cases that have not been discovered. Use at your own risk.
 
 ## License
 

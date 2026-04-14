@@ -517,6 +517,148 @@ Backup Data Flow:
                                       └── PBSRemoteStore (PBS H2 Protocol)
 ```
 
+## Benchmarks
+
+All PBS benchmarks run against a PBS Docker container on localhost (AMD Ryzen 5 PRO 5650U).
+
+### LocalStore (no network)
+
+| Benchmark | Time/op | Memory/op | Allocs/op |
+|-----------|---------|-----------|-----------|
+| Legacy empty dir | 366 μs | 2.2 MB | 66 |
+| Legacy 1KB file | 390 μs | 2.3 MB | 75 |
+| Legacy 1MB file | 10.8 ms | 4.5 MB | 6005 |
+| Legacy 100 files × 4KB | 4.0 ms | 3.7 MB | 4733 |
+| Legacy 1000 files × 4KB | 42.3 ms | 15.3 MB | 49193 |
+| Data empty dir | 427 μs | 2.6 MB | 104 |
+| Data 1KB file | 431 μs | 2.6 MB | 118 |
+| Data 1MB file | 11.5 ms | 6.5 MB | 6315 |
+| Data 100 files × 4KB | 3.7 ms | 6.2 MB | 6591 |
+| Data 1000 files × 4KB | 29.6 ms | 27.6 MB | 51670 |
+| Metadata all unchanged | 596 μs | 2.7 MB | 290 |
+| Metadata all changed | 564 μs | 2.6 MB | 267 |
+| Metadata mixed | 539 μs | 2.8 MB | 222 |
+
+### pxar library vs proxmox-backup-client (PBS, localhost)
+
+Test data: 50 files × 8KB (≈400KB total).
+
+| Tool | Mode | Best Time/op | Notes |
+|------|------|-------------|-------|
+| **pxar** | DetectionLegacy | **33 ms** | Single archive, full re-read |
+| **pxar** | DetectionData | **22 ms** | Split metadata/payload, full re-read |
+| **pxar** | DetectionMetadata | **44 ms** | Includes initial + incremental cycle |
+| proxmox-backup-client | legacy | 121 ms | Single archive, full re-read |
+| proxmox-backup-client | (no other modes) | — | Only supports legacy mode |
+
+For larger files (10MB, 10 files):
+
+| Tool | Best Time/op |
+|------|-------------|
+| **pxar** (raw 1MB upload) | 75 ms |
+| **pxar** (raw split 1MB+1MB) | 130 ms |
+| proxmox-backup-client (10MB) | 154 ms |
+
+### Raw Throughput (LocalStore, no network)
+
+| Component | Throughput |
+|-----------|-----------|
+| Buzhash chunker | 441 MB/s |
+| In-memory chunk pipeline | 366 MB/s |
+| Store chunker (disk I/O) | 200 MB/s |
+
+### Reproducing Benchmarks
+
+#### LocalStore benchmarks (no PBS needed)
+
+```bash
+go test -bench=BenchmarkE2E -benchmem ./backupproxy/
+```
+
+#### PBS benchmarks (requires PBS Docker container)
+
+1. Start a PBS container:
+
+```bash
+docker run -d \
+  --name pbs-bench \
+  --hostname pbs \
+  -e ROOT_PASSWORD=testpassword \
+  -p 8007:8007 \
+  --tmpfs /run/proxmox-backup:size=64M \
+  -v pbs-config:/etc/proxmox-backup \
+  -v pbs-data:/var/lib/proxmox-backup \
+  ghcr.io/pbs-plus/proxmox-backup-docker
+```
+
+2. Wait for PBS to be ready and configure it:
+
+```bash
+# Wait for PBS
+for i in $(seq 1 60); do
+  curl -sk https://localhost:8007/api2/json/version 2>/dev/null && break
+  sleep 2
+done
+
+# Create datastore
+docker exec pbs-bench proxmox-backup-manager datastore create bench-store /var/lib/proxmox-backup/bench-store
+
+# Create API token
+AUTH=$(curl -sk -X POST https://localhost:8007/api2/json/access/ticket \
+  -d "username=root@pam&password=testpassword")
+TICKET=$(echo "$AUTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['ticket'])")
+CSRF=$(echo "$AUTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['CSRFPreventionToken'])")
+
+TOKEN_RESP=$(curl -sk -X POST \
+  https://localhost:8007/api2/json/access/users/root@pam/token/bench \
+  -H "CSRFPreventionToken: $CSRF" \
+  -b "PBSAuthCookie=$TICKET")
+TOKEN=$(echo "$TOKEN_RESP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)['data']
+print(f\"{d['tokenid']}:{d['value']}\")
+")
+
+docker exec pbs-bench proxmox-backup-manager acl update / Admin --auth-id root@pam!bench
+```
+
+3. Run pxar PBS Go benchmarks:
+
+```bash
+PBS_URL=https://localhost:8007/api2/json \
+PBS_DATASTORE=bench-store \
+PBS_TOKEN="$TOKEN" \
+go test -tags=integration -bench=BenchmarkPBS -benchmem -count=3 ./backupproxy/
+```
+
+4. Run proxmox-backup-client comparison (from inside the container):
+
+```bash
+# Get the server certificate fingerprint
+FINGERPRINT=$(docker exec pbs-bench bash -c \
+  'cat /etc/proxmox-backup/proxy.pem | openssl x509 -fingerprint -sha256 -noout' \
+  | grep -oP 'Fingerprint=\K.*')
+
+# Create test data and run
+docker exec pbs-bench bash -c "
+  mkdir -p /tmp/bench-data/small /tmp/bench-data/medium /tmp/bench-data/large
+  for i in \$(seq 1 10); do dd if=/dev/urandom of=/tmp/bench-data/small/file\$i bs=8192 count=1 2>/dev/null; done
+  for i in \$(seq 1 50); do dd if=/dev/urandom of=/tmp/bench-data/medium/file\$i bs=8192 count=1 2>/dev/null; done
+  for i in \$(seq 1 10); do dd if=/dev/urandom of=/tmp/bench-data/large/file\$i bs=1048576 count=1 2>/dev/null; done
+
+  PBS_FINGERPRINT=\"\$FINGERPRINT\" PBS_PASSWORD=testpassword \
+  proxmox-backup-client backup small.pxar:/tmp/bench-data/small \
+    --repository root@pam@localhost:8007:bench-store --backup-id bench-pbc-small
+"
+```
+
+Or use the provided scripts:
+
+```bash
+./scripts/bench_pbs_client.sh pbs-bench     # proxmox-backup-client only
+./scripts/bench_pbs_compare.sh pbs-bench     # full comparison
+```
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.

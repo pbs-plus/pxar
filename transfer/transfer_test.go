@@ -582,6 +582,67 @@ func TestStreamArchiveWriterAllEntryTypes(t *testing.T) {
 	}
 }
 
+func TestCopyTreePathRemapping(t *testing.T) {
+	srcData := createNestedArchive(t)
+	srcReader := transfer.NewFileArchiveReader(bytes.NewReader(srcData))
+	defer srcReader.Close()
+
+	var dstBuf bytes.Buffer
+	dstWriter := transfer.NewStreamArchiveWriter(&dstBuf)
+	rootMeta := pxar.DirMetadata(0o755).Build()
+	if err := dstWriter.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Copy /a → /backup/a (creates intermediate "backup" directory)
+	err := transfer.CopyTree(srcReader, dstWriter, "/a", "/backup/a", transfer.TransferOption{})
+	if err != nil {
+		t.Fatalf("CopyTree: %v", err)
+	}
+
+	if err := dstWriter.Finish(); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	dstReader := transfer.NewFileArchiveReader(bytes.NewReader(dstBuf.Bytes()))
+	defer dstReader.Close()
+
+	// Should find /backup/a/b/deep.txt (intermediate "backup" directory created)
+	deepEntry, err := dstReader.Lookup("/backup/a/b/deep.txt")
+	if err != nil {
+		t.Fatalf("Lookup /backup/a/b/deep.txt: %v", err)
+	}
+	if !deepEntry.IsRegularFile() {
+		t.Errorf("expected regular file, got %v", deepEntry.Kind)
+	}
+	content, err := dstReader.ReadFileContent(deepEntry)
+	if err != nil {
+		t.Fatalf("ReadFileContent: %v", err)
+	}
+	if string(content) != "deep" {
+		t.Errorf("content = %q, want %q", content, "deep")
+	}
+
+	// Should also find /backup/a/mid.txt
+	midEntry, err := dstReader.Lookup("/backup/a/mid.txt")
+	if err != nil {
+		t.Fatalf("Lookup /backup/a/mid.txt: %v", err)
+	}
+	midContent, err := dstReader.ReadFileContent(midEntry)
+	if err != nil {
+		t.Fatalf("ReadFileContent: %v", err)
+	}
+	if string(midContent) != "mid" {
+		t.Errorf("content = %q, want %q", midContent, "mid")
+	}
+
+	// Original path should NOT exist
+	_, err = dstReader.Lookup("/a/b/deep.txt")
+	if err == nil {
+		t.Error("expected /a/b/deep.txt to NOT exist in remapped archive")
+	}
+}
+
 // Metadata helpers
 
 func dirMeta(mode uint64) *pxar.Metadata {

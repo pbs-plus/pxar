@@ -536,6 +536,8 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 
 // TestIntegration_PBSPathRemappingTransfer tests copying files from a source
 // snapshot to a different destination path in the new snapshot.
+// CopyTree(src, dst, "/etc", "/backup_etc") renames the directory from
+// "etc" to "backup_etc" and remaps all child paths accordingly.
 func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	ctx := context.Background()
 	pbsCfg := pbsTransferConfigFromEnv(t)

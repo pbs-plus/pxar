@@ -229,7 +229,7 @@ The server supports three detection modes controlling how archives are created a
 |------|--------|-------------|
 | `DetectionLegacy` | v1 single `.pxar` | All file data encoded into one stream. No previous backup needed. |
 | `DetectionData` | v2 split `.mpxar` + `.ppxar` | Metadata and payload in separate streams. All file data re-read. |
-| `DetectionMetadata` | v2 split `.mpxar` + `.ppxar` | Compares current file metadata (mtime, size, uid, gid, mode) against a previous backup's catalog. Unchanged files reuse payload chunks from the previous snapshot. |
+| `DetectionMetadata` | v2 split `.mpxar` + `.ppxar` | Compares current file metadata (mtime, size, uid, gid, mode, xattrs, ACLs, fcaps) against a previous backup's catalog. Unchanged files reuse payload chunks from the previous snapshot. |
 
 ```go
 // Legacy mode (single archive)
@@ -261,6 +261,34 @@ result, err := srv.RunBackupWithMode(ctx, "/root", backupproxy.BackupConfig{
 ```
 
 For local store, set `PreviousBackup.Dir` to the directory containing previous snapshot indexes. For PBS, leave `Dir` empty and the store will download them via `PBSRemoteStore`.
+
+#### Encryption and Signing
+
+The library supports three crypt modes:
+
+| Mode | Description |
+|------|-------------|
+| `CryptModeNone` | No encryption or signing (default) |
+| `CryptModeEncrypt` | AES-256-GCM encryption of chunk data and manifest; HMAC-SHA256 manifest signing |
+| `CryptModeSignOnly` | No encryption, but HMAC-SHA256 manifest signing for integrity verification |
+
+Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM (12-byte nonce, empty AAD) for chunk encryption. Manifests are signed with HMAC-SHA256 using a derived identity key. Key files can be generated with `pxar-cli keygen` and loaded at backup time.
+
+#### Backup Catalogs
+
+All backup modes automatically generate and upload a `catalog.pcat1.didx` file alongside the archive. This catalog enables PBS's web UI and `proxmox-backup-client catalog` commands to browse backup contents without downloading the entire archive. The catalog includes file names, types, sizes, and modification times for every entry in the backup.
+
+#### Extended Attributes and ACLs
+
+The `FileSystemAccessor` interface includes `GetXAttrs`, `GetACL`, and `GetFCaps` methods for collecting extended attributes, POSIX ACLs, and file capabilities. The `osFS` implementation in `cmd/pxar-cli` reads real xattrs and ACLs from the filesystem using `unix.Llistxattr`/`unix.Lgetxattr`. Metadata change detection in `DetectionMetadata` mode compares all extended metadata fields, ensuring xattr/ACL changes trigger re-upload.
+
+#### Chunk Verification
+
+When `BackupConfig.VerifyChunks` is set, the PBS store downloads each uploaded chunk and verifies its digest, ensuring storage integrity.
+
+#### GC Protection
+
+In metadata mode, the PBS backup protocol includes `previous-backup-type`, `previous-backup-id`, and `previous-backup-time` query parameters during session creation. This tells PBS to protect the referenced snapshot from garbage collection during the backup.
 
 #### Basic Usage
 package main

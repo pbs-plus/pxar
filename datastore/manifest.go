@@ -5,6 +5,15 @@ import (
 	"fmt"
 )
 
+// CryptMode represents the encryption mode for a backup.
+type CryptMode string
+
+const (
+	CryptModeNone    CryptMode = "none"      // No encryption (default)
+	CryptModeEncrypt CryptMode = "encrypt"   // AEAD encryption
+	CryptModeSign    CryptMode = "sign-only" // Sign only (no encryption)
+)
+
 // FileInfo describes a file in a backup manifest.
 type FileInfo struct {
 	Filename  string `json:"filename"`
@@ -15,11 +24,13 @@ type FileInfo struct {
 
 // Manifest represents a backup manifest (index.json).
 type Manifest struct {
-	BackupType string     `json:"backup-type"`
-	BackupID   string     `json:"backup-id"`
-	BackupTime int64      `json:"backup-time"`
-	Files      []FileInfo `json:"files"`
-	Signature  string     `json:"signature,omitempty"`
+	BackupType  string          `json:"backup-type"`
+	BackupID    string          `json:"backup-id"`
+	BackupTime  int64           `json:"backup-time"`
+	Files       []FileInfo      `json:"files"`
+	CryptMode   string          `json:"crypt-mode,omitempty"`
+	Signature   string          `json:"signature,omitempty"`
+	Unprotected json.RawMessage `json:"unprotected,omitempty"`
 }
 
 // Marshal serializes the manifest to JSON.

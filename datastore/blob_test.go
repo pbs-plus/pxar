@@ -235,8 +235,126 @@ func TestBlobZeroAllocEncode(t *testing.T) {
 	allocs := testing.AllocsPerRun(100, func() {
 		EncodeBlob(data)
 	})
-	// Two allocations: output buffer + DataBlob struct wrapper
 	if allocs > 2 {
 		t.Errorf("EncodeBlob allocated %.1f times, expected <= 2", allocs)
+	}
+}
+
+func TestEncryptedBlobRoundTrip(t *testing.T) {
+	key, err := CreateRandomKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc, err := NewCryptConfig(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := []byte("secret backup data")
+	blob, err := EncodeEncryptedBlob(data, cc, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if blob.Magic() != MagicEncryptedBlob {
+		t.Errorf("magic = %x, want encrypted", blob.Magic())
+	}
+
+	if !blob.IsEncrypted() {
+		t.Error("blob should report as encrypted")
+	}
+
+	decrypted, err := DecodeEncryptedBlob(blob.Bytes(), cc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(decrypted) != string(data) {
+		t.Errorf("decrypted = %q, want %q", decrypted, data)
+	}
+}
+
+func TestEncryptedCompressedBlobRoundTrip(t *testing.T) {
+	key, err := CreateRandomKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc, err := NewCryptConfig(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := make([]byte, 4096)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	blob, err := EncodeEncryptedBlob(data, cc, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if blob.Magic() != MagicEncrComprBlob && blob.Magic() != MagicEncryptedBlob {
+		t.Errorf("magic = %x, want encrypted or encrypted+compressed", blob.Magic())
+	}
+
+	decrypted, err := DecodeEncryptedBlob(blob.Bytes(), cc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(decrypted, data) {
+		t.Errorf("decrypted data mismatch (len %d vs %d)", len(decrypted), len(data))
+	}
+}
+
+func TestEncryptedBlobWrongKey(t *testing.T) {
+	key1, _ := CreateRandomKey()
+	cc1, _ := NewCryptConfig(key1)
+
+	key2, _ := CreateRandomKey()
+	cc2, _ := NewCryptConfig(key2)
+
+	data := []byte("secret data")
+	blob, err := EncodeEncryptedBlob(data, cc1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = DecodeEncryptedBlob(blob.Bytes(), cc2)
+	if err == nil {
+		t.Error("expected error decrypting with wrong key")
+	}
+}
+
+func TestDecryptPlainBlobFails(t *testing.T) {
+	key, _ := CreateRandomKey()
+	cc, _ := NewCryptConfig(key)
+
+	data := []byte("plain data")
+	blob, err := EncodeBlob(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = DecodeEncryptedBlob(blob.Bytes(), cc)
+	if err == nil {
+		t.Error("expected error decrypting plain blob with DecodeEncryptedBlob")
+	}
+}
+
+func TestDecryptEncryptedWithPlainFails(t *testing.T) {
+	key, _ := CreateRandomKey()
+	cc, _ := NewCryptConfig(key)
+
+	data := []byte("secret data")
+	blob, err := EncodeEncryptedBlob(data, cc, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = DecodeBlob(blob.Bytes())
+	if err == nil {
+		t.Error("expected error calling DecodeBlob on encrypted blob")
 	}
 }

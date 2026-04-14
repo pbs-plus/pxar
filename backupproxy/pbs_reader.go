@@ -91,8 +91,8 @@ func (r *PBSReader) AsChunkSource() datastore.ChunkSource {
 
 // RestoreFile restores a complete file from a dynamic index.
 // This downloads all chunks and reconstructs the file content.
-// Each chunk download uses a fresh connection to avoid H2 stream
-// multiplexing issues with PBS.
+// The index file must have been downloaded first (via DownloadFile)
+// to populate the server-side allowed_chunks set.
 func (r *PBSReader) RestoreFile(idx *datastore.DynamicIndexReader, w io.Writer) error {
 	source := &pbsChunkSource{reader: r}
 	restorer := datastore.NewRestorer(source)
@@ -130,8 +130,9 @@ type pbsReaderConn struct {
 	// Flow-control: tracks how many bytes the server is allowed to send us.
 	// connWindow is the connection-level window; per-stream windows are
 	// tracked via streamWindow when readBinaryResponse is active.
-	connWindow   uint32
-	streamWindow uint32 // initial per-stream window (from server SETTINGS)
+	connWindow        uint32
+	connInitialWindow uint32 // initial connection-level window (65535, H2 default)
+	streamWindow      uint32 // initial per-stream window (from server SETTINGS)
 }
 
 // dialPBSReaderH2 establishes an H2 reader connection to PBS.
@@ -254,8 +255,9 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 		nextID:       1,
 		maxFrameSize: maxFrame,
 		authority:    u.Host,
-		connWindow:   65535, // our initial connection-level window (H2 default)
-		streamWindow: initialWin,
+		connWindow:        65535, // our initial connection-level window (H2 default)
+		connInitialWindow: 65535,
+		streamWindow:      initialWin,
 	}, nil
 }
 
@@ -359,11 +361,28 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 	// (or the value advertised by the server's SETTINGS_INITIAL_WINDOW_SIZE).
 	streamWin := c.streamWindow
 
-	// Threshold at which we send WINDOW_UPDATE: when the window drops below
-	// half its initial value. This follows the common H2 pattern of sending
-	// updates early rather than waiting for exhaustion.
+	// Fixed thresholds based on initial window sizes. Using fixed values
+	// (rather than c.connWindow / 2) is critical: a dynamic threshold that
+	// shrinks with the window causes a "frog in boiling water" effect where
+	// WINDOW_UPDATE is never sent, eventually exhausting the flow-control
+	// window and deadlocking the connection.
+	connThreshold := c.connInitialWindow / 2
 	streamThreshold := c.streamWindow / 2
-	connThreshold := c.connWindow / 2
+
+	// Proactively replenish the connection window if it's already low before
+	// we start reading. Without this, the server may be unable to send any
+	// DATA frames (window exhausted), causing a deadlock: we wait for frames
+	// that require WINDOW_UPDATE to arrive, but WINDOW_UPDATE is only sent
+	// after receiving DATA frames.
+	if c.connWindow < connThreshold {
+		incr := c.connInitialWindow - c.connWindow
+		if incr > 0 {
+			if err := c.framer.WriteWindowUpdate(0, incr); err != nil {
+				return nil, fmt.Errorf("write proactive connection WINDOW_UPDATE: %w", err)
+			}
+			c.connWindow += incr
+		}
+	}
 
 	// Set a deadline to prevent indefinite hanging
 	if err := c.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
@@ -427,12 +446,16 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 			}
 
 			// Send WINDOW_UPDATE for connection window if below threshold.
+			// Restore to connInitialWindow (65535), NOT c.streamWindow — the
+			// connection-level window is independent of per-stream settings.
 			if c.connWindow < connThreshold {
-				incr := c.streamWindow - c.connWindow // restore to initial
-				if err := c.framer.WriteWindowUpdate(0, incr); err != nil {
-					return nil, fmt.Errorf("write connection WINDOW_UPDATE: %w", err)
+				incr := c.connInitialWindow - c.connWindow
+				if incr > 0 {
+					if err := c.framer.WriteWindowUpdate(0, incr); err != nil {
+						return nil, fmt.Errorf("write connection WINDOW_UPDATE: %w", err)
+					}
+					c.connWindow += incr
 				}
-				c.connWindow += incr
 			}
 
 			// Send WINDOW_UPDATE for stream window if below threshold.
@@ -451,9 +474,10 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 					diff := int32(v) - int32(c.streamWindow)
 					c.streamWindow = v
 					streamWin = uint32(int32(streamWin) + diff)
-					// Recalculate thresholds based on new initial window size.
+					// Recalculate stream threshold based on new initial window size.
+					// connThreshold stays fixed at connInitialWindow/2 - the connection
+					// window is independent of SETTINGS_INITIAL_WINDOW_SIZE.
 					streamThreshold = v / 2
-					connThreshold = c.connWindow / 2
 				}
 				c.framer.WriteSettingsAck()
 			}

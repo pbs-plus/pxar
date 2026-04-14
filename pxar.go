@@ -99,14 +99,6 @@ func (e *Entry) FileName() string {
 	return filepath.Base(e.Path)
 }
 
-// FileSize_ returns the file size if this is a regular file.
-func (e *Entry) FileSize_() (uint64, bool) {
-	if e.Kind == KindFile {
-		return e.FileSize, true
-	}
-	return 0, false
-}
-
 // Metadata holds file metadata found in pxar archives.
 type Metadata struct {
 	Stat           format.Stat

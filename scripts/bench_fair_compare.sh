@@ -50,6 +50,7 @@ printf "%-30s %-12s %-10s\n" "-----------------------------" "----------" "-----
 
 DATA="/tmp/bench-data/medium"
 DATA_S="/tmp/bench-data/small"
+DATA_L="/tmp/bench-data/large"
 
 # --- pbc legacy/data/metadata (50×8KB) ---
 run_test "pbc legacy (50f)" "pbc-med" \
@@ -89,6 +90,15 @@ run_test "pbc legacy (10f)" "pbc-sm" \
 
 run_test "pxar legacy (10f)" "pxar-sm" \
     "PBS_TOKEN='$TOKEN' PBS_FINGERPRINT='$FINGERPRINT' pxar-cli backup --repository $REPOSITORY --backup-id pxar-sm --mode legacy $DATA_S"
+
+echo ""
+echo "--- Large dataset (10×1MB ≈ 10MB) ---"
+
+run_test "pbc legacy (10f-lg)" "pbc-lg" \
+    "PBS_FINGERPRINT='$FINGERPRINT' PBS_PASSWORD=testpassword proxmox-backup-client backup pbc.pxar:$DATA_L --repository $REPOSITORY --backup-id pbc-lg --change-detection-mode legacy"
+
+run_test "pxar legacy (10f-lg)" "pxar-lg" \
+    "PBS_TOKEN='$TOKEN' PBS_FINGERPRINT='$FINGERPRINT' pxar-cli backup --repository $REPOSITORY --backup-id pxar-lg --mode legacy $DATA_L"
 
 echo ""
 echo "================================================================"

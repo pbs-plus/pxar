@@ -298,7 +298,7 @@ func runBackup() error {
 		return fmt.Errorf("invalid repository format: %s (expected user@host:port:datastore)", *repo)
 	}
 
-	chunkCfg, err := buzhash.NewConfig(4096)
+	chunkCfg, err := buzhash.NewConfig(4 * 1024 * 1024)
 	if err != nil {
 		return err
 	}

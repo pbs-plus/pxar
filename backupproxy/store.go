@@ -233,13 +233,13 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 	return result, nil
 }
 
-func (s *localSession) UploadSplitArchive(_ context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error) {
-	metaResult, err := s.UploadArchive(nil, metadataName, metadataData)
+func (s *localSession) UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error) {
+	metaResult, err := s.UploadArchive(ctx, metadataName, metadataData)
 	if err != nil {
 		return nil, fmt.Errorf("metadata archive: %w", err)
 	}
 
-	payloadResult, err := s.UploadArchive(nil, payloadName, payloadData)
+	payloadResult, err := s.UploadArchive(ctx, payloadName, payloadData)
 	if err != nil {
 		return nil, fmt.Errorf("payload archive: %w", err)
 	}

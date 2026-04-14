@@ -2,6 +2,7 @@ package backupproxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"os"
@@ -54,7 +55,7 @@ func TestLocalStoreUploadArchive(t *testing.T) {
 	data := make([]byte, 50<<10)
 	rand.Read(data)
 
-	result, err := sess.UploadArchive(nil, "root.pxar.didx", bytes.NewReader(data))
+	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestLocalStoreFinish(t *testing.T) {
 	data := make([]byte, 10<<10)
 	rand.Read(data)
 
-	sess.UploadArchive(nil, "root.pxar.didx", bytes.NewReader(data))
+	sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	sess.UploadBlob(nil, "config.json", []byte("config"))
 
 	manifest, err := sess.Finish(nil)
@@ -167,7 +168,7 @@ func TestLocalStoreRoundTrip(t *testing.T) {
 	data := make([]byte, 30<<10)
 	rand.Read(data)
 
-	result, err := sess.UploadArchive(nil, "root.pxar.didx", bytes.NewReader(data))
+	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestLocalStoreDeduplication(t *testing.T) {
 
 	// First upload
 	sess1, _ := ls.StartSession(nil, BackupConfig{BackupID: "1"})
-	_, err := sess1.UploadArchive(nil, "root.pxar.didx", bytes.NewReader(data))
+	_, err := sess1.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +226,7 @@ func TestLocalStoreDeduplication(t *testing.T) {
 
 	// Second upload with same data
 	sess2, _ := ls.StartSession(nil, BackupConfig{BackupID: "2"})
-	_, err = sess2.UploadArchive(nil, "root2.pxar.didx", bytes.NewReader(data))
+	_, err = sess2.UploadArchive(context.Background(), "root2.pxar.didx", bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +256,7 @@ func TestLocalStoreIndexDigest(t *testing.T) {
 	sess, _ := ls.StartSession(nil, BackupConfig{})
 	data := []byte("test data for index digest verification")
 
-	result, err := sess.UploadArchive(nil, "test.pxar.didx", bytes.NewReader(data))
+	result, err := sess.UploadArchive(context.Background(), "test.pxar.didx", bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}

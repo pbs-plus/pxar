@@ -2,10 +2,10 @@ package transfer
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/format"
 )
 
 // Copy copies files from the source archive to the target writer.
@@ -117,21 +117,63 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 
 	// When srcPath is "/", we're copying from the archive root — don't create
 	// a new directory since the target writer already has one from Begin.
-	needDir := srcPath != "/"
+	if srcPath == "/" {
+		for i := range entries {
+			child := &entries[i]
+			if dstPath != "" && dstPath != "/" {
+				childPath := child.Path
+				if strings.HasPrefix(childPath, srcPath) {
+					child.Path = dstPath + strings.TrimPrefix(childPath, srcPath)
+				}
+			}
 
-	if needDir {
-		dirName := root.FileName()
-		if dstPath != "" && dstPath != srcPath {
-			dirName = filepath.Base(dstPath)
+			if child.IsDir() {
+				if err := copyDir(src, dst, child, srcPath, dstPath, opts); err != nil {
+					return err
+				}
+			} else {
+				if err := copyEntry(src, dst, child, opts); err != nil {
+					return err
+				}
+			}
 		}
-		if err := dst.BeginDirectory(dirName, &root.Metadata); err != nil {
-			return fmt.Errorf("begin directory %q: %w", dirName, err)
+		return nil
+	}
+
+	// Create intermediate directories for dstPath components that don't exist
+	// in srcPath. For example, CopyTree("/a", "/backup/a") needs to create
+	// the "backup" directory before creating "a" inside it.
+	//
+	// src="/a"      → srcParts = ["a"]
+	// dst="/backup/a" → dstParts = ["backup", "a"]
+	// Extra ancestors = dstParts[0:len(dstParts)-len(srcParts)] = ["backup"]
+	srcParts := splitPath(srcPath)
+	dstParts := splitPath(dstPath)
+	extraAncestors := len(dstParts) - len(srcParts)
+	if extraAncestors < 0 {
+		extraAncestors = 0
+	}
+
+	// Create ancestor directories that exist in dstPath but not in srcPath
+	for i := 0; i < extraAncestors; i++ {
+		if err := dst.BeginDirectory(dstParts[i], &pxar.Metadata{
+			Stat: format.Stat{Mode: format.ModeIFDIR | 0o755},
+		}); err != nil {
+			return fmt.Errorf("begin directory %q: %w", dstParts[i], err)
 		}
+	}
+
+	// Create the leaf directory (the source directory, possibly renamed)
+	dirName := root.FileName()
+	if dstPath != srcPath && len(dstParts) > 0 {
+		dirName = dstParts[len(dstParts)-1]
+	}
+	if err := dst.BeginDirectory(dirName, &root.Metadata); err != nil {
+		return fmt.Errorf("begin directory %q: %w", dirName, err)
 	}
 
 	for i := range entries {
 		child := &entries[i]
-		// Remap path for the target
 		if dstPath != "" && dstPath != srcPath {
 			childPath := child.Path
 			if strings.HasPrefix(childPath, srcPath) {
@@ -150,8 +192,26 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 		}
 	}
 
-	if needDir {
-		return dst.EndDirectory()
+	if err := dst.EndDirectory(); err != nil {
+		return fmt.Errorf("end directory: %w", err)
 	}
+
+	// Close ancestor directories
+	for i := 0; i < extraAncestors; i++ {
+		if err := dst.EndDirectory(); err != nil {
+			return fmt.Errorf("end directory: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// splitPath splits a path like "/backup/etc" into ["backup", "etc"].
+func splitPath(p string) []string {
+	p = strings.TrimPrefix(p, "/")
+	p = strings.TrimSuffix(p, "/")
+	if p == "" {
+		return nil
+	}
+	return strings.Split(p, "/")
 }

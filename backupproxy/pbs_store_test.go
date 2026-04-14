@@ -50,6 +50,11 @@ func (m *mockPBSProtocol) dynamicIndexCreate(archiveName string) (uint64, error)
 	return wid, nil
 }
 
+func (m *mockPBSProtocol) dynamicChunkExists(wid uint64, digest string) (bool, error) {
+	_, ok := m.chunks[digest]
+	return ok, nil
+}
+
 func (m *mockPBSProtocol) dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error {
 	if _, exists := m.chunks[digest]; !exists {
 		m.chunks[digest] = data

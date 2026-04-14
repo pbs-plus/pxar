@@ -26,6 +26,8 @@ type pbsH2Conn struct {
 	hdrBuf       *bytes.Buffer
 	nextID       uint32
 	maxFrameSize uint32
+
+	recvWindow uint32
 }
 
 // dialPBSH2 establishes an H2 connection to PBS via HTTP/1.1 upgrade.
@@ -142,6 +144,7 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 		hdrBuf:       hdrBuf,
 		nextID:       1,
 		maxFrameSize: maxFrame,
+		recvWindow:   65535,
 	}, nil
 }
 
@@ -266,19 +269,32 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 			if f.StreamID != streamID {
 				continue
 			}
+			dataLen := len(f.Data())
 			dataBuf.Write(f.Data())
 			if f.StreamEnded() {
 				gotEnd = true
 			}
+			c.recvWindow -= uint32(dataLen)
 
 		case *http2.SettingsFrame:
 			if !f.IsAck() {
 				c.framer.WriteSettingsAck()
+				if v, ok := f.Value(http2.SettingInitialWindowSize); ok {
+					c.recvWindow = v
+				}
 			}
 
 		case *http2.PingFrame:
 			if !f.IsAck() {
 				c.framer.WritePing(true, f.Data)
+			}
+
+		case *http2.WindowUpdateFrame:
+			if f.StreamID == 0 || f.StreamID == streamID {
+				c.recvWindow += f.Increment
+			}
+			if c.recvWindow > 65535 {
+				c.recvWindow = 65535
 			}
 
 		case *http2.RSTStreamFrame:
@@ -306,6 +322,10 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 		return nil, fmt.Errorf("parse response JSON: %w", err)
 	}
 
+	if dataBuf.Len() > 0 && c.recvWindow < 32768 {
+		c.framer.WriteWindowUpdate(streamID, 32768)
+		c.recvWindow += 32768
+	}
 	return result.Data, nil
 }
 

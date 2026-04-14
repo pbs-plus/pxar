@@ -91,8 +91,6 @@ func (r *PBSReader) AsChunkSource() datastore.ChunkSource {
 
 // RestoreFile restores a complete file from a dynamic index.
 // This downloads all chunks and reconstructs the file content.
-// Each chunk download uses a fresh connection to avoid H2 stream
-// multiplexing issues with PBS.
 func (r *PBSReader) RestoreFile(idx *datastore.DynamicIndexReader, w io.Writer) error {
 	source := &pbsChunkSource{reader: r}
 	restorer := datastore.NewRestorer(source)
@@ -126,6 +124,8 @@ type pbsReaderConn struct {
 	nextID       uint32
 	maxFrameSize uint32
 	authority    string
+
+	recvWindow uint32
 }
 
 // dialPBSReaderH2 establishes an H2 reader connection to PBS.
@@ -244,6 +244,7 @@ func dialPBSReaderH2(ctx context.Context, cfg PBSConfig, backupType, backupID st
 		nextID:       1,
 		maxFrameSize: maxFrame,
 		authority:    u.Host,
+		recvWindow:   65535,
 	}, nil
 }
 
@@ -344,7 +345,6 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 	if err := c.conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
-	// Clear deadline when done
 	defer c.conn.SetReadDeadline(time.Time{})
 
 	for !gotEnd {
@@ -383,14 +383,19 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 			if f.StreamID != streamID {
 				continue
 			}
+			dataLen := len(f.Data())
 			dataBuf.Write(f.Data())
 			if f.StreamEnded() {
 				gotEnd = true
 			}
+			c.recvWindow -= uint32(dataLen)
 
 		case *http2.SettingsFrame:
 			if !f.IsAck() {
 				c.framer.WriteSettingsAck()
+				if v, ok := f.Value(http2.SettingInitialWindowSize); ok {
+					c.recvWindow = v
+				}
 			}
 
 		case *http2.PingFrame:
@@ -399,6 +404,12 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 			}
 
 		case *http2.WindowUpdateFrame:
+			if f.StreamID == 0 || f.StreamID == streamID {
+				c.recvWindow += f.Increment
+			}
+			if c.recvWindow > 65535 {
+				c.recvWindow = 65535
+			}
 
 		case *http2.RSTStreamFrame:
 			if f.StreamID == streamID {

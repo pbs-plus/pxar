@@ -15,6 +15,7 @@ This library is organized into focused packages:
 | `encoder` | Streaming archive writer |
 | `decoder` | Streaming archive reader |
 | `accessor` | Random-access archive reader (seek-based) |
+| `transfer` | Copy/move files between archives across formats |
 | `buzhash` | Content-defined chunking via buzhash rolling hash |
 | `datastore` | Chunk storage, blob encoding, index files, backup catalogs |
 | `binarytree` | Binary search tree permutation for goodbye tables |
@@ -139,6 +140,65 @@ func main() {
     // Read file content
     content, _ := acc.ReadFileContent(entry)
 }
+```
+
+### Transferring Files Between Archives
+
+The transfer package provides unified read/write interfaces for copying files between archives, regardless of format (v1, v2 split, chunked .didx, or PBS remote):
+
+```go
+package main
+
+import (
+    "bytes"
+    pxar "github.com/pbs-plus/pxar"
+    "github.com/pbs-plus/pxar/format"
+    "github.com/pbs-plus/pxar/transfer"
+)
+
+func main() {
+    // Open source archive (any format: .pxar, .pxar.didx, .mpxar.didx+.ppxar.didx, PBS)
+    src := transfer.NewFileArchiveReader(sourceFile)
+    defer src.Close()
+
+    // Create target archive
+    var dstBuf bytes.Buffer
+    dst := transfer.NewStreamArchiveWriter(&dstBuf)
+    rootMeta := pxar.DirMetadata(0o755).Build()
+    dst.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1})
+
+    // Copy specific files
+    transfer.Copy(src, dst, []string{"/etc/hosts", "/var/log/syslog"}, transfer.TransferOption{})
+
+    // Copy an entire directory tree
+    transfer.CopyTree(src, dst, "/etc", "/etc", transfer.TransferOption{})
+
+    // Merge entire source into target
+    transfer.Merge(src, dst, transfer.TransferOption{})
+
+    dst.Finish()
+}
+```
+
+For chunked archives, use `ChunkedArchiveReader` or `SplitArchiveReader`. For encrypted archives, wrap the chunk source with `DecryptingChunkSource`. For PBS remote, use `PBSArchiveReader`.
+
+#### CLI Commands
+
+The `pxar-cli` tool supports archive inspection and transfer:
+
+```bash
+# List entries in an archive
+pxar-cli ls backup.pxar
+pxar-cli ls backup.pxar /subdir
+
+# Extract a file
+pxar-cli extract backup.pxar /hello.txt -o hello.txt
+
+# Copy files from one archive to a new archive
+pxar-cli cp backup.pxar /hello.txt -o new.pxar
+
+# Merge an entire archive into a new archive
+pxar-cli merge backup.pxar -o merged.pxar
 ```
 
 ### Content-Defined Chunking
@@ -455,6 +515,22 @@ func main() {
 - `ListDirectory(offset)` — List entries in a directory
 - `Lookup(path)` — O(log n) path lookup via goodbye tables
 - `ReadFileContent(entry)` — Read a file's content
+
+### `transfer` — File Transfer Between Archives
+
+- `ArchiveReader` — Unified read interface (ReadRoot, Lookup, ListDirectory, ReadFileContent)
+- `ArchiveWriter` — Unified write interface (Begin, WriteEntry, BeginDirectory, EndDirectory, Finish)
+- `FileArchiveReader` — Reads from standalone .pxar files
+- `ChunkedArchiveReader` — Reads from chunked .pxar.didx archives
+- `SplitArchiveReader` — Reads from split .mpxar.didx + .ppxar.didx archives
+- `PBSArchiveReader` — Reads from PBS remote stores via H2 reader protocol
+- `StreamArchiveWriter` — Writes to v1 or v2 io.Writer streams
+- `ChunkedArchiveWriter` — Writes to local ChunkStore producing .didx index
+- `SessionArchiveWriter` / `SplitSessionArchiveWriter` — Uploads via BackupSession
+- `DecryptingChunkSource` — Decrypts encrypted chunks on the fly
+- `Copy` / `CopyTree` / `Merge` — Transfer functions connecting readers to writers
+- `WalkTree` — Recursive directory walker with ErrSkipDir support
+- `TransferOption` — Configuration for encryption, format, overwrite, progress
 
 ### `buzhash` — Content-Defined Chunking
 

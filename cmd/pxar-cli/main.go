@@ -603,10 +603,14 @@ func runCp() error {
 	fs.Parse(os.Args[2:])
 
 	if fs.NArg() < 2 || *outputPath == "" {
-		return fmt.Errorf("usage: pxar-cli cp <source_archive> <path> -o <output_archive> [-format v1|v2]")
+		return fmt.Errorf("usage: pxar-cli cp <source_archive> <src_path> [dst_path] -o <output_archive> [-format v1|v2]")
 	}
 	srcPath := fs.Arg(0)
 	srcFilePath := fs.Arg(1)
+	dstFilePath := srcFilePath
+	if fs.NArg() >= 3 {
+		dstFilePath = fs.Arg(2)
+	}
 
 	reader, err := openArchiveReader(srcPath)
 	if err != nil {
@@ -631,28 +635,11 @@ func runCp() error {
 		return fmt.Errorf("begin writer: %w", err)
 	}
 
-	entry, err := reader.Lookup(srcFilePath)
+	err = transfer.Copy(reader, writer, []transfer.PathMapping{{Src: srcFilePath, Dst: dstFilePath}}, transfer.TransferOption{
+		TargetFormat: targetFormat,
+	})
 	if err != nil {
-		return fmt.Errorf("lookup %q: %w", srcFilePath, err)
-	}
-
-	if entry.IsDir() {
-		if err := transfer.CopyTree(reader, writer, srcFilePath, srcFilePath, transfer.TransferOption{
-			TargetFormat: targetFormat,
-		}); err != nil {
-			return fmt.Errorf("copy tree: %w", err)
-		}
-	} else {
-		var content []byte
-		if entry.IsRegularFile() {
-			content, err = reader.ReadFileContent(entry)
-			if err != nil {
-				return fmt.Errorf("read file: %w", err)
-			}
-		}
-		if err := writer.WriteEntry(entry, content); err != nil {
-			return fmt.Errorf("write entry: %w", err)
-		}
+		return fmt.Errorf("copy: %w", err)
 	}
 
 	if err := writer.Finish(); err != nil {
@@ -695,7 +682,7 @@ func runMerge() error {
 		return fmt.Errorf("begin writer: %w", err)
 	}
 
-	if err := transfer.Merge(reader, writer, transfer.TransferOption{
+	if err := transfer.CopyTree(reader, writer, "/", "/", transfer.TransferOption{
 		TargetFormat: targetFormat,
 	}); err != nil {
 		return fmt.Errorf("merge: %w", err)

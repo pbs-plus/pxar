@@ -167,14 +167,17 @@ func main() {
     rootMeta := pxar.DirMetadata(0o755).Build()
     dst.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1})
 
-    // Copy specific files
-    transfer.Copy(src, dst, []string{"/etc/hosts", "/var/log/syslog"}, transfer.TransferOption{})
+    // Copy specific files with path mapping
+    transfer.Copy(src, dst, []transfer.PathMapping{
+        {Src: "/etc/hosts", Dst: "/etc/hosts"},
+        {Src: "/var/log/syslog", Dst: "/var/log/syslog"},
+    }, transfer.TransferOption{})
 
-    // Copy an entire directory tree
+    // Copy an entire directory tree (src path → dst path)
     transfer.CopyTree(src, dst, "/etc", "/etc", transfer.TransferOption{})
 
-    // Merge entire source into target
-    transfer.Merge(src, dst, transfer.TransferOption{})
+    // Copy entire source into target
+    transfer.CopyTree(src, dst, "/", "/", transfer.TransferOption{})
 
     dst.Finish()
 }
@@ -229,6 +232,9 @@ pxar-cli extract backup.pxar /hello.txt -o hello.txt
 
 # Copy files from one archive to a new archive
 pxar-cli cp backup.pxar /hello.txt -o new.pxar
+
+# Copy with destination path remapping
+pxar-cli cp backup.pxar /etc/hosts /backup/hosts -o new.pxar
 
 # Merge an entire archive into a new archive
 pxar-cli merge backup.pxar -o merged.pxar

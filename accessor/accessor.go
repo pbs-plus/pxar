@@ -17,6 +17,14 @@ type Accessor struct {
 	payloadReader io.ReadSeeker // optional, for split archives (v2 format)
 }
 
+// ListOption controls which metadata is decoded during ListDirectory.
+type ListOption struct {
+	// Minimal skips decoding xattrs, fcaps, ACLs, and other extended
+	// metadata. Only stat basics (mode, uid, gid, times) are populated.
+	// Significantly reduces per-entry decode cost.
+	Minimal bool
+}
+
 // NewAccessor creates an accessor for random access to a pxar archive.
 // For split archives (v2 format), provide the payload reader as the second argument.
 func NewAccessor(reader io.ReadSeeker, payloadReader ...io.ReadSeeker) *Accessor {
@@ -102,6 +110,13 @@ func (a *Accessor) ReadRoot() (*pxar.Entry, error) {
 // ListDirectory lists entries in a directory at the given offset.
 // The offset should point to the start of the directory's FILENAME range.
 func (a *Accessor) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
+	return a.ListDirectoryWithOptions(dirOffset, ListOption{})
+}
+
+// ListDirectoryWithOptions lists entries with selective metadata decoding.
+// When opts.Minimal is true, extended metadata (xattrs, fcaps, ACLs) is
+// skipped — only stat basics are decoded.
+func (a *Accessor) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
 	// Seek to directory content area
 	if _, err := a.reader.Seek(dirOffset, io.SeekStart); err != nil {
 		return nil, err
@@ -126,7 +141,13 @@ func (a *Accessor) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
 
 		// item.Offset is relative to goodbye table start
 		entryOffset := goodbyeOffset - int64(item.Offset)
-		entry, err := a.ReadEntryAt(entryOffset)
+
+		var entry *pxar.Entry
+		if opts.Minimal {
+			entry, err = a.ReadEntryAtMinimal(entryOffset)
+		} else {
+			entry, err = a.ReadEntryAt(entryOffset)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("reading entry at %d: %w", entryOffset, err)
 		}
@@ -399,6 +420,140 @@ func (a *Accessor) readGoodbyeTable(offset int64) ([]format.GoodbyeItem, error) 
 	return items, nil
 }
 
+// ReadEntryAtMinimal reads a pxar entry with minimal decoding. It skips
+// extended metadata (xattrs, fcaps, ACLs, quota project ID) and only
+// populates stat basics. Use for indexing/browsing where full metadata
+// is unnecessary.
+func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	// Read FILENAME
+	h, err := a.readHeader()
+	if err != nil {
+		return nil, err
+	}
+	if h.Type != format.PXARFilename {
+		return nil, fmt.Errorf("expected FILENAME at %d, got %s", offset, h.String())
+	}
+
+	nameData := make([]byte, h.ContentSize())
+	if _, err := io.ReadFull(a.reader, nameData); err != nil {
+		return nil, err
+	}
+	if len(nameData) > 0 && nameData[len(nameData)-1] == 0 {
+		nameData = nameData[:len(nameData)-1]
+	}
+	name := string(nameData)
+
+	// Read ENTRY header
+	h, err = a.readHeader()
+	if err != nil {
+		return nil, err
+	}
+
+	if h.Type == format.PXARHardlink {
+		data := make([]byte, h.ContentSize())
+		if _, err := io.ReadFull(a.reader, data); err != nil {
+			return nil, err
+		}
+		target := data[8:]
+		if len(target) > 0 && target[len(target)-1] == 0 {
+			target = target[:len(target)-1]
+		}
+		return &pxar.Entry{
+			Kind:       pxar.KindHardlink,
+			Path:       name,
+			LinkTarget: string(target),
+		}, nil
+	}
+
+	if h.Type != format.PXAREntry {
+		return nil, fmt.Errorf("expected ENTRY, got %s", h.String())
+	}
+
+	stat, err := a.readStat()
+	if err != nil {
+		return nil, err
+	}
+
+	entry := &pxar.Entry{
+		Path:       name,
+		Metadata:   pxar.Metadata{Stat: stat},
+		FileOffset: uint64(offset),
+	}
+
+	// Scan for terminal item only — skip all extended metadata
+	for {
+		posBefore, _ := a.reader.Seek(0, io.SeekCurrent)
+		h2, err := a.readHeader()
+		if err != nil {
+			return nil, err
+		}
+
+		switch h2.Type {
+		case format.PXARSymlink:
+			data := make([]byte, h2.ContentSize())
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) > 0 && data[len(data)-1] == 0 {
+				data = data[:len(data)-1]
+			}
+			entry.Kind = pxar.KindSymlink
+			entry.LinkTarget = string(data)
+			return entry, nil
+
+		case format.PXARDevice:
+			data := make([]byte, h2.ContentSize())
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			entry.Kind = pxar.KindDevice
+			entry.DeviceInfo = format.Device{
+				Major: binary.LittleEndian.Uint64(data[0:]),
+				Minor: binary.LittleEndian.Uint64(data[8:]),
+			}
+			return entry, nil
+
+		case format.PXARPayload:
+			posAfter, _ := a.reader.Seek(0, io.SeekCurrent)
+			entry.Kind = pxar.KindFile
+			entry.FileSize = h2.ContentSize()
+			entry.ContentOffset = uint64(posAfter)
+			return entry, nil
+
+		case format.PXARPayloadRef:
+			data := make([]byte, h2.ContentSize())
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			entry.Kind = pxar.KindFile
+			entry.PayloadOffset = binary.LittleEndian.Uint64(data[0:])
+			entry.FileSize = binary.LittleEndian.Uint64(data[8:])
+			return entry, nil
+
+		case format.PXARFilename, format.PXARGoodbye:
+			if stat.IsFIFO() {
+				entry.Kind = pxar.KindFifo
+			} else if stat.IsSocket() {
+				entry.Kind = pxar.KindSocket
+			} else {
+				entry.Kind = pxar.KindDirectory
+			}
+			entry.ContentOffset = uint64(posBefore)
+			return entry, nil
+
+		default:
+			// Skip all extended metadata (xattrs, fcaps, ACLs, etc.)
+			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
+				return nil, err
+			}
+		}
+	}
+}
+
 // ReadEntryAt reads a pxar entry at the given archive offset.
 func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
@@ -643,22 +798,155 @@ func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 		return nil, fmt.Errorf("entry is not a regular file")
 	}
 
+	r, err := a.ReadFileContentReader(entry)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+// fileContentReader wraps an io.Reader with a Close method.
+// For payload readers that are SectionReaders, Close is a no-op.
+// For v1 inline readers, Close is also a no-op since the underlying
+// reader is shared and must not be closed.
+type fileContentReader struct {
+	reader io.Reader
+}
+
+func (f *fileContentReader) Read(p []byte) (int, error) { return f.reader.Read(p) }
+func (f *fileContentReader) Close() error               { return nil }
+
+// LookupBatch looks up multiple paths in a single pass. It is more efficient
+// than N separate Lookup calls because it shares directory traversals for
+// common prefixes.
+func (a *Accessor) LookupBatch(paths []string) ([]*pxar.Entry, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+
+	root, err := a.ReadRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	rootOffset, err := a.getRootContentOffset()
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]*pxar.Entry, len(paths))
+
+	// Group paths by first component to share goodbye table reads
+	type group struct {
+		indices []int
+		rests   []string
+	}
+	groups := make(map[string]*group)
+
+	for i, path := range paths {
+		if path == "/" || path == "" {
+			results[i] = root
+			continue
+		}
+
+		parts := splitPath(path)
+		if len(parts) == 0 {
+			continue
+		}
+		first := parts[0]
+		rest := ""
+		if len(parts) > 1 {
+			rest = parts[1]
+			for _, p := range parts[2:] {
+				rest = rest + "/" + p
+			}
+		}
+
+		g, ok := groups[first]
+		if !ok {
+			g = &group{}
+			groups[first] = g
+		}
+		g.indices = append(g.indices, i)
+		g.rests = append(g.rests, rest)
+	}
+
+	// Process each group: find the entry for the first component, then
+	// resolve remaining paths recursively.
+	for name, g := range groups {
+		goodbyeOffset, err := a.findGoodbyeOffset(rootOffset)
+		if err != nil {
+			return nil, err
+		}
+
+		items, err := a.readGoodbyeTable(goodbyeOffset)
+		if err != nil {
+			return nil, err
+		}
+
+		hash := format.HashFilename([]byte(name))
+		idx, found := binarytree.SearchBy(items, 0, 0, func(item format.GoodbyeItem) int {
+			if hash < item.Hash {
+				return -1
+			} else if hash > item.Hash {
+				return 1
+			}
+			return 0
+		})
+		if !found {
+			continue // leave results[j] as nil
+		}
+
+		entryOffset := goodbyeOffset - int64(items[idx].Offset)
+		entry, err := a.ReadEntryAt(entryOffset)
+		if err != nil {
+			return nil, err
+		}
+
+		for j, rest := range g.rests {
+			if rest == "" {
+				results[g.indices[j]] = entry
+			} else {
+				if !entry.IsDir() {
+					continue
+				}
+				subDirOffset, err := a.findDirContentOffset(entryOffset)
+				if err != nil {
+					return nil, err
+				}
+				resolved, err := a.lookupPath(subDirOffset, rest)
+				if err != nil {
+					continue // leave as nil
+				}
+				results[g.indices[j]] = resolved
+			}
+		}
+	}
+
+	return results, nil
+}
+
+// ReadFileContentReader returns a streaming reader for file content.
+// The caller must close the returned reader when done. This avoids
+// materializing the entire file in memory.
+func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+	if !entry.IsRegularFile() {
+		return nil, fmt.Errorf("entry is not a regular file")
+	}
+
 	// For split archives (v2 format), read from payload stream
 	if entry.PayloadOffset > 0 {
 		if a.payloadReader == nil {
 			return nil, fmt.Errorf("split archive requires payload reader")
 		}
-		// Seek to payload offset (after the PXARPayload header)
 		if _, err := a.payloadReader.Seek(int64(entry.PayloadOffset)+format.HeaderSize, io.SeekStart); err != nil {
 			return nil, err
 		}
-		data := make([]byte, entry.FileSize)
-		_, err := io.ReadFull(a.payloadReader, data)
-		return data, err
+		return io.NopCloser(io.LimitReader(a.payloadReader, int64(entry.FileSize))), nil
 	}
 
 	// For unified archives (v1 format), read inline payload
-	// Seek to the entry start (FILENAME header)
 	if _, err := a.reader.Seek(int64(entry.FileOffset), io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -684,18 +972,16 @@ func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 		return nil, err
 	}
 
-	// Now scan for PAYLOAD header (skipping attributes)
+	// Scan for PAYLOAD header
 	for {
-		h, err := a.readHeader()
+		h, err = a.readHeader()
 		if err != nil {
 			return nil, err
 		}
 
 		switch h.Type {
 		case format.PXARPayload:
-			data := make([]byte, h.ContentSize())
-			_, err := io.ReadFull(a.reader, data)
-			return data, err
+			return io.NopCloser(io.LimitReader(a.reader, int64(h.ContentSize()))), nil
 		case format.PXARFilename, format.PXARGoodbye:
 			return nil, fmt.Errorf("PAYLOAD not found for entry")
 		default:

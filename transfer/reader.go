@@ -19,11 +19,30 @@ type ArchiveReader interface {
 	// Lookup finds an entry by archive-internal path.
 	Lookup(path string) (*pxar.Entry, error)
 
+	// LookupBatch looks up multiple paths in a single pass. More efficient
+	// than N separate Lookup calls because it shares directory traversals
+	// for common prefixes. Returns entries in the same order as paths;
+	// nil means not found.
+	LookupBatch(paths []string) ([]*pxar.Entry, error)
+
 	// ListDirectory lists entries in a directory.
 	ListDirectory(dirOffset int64) ([]pxar.Entry, error)
 
+	// ListDirectoryWithOptions lists entries with selective metadata decoding.
+	ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error)
+
 	// ReadFileContent reads the complete content of a regular file.
 	ReadFileContent(entry *pxar.Entry) ([]byte, error)
+
+	// ReadFileContentReader returns a streaming reader for file content.
+	// The caller must close the reader. Use this for large files to avoid
+	// buffering the entire content in memory.
+	ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error)
+
+	// ReadCatalog extracts the full directory tree as a flat list of
+	// CatalogEntry values with minimal decoding. Significantly faster
+	// than WalkTree for indexing.
+	ReadCatalog() ([]CatalogEntry, error)
 
 	// Close releases resources.
 	Close() error
@@ -59,12 +78,28 @@ func (r *FileArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.accessor.Lookup(path)
 }
 
+func (r *FileArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
+	return r.accessor.LookupBatch(paths)
+}
+
 func (r *FileArchiveReader) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
 	return r.accessor.ListDirectory(dirOffset)
 }
 
+func (r *FileArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
+	return r.accessor.ListDirectoryWithOptions(dirOffset, accessor.ListOption{Minimal: opts.Minimal})
+}
+
 func (r *FileArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 	return r.accessor.ReadFileContent(entry)
+}
+
+func (r *FileArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+	return r.accessor.ReadFileContentReader(entry)
+}
+
+func (r *FileArchiveReader) ReadCatalog() ([]CatalogEntry, error) {
+	return readCatalog(r)
 }
 
 func (r *FileArchiveReader) Close() error {
@@ -141,12 +176,28 @@ func (r *ChunkedArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
+func (r *ChunkedArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
+	return r.inner.LookupBatch(paths)
+}
+
 func (r *ChunkedArchiveReader) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
 	return r.inner.ListDirectory(dirOffset)
 }
 
+func (r *ChunkedArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
+	return r.inner.ListDirectoryWithOptions(dirOffset, opts)
+}
+
 func (r *ChunkedArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 	return r.inner.ReadFileContent(entry)
+}
+
+func (r *ChunkedArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+	return r.inner.ReadFileContentReader(entry)
+}
+
+func (r *ChunkedArchiveReader) ReadCatalog() ([]CatalogEntry, error) {
+	return r.inner.ReadCatalog()
 }
 
 func (r *ChunkedArchiveReader) Close() error {
@@ -172,13 +223,13 @@ func (r *ChunkedArchiveReader) Close() error {
 // avoiding full-stream-in-memory reconstruction. For small archives, use
 // NewSplitArchiveReaderEager.
 type SplitArchiveReader struct {
-	inner          *FileArchiveReader
-	metaIdx        *datastore.DynamicIndexReader
-	payloadIdx     *datastore.DynamicIndexReader
-	source         datastore.ChunkSource
-	closers        []io.Closer
-	metaLazy       *ChunkedReadSeeker
-	payloadLazy    *ChunkedReadSeeker
+	inner       *FileArchiveReader
+	metaIdx     *datastore.DynamicIndexReader
+	payloadIdx  *datastore.DynamicIndexReader
+	source      datastore.ChunkSource
+	closers     []io.Closer
+	metaLazy    *ChunkedReadSeeker
+	payloadLazy *ChunkedReadSeeker
 }
 
 // NewSplitArchiveReader creates a reader for a split chunked archive using
@@ -207,6 +258,26 @@ func NewSplitArchiveReader(metaIdxData, payloadIdxData []byte, source datastore.
 		source:      source,
 		metaLazy:    metaLazy,
 		payloadLazy: payloadLazy,
+	}, nil
+}
+
+// NewSplitArchiveReaderMetaOnly creates a reader for a split archive that
+// only downloads and uses the metadata stream. The payload stream is never
+// fetched. ReadFileContent/ReadFileContentReader will return errors for files
+// stored in the payload stream (PayloadOffset > 0).
+func NewSplitArchiveReaderMetaOnly(metaIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
+	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
+	if err != nil {
+		return nil, fmt.Errorf("read metadata index: %w", err)
+	}
+
+	metaLazy := NewChunkedReadSeeker(metaIdx, source, 32)
+
+	return &SplitArchiveReader{
+		inner:    NewFileArchiveReader(metaLazy),
+		metaIdx:  metaIdx,
+		source:   source,
+		metaLazy: metaLazy,
 	}, nil
 }
 
@@ -257,12 +328,28 @@ func (r *SplitArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
+func (r *SplitArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
+	return r.inner.LookupBatch(paths)
+}
+
 func (r *SplitArchiveReader) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
 	return r.inner.ListDirectory(dirOffset)
 }
 
+func (r *SplitArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
+	return r.inner.ListDirectoryWithOptions(dirOffset, opts)
+}
+
 func (r *SplitArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 	return r.inner.ReadFileContent(entry)
+}
+
+func (r *SplitArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+	return r.inner.ReadFileContentReader(entry)
+}
+
+func (r *SplitArchiveReader) ReadCatalog() ([]CatalogEntry, error) {
+	return r.inner.ReadCatalog()
 }
 
 func (r *SplitArchiveReader) Close() error {

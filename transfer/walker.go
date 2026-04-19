@@ -50,6 +50,19 @@ func walkTreeInternal(reader ArchiveReader, rootPath string, opts WalkOption, fn
 		return fmt.Errorf("lookup root path %q: %w", rootPath, err)
 	}
 
+	// Wrap the callback to handle SkipCount
+	remaining := opts.SkipCount
+	walkFn := fn
+	if remaining > 0 {
+		walkFn = func(entry *pxar.Entry, content []byte) error {
+			if remaining > 0 {
+				remaining--
+				return nil
+			}
+			return fn(entry, content)
+		}
+	}
+
 	// For non-directory roots, filter applies directly.
 	if !root.IsDir() {
 		if opts.Filter != 0 && !opts.Filter.matches(root.Kind) {
@@ -62,15 +75,15 @@ func walkTreeInternal(reader ArchiveReader, rootPath string, opts WalkOption, fn
 				return fmt.Errorf("read file content: %w", err)
 			}
 		}
-		return fn(root, content)
+		return walkFn(root, content)
 	}
 
 	// Root is a directory — check if it should be yielded to the callback.
 	if opts.Filter == 0 || opts.Filter.matches(root.Kind) {
-		return walkDir(reader, root, opts, fn)
+		return walkDir(reader, root, opts, walkFn)
 	}
 	// Filtered out of callback but still descend for children.
-	return walkDirDescend(reader, root, opts, fn)
+	return walkDirDescend(reader, root, opts, walkFn)
 }
 
 func walkDir(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn WalkFunc) error {

@@ -3,6 +3,7 @@ package transfer
 import (
 	"context"
 	"fmt"
+	"io"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/backupproxy"
@@ -34,6 +35,13 @@ type PBSArchiveConfig struct {
 	MetaName string
 	// PayloadName is the payload stream filename for split archives (v2).
 	PayloadName string
+
+	// MetaOnly skips downloading the payload stream entirely for v2 split
+	// archives. When true, only the metadata index (.mpxar.didx) is
+	// downloaded. This halves data transfer for browsing/indexing operations
+	// that never touch file content. ReadFileContent and ReadFileContentReader
+	// will return errors for files with PayloadOffset > 0.
+	MetaOnly bool
 }
 
 // NewPBSArchiveReader creates a reader for a PBS remote archive.
@@ -53,16 +61,26 @@ func NewPBSArchiveReader(ctx context.Context, cfg PBSArchiveConfig) (*PBSArchive
 			pbs.Close()
 			return nil, fmt.Errorf("download metadata index: %w", err)
 		}
-		payloadIdxData, err := pbs.DownloadFile(cfg.PayloadName)
-		if err != nil {
-			pbs.Close()
-			return nil, fmt.Errorf("download payload index: %w", err)
-		}
 
-		inner, err = NewSplitArchiveReader(metaIdxData, payloadIdxData, pbs.AsChunkSource())
-		if err != nil {
-			pbs.Close()
-			return nil, fmt.Errorf("create split reader: %w", err)
+		if cfg.MetaOnly {
+			// MetaOnly: skip payload download entirely. Use metadata-only reader.
+			inner, err = NewSplitArchiveReaderMetaOnly(metaIdxData, pbs.AsChunkSource())
+			if err != nil {
+				pbs.Close()
+				return nil, fmt.Errorf("create meta-only reader: %w", err)
+			}
+		} else {
+			payloadIdxData, err := pbs.DownloadFile(cfg.PayloadName)
+			if err != nil {
+				pbs.Close()
+				return nil, fmt.Errorf("download payload index: %w", err)
+			}
+
+			inner, err = NewSplitArchiveReader(metaIdxData, payloadIdxData, pbs.AsChunkSource())
+			if err != nil {
+				pbs.Close()
+				return nil, fmt.Errorf("create split reader: %w", err)
+			}
 		}
 	} else if cfg.ArchiveName != "" {
 		// v1 archive
@@ -96,12 +114,28 @@ func (r *PBSArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
+func (r *PBSArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
+	return r.inner.LookupBatch(paths)
+}
+
 func (r *PBSArchiveReader) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
 	return r.inner.ListDirectory(dirOffset)
 }
 
+func (r *PBSArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
+	return r.inner.ListDirectoryWithOptions(dirOffset, opts)
+}
+
 func (r *PBSArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 	return r.inner.ReadFileContent(entry)
+}
+
+func (r *PBSArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+	return r.inner.ReadFileContentReader(entry)
+}
+
+func (r *PBSArchiveReader) ReadCatalog() ([]CatalogEntry, error) {
+	return r.inner.ReadCatalog()
 }
 
 func (r *PBSArchiveReader) Close() error {

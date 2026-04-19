@@ -81,6 +81,23 @@ func (f WalkFilter) matches(kind pxar.EntryKind) bool {
 	}
 }
 
+// ListOption controls which metadata is decoded during ListDirectory calls.
+type ListOption struct {
+	// Minimal skips decoding xattrs, fcaps, ACLs, and other extended
+	// metadata. Only stat basics (mode, uid, gid, times) are populated.
+	// Significantly reduces per-entry decode cost for indexing/browsing.
+	Minimal bool
+}
+
+// CatalogEntry is a stripped-down entry for index-building. It contains
+// only the fields needed for cataloging: path, kind, size, and parent.
+type CatalogEntry struct {
+	Path       string
+	Kind       pxar.EntryKind
+	FileSize   uint64
+	ParentPath string // filled in by the library
+}
+
 // WalkOption configures walk behavior. The zero value walks all entry types
 // and reads file content (equivalent to the original WalkTree behavior).
 type WalkOption struct {
@@ -92,6 +109,11 @@ type WalkOption struct {
 	// the filter are skipped without invoking the callback. Directories that
 	// are filtered out are not descended into. Zero means accept all types.
 	Filter WalkFilter
+
+	// SkipCount fast-forwards past the first N entries without invoking the
+	// callback. Entries are still decoded but the walk callback is skipped.
+	// Useful for resuming a previous walk.
+	SkipCount int
 }
 
 // WalkMetaOnly is a convenience WalkOption for metadata-only walks.

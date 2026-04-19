@@ -113,6 +113,15 @@ func walkDirChildren(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn 
 		return fmt.Errorf("list directory: %w", err)
 	}
 
+	// Build full paths for children
+	for i := range entries {
+		if dir.Path == "/" {
+			entries[i].Path = "/" + entries[i].Path
+		} else {
+			entries[i].Path = dir.Path + "/" + entries[i].Path
+		}
+	}
+
 	for i := range entries {
 		child := &entries[i]
 

@@ -107,6 +107,16 @@ func (w *TreeWalker) Next() bool {
 				w.err = fmt.Errorf("list directory %q: %w", src.Path, err)
 				return false
 			}
+
+			// Build full paths for children
+			for i := range children {
+				if src.Path == "/" {
+					children[i].Path = "/" + children[i].Path
+				} else {
+					children[i].Path = src.Path + "/" + children[i].Path
+				}
+			}
+
 			if len(children) > 0 {
 				w.stack = append(w.stack, walkFrame{entries: children, idx: -1})
 			}

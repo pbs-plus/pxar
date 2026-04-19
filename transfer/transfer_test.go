@@ -210,7 +210,7 @@ func TestWalkTree(t *testing.T) {
 	}
 
 	// Should have root dir, hello.txt, link, subdir, nested.txt
-	expectedPaths := []string{"/", "hello.txt", "link", "subdir", "nested.txt"}
+	expectedPaths := []string{"/", "/hello.txt", "/link", "/subdir", "/subdir/nested.txt"}
 	for _, p := range expectedPaths {
 		found := false
 		for _, walked := range paths {
@@ -699,7 +699,7 @@ func TestWalkTreeMetaOnly(t *testing.T) {
 		t.Fatalf("WalkTreeWith MetaOnly: %v", err)
 	}
 
-	expectedPaths := []string{"/", "hello.txt", "link", "subdir", "nested.txt"}
+	expectedPaths := []string{"/", "/hello.txt", "/link", "/subdir", "/subdir/nested.txt"}
 	for _, p := range expectedPaths {
 		found := false
 		for _, walked := range paths {
@@ -798,7 +798,7 @@ func TestWalkFilterSkipsDirDescent(t *testing.T) {
 
 	// Should have found files but NOT dirs in the callback
 	for _, p := range paths {
-		if p == "a" || p == "b" {
+		if p == "/a" || p == "/a/b" {
 			t.Errorf("directory %q should have been filtered out", p)
 		}
 	}
@@ -806,7 +806,7 @@ func TestWalkFilterSkipsDirDescent(t *testing.T) {
 	// But should still have found nested files
 	found := false
 	for _, p := range paths {
-		if p == "deep.txt" || p == "mid.txt" {
+		if p == "/a/b/deep.txt" || p == "/a/mid.txt" {
 			found = true
 		}
 	}
@@ -834,7 +834,7 @@ func TestTreeWalker(t *testing.T) {
 		t.Fatalf("Err: %v", err)
 	}
 
-	expectedPaths := []string{"/", "hello.txt", "link", "subdir", "nested.txt"}
+	expectedPaths := []string{"/", "/hello.txt", "/link", "/subdir", "/subdir/nested.txt"}
 	if len(paths) != len(expectedPaths) {
 		t.Errorf("expected %d entries, got %d: %v", len(expectedPaths), len(paths), paths)
 	}

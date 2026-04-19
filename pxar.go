@@ -34,6 +34,7 @@ package pxar
 import (
 	"path/filepath"
 	"strings"
+	"unsafe"
 
 	"github.com/pbs-plus/pxar/format"
 )
@@ -97,6 +98,19 @@ func (e *Entry) IsSocket() bool { return e.Kind == KindSocket }
 // FileName returns just the file name portion of the entry's path.
 func (e *Entry) FileName() string {
 	return filepath.Base(e.Path)
+}
+
+// PathBytes returns the entry's full path as a []byte without allocating.
+// The returned slice references the same memory as Path and must not be modified.
+func (e *Entry) PathBytes() []byte {
+	return unsafe.Slice(unsafe.StringData(e.Path), len(e.Path))
+}
+
+// FileNameBytes returns the entry's base name as a []byte without allocating.
+// The returned slice must not be modified.
+func (e *Entry) FileNameBytes() []byte {
+	name := filepath.Base(e.Path)
+	return unsafe.Slice(unsafe.StringData(name), len(name))
 }
 
 // Metadata holds file metadata found in pxar archives.

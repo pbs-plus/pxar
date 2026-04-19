@@ -17,6 +17,27 @@ var ErrSkipDir = fmt.Errorf("skip directory")
 // If fn returns ErrSkipDir for a directory entry, the directory's children
 // are skipped. If fn returns any other error, walking stops.
 func WalkTree(reader ArchiveReader, rootPath string, fn WalkFunc) error {
+	return walkTreeInternal(reader, rootPath, WalkOption{}, fn)
+}
+
+// WalkTreeWith walks a directory tree with the given options.
+// When opts.MetaOnly is true, file content is never read and content is always nil.
+// When opts.Filter is non-zero, entries not matching the filter are skipped.
+func WalkTreeWith(reader ArchiveReader, rootPath string, opts WalkOption, fn WalkFunc) error {
+	return walkTreeInternal(reader, rootPath, opts, fn)
+}
+
+// WalkTreeMeta walks a directory tree in metadata-only mode with a simplified
+// callback. Content is never read, and the filter mask controls which entry
+// types are visited. Use WalkAll to visit all types.
+func WalkTreeMeta(reader ArchiveReader, rootPath string, filter WalkFilter, fn MetaWalkFunc) error {
+	opts := WalkOption{MetaOnly: true, Filter: filter}
+	return walkTreeInternal(reader, rootPath, opts, func(entry *pxar.Entry, _ []byte) error {
+		return fn(entry)
+	})
+}
+
+func walkTreeInternal(reader ArchiveReader, rootPath string, opts WalkOption, fn WalkFunc) error {
 	var root *pxar.Entry
 	var err error
 
@@ -29,10 +50,13 @@ func WalkTree(reader ArchiveReader, rootPath string, fn WalkFunc) error {
 		return fmt.Errorf("lookup root path %q: %w", rootPath, err)
 	}
 
+	// For non-directory roots, filter applies directly.
 	if !root.IsDir() {
-		// Single file entry
+		if opts.Filter != 0 && !opts.Filter.matches(root.Kind) {
+			return nil
+		}
 		var content []byte
-		if root.IsRegularFile() {
+		if !opts.MetaOnly && root.IsRegularFile() {
 			content, err = reader.ReadFileContent(root)
 			if err != nil {
 				return fmt.Errorf("read file content: %w", err)
@@ -41,10 +65,15 @@ func WalkTree(reader ArchiveReader, rootPath string, fn WalkFunc) error {
 		return fn(root, content)
 	}
 
-	return walkDir(reader, root, fn)
+	// Root is a directory — check if it should be yielded to the callback.
+	if opts.Filter == 0 || opts.Filter.matches(root.Kind) {
+		return walkDir(reader, root, opts, fn)
+	}
+	// Filtered out of callback but still descend for children.
+	return walkDirDescend(reader, root, opts, fn)
 }
 
-func walkDir(reader ArchiveReader, dir *pxar.Entry, fn WalkFunc) error {
+func walkDir(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn WalkFunc) error {
 	// Call fn for the directory itself
 	if err := fn(dir, nil); err != nil {
 		if err == ErrSkipDir {
@@ -52,6 +81,18 @@ func walkDir(reader ArchiveReader, dir *pxar.Entry, fn WalkFunc) error {
 		}
 		return err
 	}
+
+	return walkDirChildren(reader, dir, opts, fn)
+}
+
+// walkDirDescend descends into a directory's children without invoking the
+// callback for the directory itself. Used when the directory is filtered out
+// but its children may still be relevant.
+func walkDirDescend(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn WalkFunc) error {
+	return walkDirChildren(reader, dir, opts, fn)
+}
+
+func walkDirChildren(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn WalkFunc) error {
 
 	// List children
 	entries, err := reader.ListDirectory(int64(dir.ContentOffset))
@@ -63,12 +104,25 @@ func walkDir(reader ArchiveReader, dir *pxar.Entry, fn WalkFunc) error {
 		child := &entries[i]
 
 		if child.IsDir() {
-			if err := walkDir(reader, child, fn); err != nil {
-				return err
+			// Always descend into directories. Only invoke the callback if
+			// the directory's kind passes the filter.
+			if opts.Filter == 0 || opts.Filter.matches(child.Kind) {
+				if err := walkDir(reader, child, opts, fn); err != nil {
+					return err
+				}
+			} else {
+				// Filtered out of callback but still descend for children.
+				if err := walkDirDescend(reader, child, opts, fn); err != nil {
+					return err
+				}
 			}
 		} else {
+			// Skip non-directory entries that don't match the filter.
+			if opts.Filter != 0 && !opts.Filter.matches(child.Kind) {
+				continue
+			}
 			var content []byte
-			if child.IsRegularFile() {
+			if !opts.MetaOnly && child.IsRegularFile() {
 				content, err = reader.ReadFileContent(child)
 				if err != nil {
 					return fmt.Errorf("read file %q: %w", child.Path, err)

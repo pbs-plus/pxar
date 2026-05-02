@@ -24,7 +24,7 @@ const (
 
 // CatalogChild is a lightweight directory entry.
 // Field order: largest first to minimize padding (Size int64, Name string, Kind byte).
-// Total: 8 + 16 + 1 + 7pad = 32 bytes (same as before, but Kind is now byte-sized).
+// Total: 8 + 16 + 1 + 7pad = 32 bytes.
 type CatalogChild struct {
 	Size int64
 	Name string
@@ -32,9 +32,13 @@ type CatalogChild struct {
 }
 
 // Catalog is a lightweight directory tree: parentPath → children.
+//
+// The chunks field retains decoded chunk data so that filename strings
+// (created via unsafe.String during parsing) remain valid for the
+// Catalog's lifetime. Callers should not retain a Catalog longer than needed.
 type Catalog struct {
-	Dirs     map[string][]CatalogChild
-	Estimate int // hint: estimated total child count for preallocation
+	Dirs   map[string][]CatalogChild
+	chunks [][]byte // keeps chunk data alive for unsafe.String filenames
 }
 
 // CatalogOptions configures BuildCatalogFast behavior.
@@ -42,38 +46,117 @@ type CatalogOptions struct {
 	MaxWorkers int // parallel chunk downloads (default 4)
 }
 
-// byteReader is a simple sequential reader over a byte slice.
-// Kept as a value type (no pointer indirection) for inline-friendly hot path.
-type byteReader struct {
-	data []byte
-	pos  int
+// chunkReader reads sequentially across an ordered slice of byte chunks
+// without concatenating them. Zero-copy for in-chunk reads; small allocation
+// only at chunk boundaries (rare — headers are 16 bytes, chunks are typically 4 MB).
+type chunkReader struct {
+	chunks [][]byte
+	ci     int // current chunk index
+	pos    int // offset within chunks[ci]
 }
 
-// read returns a slice into the underlying data. No allocation.
-func (r *byteReader) read(n int) []byte {
-	b := r.data[r.pos : r.pos+n]
-	r.pos += n
-	return b
+// read returns n contiguous bytes. For the common case (data fully within
+// the current chunk), this is zero-copy — the returned slice points directly
+// into the chunk's backing array. For cross-chunk spans (rare), a new buffer
+// is allocated.
+func (r *chunkReader) read(n int) []byte {
+	cur := r.chunks[r.ci]
+	avail := len(cur) - r.pos
+	if n <= avail {
+		b := cur[r.pos : r.pos+n]
+		r.pos += n
+		if r.pos == len(cur) && r.ci < len(r.chunks)-1 {
+			r.ci++
+			r.pos = 0
+		}
+		return b
+	}
+
+	// Cross-chunk span: assemble into a new buffer.
+	buf := make([]byte, 0, n)
+	buf = append(buf, cur[r.pos:]...)
+	need := n - len(buf)
+	r.ci++
+	r.pos = 0
+	for need > 0 {
+		cur = r.chunks[r.ci]
+		take := min(need, len(cur))
+		buf = append(buf, cur[:take]...)
+		need -= take
+		r.pos = take
+		if take == len(cur) && r.ci < len(r.chunks)-1 {
+			r.ci++
+			r.pos = 0
+		}
+	}
+	return buf
 }
 
-// readHeader reads a 16-byte pxar header. Inlined by the compiler.
-func (r *byteReader) readHeader() format.Header {
-	b := r.data[r.pos : r.pos+format.HeaderSize]
-	r.pos += format.HeaderSize
+// readHeader reads a 16-byte pxar header.
+func (r *chunkReader) readHeader() format.Header {
+	b := r.read(format.HeaderSize)
 	return format.Header{
 		Type: binary.LittleEndian.Uint64(b[0:8]),
 		Size: binary.LittleEndian.Uint64(b[8:16]),
 	}
 }
 
-func (r *byteReader) skip(n int) {
-	r.pos += n
+// skip advances the reader position by n bytes across chunk boundaries.
+func (r *chunkReader) skip(n int) {
+	for n > 0 {
+		cur := r.chunks[r.ci]
+		avail := len(cur) - r.pos
+		if n < avail {
+			r.pos += n
+			return
+		}
+		n -= avail
+		r.ci++
+		r.pos = 0
+	}
 }
 
-func (r *byteReader) remaining() int { return len(r.data) - r.pos }
+// remaining returns the total unread bytes across all remaining chunks.
+func (r *chunkReader) remaining() int {
+	if r.ci >= len(r.chunks) {
+		return 0
+	}
+	total := len(r.chunks[r.ci]) - r.pos
+	for i := r.ci + 1; i < len(r.chunks); i++ {
+		total += len(r.chunks[i])
+	}
+	return total
+}
 
-// BuildCatalogFast downloads metadata chunks in parallel, concatenates them,
-// and performs a single sequential pass to build a directory catalog.
+// pushback rewinds by n bytes (used for header pushback after peeking).
+// Only valid for small n (typically format.HeaderSize = 16) within the
+// current chunk. Panics if n exceeds current chunk position.
+func (r *chunkReader) pushback(n int) {
+	if r.pos >= n {
+		r.pos -= n
+		return
+	}
+	// Cross-chunk pushback: step back through chunks to find the position.
+	// This is rare and only happens when a structural header (FILENAME/GOODBYE)
+	// lands at the start of a new chunk.
+	n -= r.pos
+	r.ci--
+	for r.ci >= 0 {
+		cur := r.chunks[r.ci]
+		if n <= len(cur) {
+			r.pos = len(cur) - n
+			return
+		}
+		n -= len(cur)
+		r.ci--
+	}
+	panic("chunkReader.pushback: rewound past start of data")
+}
+
+// BuildCatalogFast downloads metadata chunks in parallel and performs a
+// single sequential pass to build a directory catalog — no concatenation.
+// Chunks are parsed in-place; filename strings are zero-copy views into
+// chunk data kept alive by Catalog.chunks.
 func BuildCatalogFast(
 	metaIdx *DynamicIndexReader,
 	source ChunkSource,
@@ -91,11 +174,7 @@ func BuildCatalogFast(
 		maxWorkers = metaIdx.Count()
 	}
 
-	totalSize := metaIdx.IndexBytes()
-
 	// Phase 1: Parallel chunk download + decode.
-	// Each slot holds: decoded data OR error. Using separate slices avoids
-	// struct padding and false sharing between cache lines.
 	decodedChunks := make([][]byte, metaIdx.Count())
 	chunkErrs := make([]error, metaIdx.Count())
 
@@ -126,25 +205,28 @@ func BuildCatalogFast(
 	}
 	wg.Wait()
 
-	// Concatenate decoded chunks into a single contiguous buffer using copy
-	// (avoids append's bounds checking on every iteration).
-	meta := make([]byte, totalSize)
-	written := 0
-	for i := range decodedChunks {
+	// Check for download errors before parsing.
+	for i := range chunkErrs {
 		if chunkErrs[i] != nil {
 			return nil, chunkErrs[i]
 		}
-		written += copy(meta[written:], decodedChunks[i])
 	}
 
-	// Phase 2: Sequential single-pass parse.
-	catalog := &Catalog{Dirs: make(map[string][]CatalogChild)}
-	r := &byteReader{data: meta}
+	// Phase 2: Sequential single-pass parse directly from chunk slices.
+	// No concatenation — the chunkReader reads across [][]byte boundaries.
+	catalog := &Catalog{
+		Dirs:   make(map[string][]CatalogChild),
+		chunks: decodedChunks, // keep alive for unsafe.String filenames
+	}
+	r := &chunkReader{chunks: decodedChunks}
 
 	// Skip FORMAT_VERSION header + content and optional PRELUDE.
 	for r.remaining() >= format.HeaderSize {
 		h := r.readHeader()
 		if h.Type == format.PXARFormatVersion || h.Type == format.PXARPrelude {
+			if r.remaining() < int(h.ContentSize()) {
+				return nil, fmt.Errorf("not enough bytes for %s content", h.String())
+			}
 			r.skip(int(h.ContentSize()))
 			continue
 		}
@@ -159,7 +241,7 @@ func BuildCatalogFast(
 }
 
 // parseRootAndChildren handles the root ENTRY and all subsequent children.
-func parseRootAndChildren(r *byteReader, first format.Header, catalog *Catalog) error {
+func parseRootAndChildren(r *chunkReader, first format.Header, catalog *Catalog) error {
 	if first.Type != format.PXAREntry {
 		return fmt.Errorf("expected ENTRY header, got %s", first.String())
 	}
@@ -208,6 +290,9 @@ func parseRootAndChildren(r *byteReader, first format.Header, catalog *Catalog) 
 
 			switch h2.Type {
 			case format.PXARHardlink:
+				if r.remaining() < int(h2.ContentSize()) {
+					return fmt.Errorf("not enough bytes for hardlink content of %q", name)
+				}
 				r.skip(int(h2.ContentSize()))
 				catalog.addChild(parentPath, name, KindHardlink, 0)
 
@@ -224,11 +309,7 @@ func parseRootAndChildren(r *byteReader, first format.Header, catalog *Catalog) 
 				catalog.addChild(parentPath, name, kind, size)
 
 				if kind == KindDirectory {
-					// Build child path using reusable buffer to avoid
-					// per-entry string concatenation allocations.
 					pathBuf = buildChildPath(pathBuf[:0], parentPath, name)
-					// Copy pathBuf bytes into an immutable string so
-					// pathBuf can be reused in the next iteration.
 					dirStack = append(dirStack, string(append([]byte(nil), pathBuf...)))
 				}
 
@@ -237,12 +318,18 @@ func parseRootAndChildren(r *byteReader, first format.Header, catalog *Catalog) 
 			}
 
 		case format.PXARGoodbye:
+			if r.remaining() < int(h.ContentSize()) {
+				return fmt.Errorf("not enough bytes for goodbye content")
+			}
 			r.skip(int(h.ContentSize()))
 			if len(dirStack) > 1 {
 				dirStack = dirStack[:len(dirStack)-1]
 			}
 
 		default:
+			if r.remaining() < int(h.ContentSize()) {
+				return fmt.Errorf("not enough bytes for unknown header content")
+			}
 			r.skip(int(h.ContentSize()))
 		}
 	}
@@ -254,7 +341,7 @@ func parseRootAndChildren(r *byteReader, first format.Header, catalog *Catalog) 
 // the entry kind and size. Returns the kind, file size, and any error.
 // After this function returns, the reader is positioned right after the
 // terminal attribute, ready for the next structural header.
-func scanEntryAttributes(r *byteReader, stat format.Stat) (EntryKind, int64, error) {
+func scanEntryAttributes(r *chunkReader, stat format.Stat) (EntryKind, int64, error) {
 	fileType := stat.Mode & format.ModeIFMT
 
 	for r.remaining() >= format.HeaderSize {
@@ -263,14 +350,23 @@ func scanEntryAttributes(r *byteReader, stat format.Stat) (EntryKind, int64, err
 
 		switch h.Type {
 		case format.PXARSymlink:
+			if r.remaining() < contentSize {
+				return 0, 0, fmt.Errorf("not enough bytes for symlink content")
+			}
 			r.skip(contentSize)
 			return KindSymlink, 0, nil
 
 		case format.PXARDevice:
+			if r.remaining() < contentSize {
+				return 0, 0, fmt.Errorf("not enough bytes for device content")
+			}
 			r.skip(contentSize)
 			return KindDevice, 0, nil
 
 		case format.PXARPayload:
+			if r.remaining() < contentSize {
+				return 0, 0, fmt.Errorf("not enough bytes for payload content")
+			}
 			r.skip(contentSize)
 			return KindFile, int64(contentSize), nil
 
@@ -288,7 +384,7 @@ func scanEntryAttributes(r *byteReader, stat format.Stat) (EntryKind, int64, err
 			// Non-terminal entries (directories, FIFOs, sockets) have no
 			// PAYLOAD/SYMLINK/DEVICE. The next FILENAME or GOODBYE belongs
 			// to the parent structure. Do NOT consume it — push back.
-			r.pos -= format.HeaderSize
+			r.pushback(format.HeaderSize)
 			switch fileType {
 			case format.ModeIFIFO:
 				return KindFifo, 0, nil
@@ -300,6 +396,9 @@ func scanEntryAttributes(r *byteReader, stat format.Stat) (EntryKind, int64, err
 
 		default:
 			// Skip unknown attributes (xattrs, ACLs, fcaps, etc.)
+			if r.remaining() < contentSize {
+				return 0, 0, fmt.Errorf("not enough bytes for unknown attribute")
+			}
 			r.skip(contentSize)
 		}
 	}
@@ -310,12 +409,15 @@ func scanEntryAttributes(r *byteReader, stat format.Stat) (EntryKind, int64, err
 
 // skipUntilStructural skips attribute headers until a FILENAME or GOODBYE
 // is found. Does NOT consume the structural header.
-func skipUntilStructural(r *byteReader) error {
+func skipUntilStructural(r *chunkReader) error {
 	for r.remaining() >= format.HeaderSize {
 		h := r.readHeader()
 		if h.Type == format.PXARFilename || h.Type == format.PXARGoodbye {
-			r.pos -= format.HeaderSize
+			r.pushback(format.HeaderSize)
 			return nil
+		}
+		if r.remaining() < int(h.ContentSize()) {
+			return fmt.Errorf("not enough bytes for attribute content")
 		}
 		r.skip(int(h.ContentSize()))
 	}
@@ -323,9 +425,9 @@ func skipUntilStructural(r *byteReader) error {
 }
 
 // readFilename reads the content of a FILENAME header and strips the trailing null.
-// Returns a zero-copy string backed by the reader's data. The returned string is
-// safe to use as long as the underlying meta slice is alive.
-func readFilename(r *byteReader, h format.Header) string {
+// Returns a zero-copy string backed by the chunk data. Safe because Catalog.chunks
+// keeps the backing data alive for the catalog's lifetime.
+func readFilename(r *chunkReader, h format.Header) string {
 	data := r.read(int(h.ContentSize()))
 	if len(data) > 0 && data[len(data)-1] == 0 {
 		data = data[:len(data)-1]

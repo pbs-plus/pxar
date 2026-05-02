@@ -55,12 +55,246 @@ type BuildResult struct {
 	RootChildren []CatalogChild
 }
 
-// BuildDirIndex builds a lightweight directory location index by scanning
-// metadata chunks. It records start and end positions for every directory
-// and returns root children as a side effect.
+// --- Streaming chunk reader ---
+
+type prefetchedChunk struct {
+	data []byte
+	err  error
+}
+
+// streamChunkReader implements streamReader by fetching chunks from the
+// metadata index on demand. A background goroutine prefetches the next
+// chunk while the current one is being scanned. Only 2 decoded chunks
+// are ever held in memory.
 //
-// Peak memory: O(directory_count × avg_path_length) for the index + one
-// chunk at a time during download/scan (streaming).
+// Peak memory: ~8 MB (2 × 4 MB chunks) regardless of total metadata size.
+type streamChunkReader struct {
+	metaIdx   *DynamicIndexReader
+	source    ChunkSource
+	chunks    [][]byte // at most 2 decoded chunks
+	baseIdx   int      // chunks[0] corresponds to this metaIdx index
+	nextFetch int      // next metaIdx index to fetch
+	ci        int      // current position in chunks
+	pos       int
+	ch        chan prefetchedChunk
+	closed    bool
+	err       error
+}
+
+func newStreamChunkReader(metaIdx *DynamicIndexReader, source ChunkSource) *streamChunkReader {
+	sr := &streamChunkReader{
+		metaIdx:   metaIdx,
+		source:    source,
+		chunks:    make([][]byte, 0, 2),
+		nextFetch: 0,
+		ch:        make(chan prefetchedChunk, 1),
+	}
+	// Fetch first chunk synchronously.
+	sr.fetchChunk()
+	if len(sr.chunks) == 0 {
+		// First fetch didn't arrive — wait for it.
+		sr.recvChunk()
+	}
+	// Start prefetching second chunk in background.
+	go sr.prefetch()
+	return sr
+}
+
+func (r *streamChunkReader) fetchChunk() {
+	if r.nextFetch >= r.metaIdx.Count() {
+		return
+	}
+	entry := r.metaIdx.Entry(r.nextFetch)
+	raw, err := r.source.GetChunk(entry.Digest)
+	if err != nil {
+		r.err = fmt.Errorf("chunk %d/%d (digest %x): %w", r.nextFetch+1, r.metaIdx.Count(), entry.Digest[:8], err)
+		r.nextFetch++
+		return
+	}
+	decoded, err := DecodeBlob(raw)
+	if err != nil {
+		r.err = fmt.Errorf("decode chunk %d: %w", r.nextFetch, err)
+		r.nextFetch++
+		return
+	}
+	r.chunks = append(r.chunks, decoded)
+	r.nextFetch++
+}
+
+func (r *streamChunkReader) prefetch() {
+	defer close(r.ch)
+	for r.nextFetch < r.metaIdx.Count() {
+		var pc prefetchedChunk
+		entry := r.metaIdx.Entry(r.nextFetch)
+		raw, err := r.source.GetChunk(entry.Digest)
+		if err != nil {
+			pc.err = fmt.Errorf("prefetch chunk %d: %w", r.nextFetch, err)
+		} else {
+			decoded, err := DecodeBlob(raw)
+			if err != nil {
+				pc.err = fmt.Errorf("decode prefetched chunk %d: %w", r.nextFetch, err)
+			} else {
+				pc.data = decoded
+			}
+		}
+		r.ch <- pc
+		r.nextFetch++
+	}
+}
+
+func (r *streamChunkReader) recvChunk() {
+	if r.closed {
+		return
+	}
+	pc, ok := <-r.ch
+	if !ok {
+		r.closed = true
+		return
+	}
+	if pc.err != nil {
+		r.err = pc.err
+		r.closed = true
+		return
+	}
+	r.chunks = append(r.chunks, pc.data)
+}
+
+func (r *streamChunkReader) chunkPosition() (int, int) { return r.baseIdx + r.ci, r.pos }
+
+func (r *streamChunkReader) ensureChunk() {
+	if r.ci < len(r.chunks) {
+		return
+	}
+	if r.err != nil {
+		return
+	}
+	// Need the next chunk — wait for prefetch.
+	r.recvChunk()
+	// Drop the fully consumed previous chunk to free memory.
+	if len(r.chunks) > 1 {
+		r.chunks = r.chunks[1:]
+		r.ci--
+		r.baseIdx++
+	}
+}
+
+func (r *streamChunkReader) read(n int) ([]byte, error) {
+	r.ensureChunk()
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.ci >= len(r.chunks) {
+		return nil, fmt.Errorf("EOF: no more chunks")
+	}
+
+	cur := r.chunks[r.ci]
+	avail := len(cur) - r.pos
+	if n <= avail {
+		b := cur[r.pos : r.pos+n]
+		r.pos += n
+		if r.pos == len(cur) && r.ci < len(r.chunks)-1 {
+			r.ci++
+			r.pos = 0
+		}
+		return b, nil
+	}
+
+	// Cross-chunk span.
+	buf := make([]byte, 0, n)
+	buf = append(buf, cur[r.pos:]...)
+	need := n - len(buf)
+	r.ci++
+	r.pos = 0
+	for need > 0 {
+		r.ensureChunk()
+		if r.err != nil {
+			return nil, r.err
+		}
+		if r.ci >= len(r.chunks) {
+			return nil, fmt.Errorf("EOF: need %d more bytes", need)
+		}
+		cur = r.chunks[r.ci]
+		take := min(need, len(cur))
+		buf = append(buf, cur[:take]...)
+		need -= take
+		r.pos = take
+		if r.pos == len(cur) && r.ci < len(r.chunks)-1 {
+			r.ci++
+			r.pos = 0
+		}
+	}
+	return buf, nil
+}
+
+func (r *streamChunkReader) readHeader() (format.Header, error) {
+	b, err := r.read(format.HeaderSize)
+	if err != nil {
+		return format.Header{}, err
+	}
+	return format.Header{
+		Type: binary.LittleEndian.Uint64(b[0:8]),
+		Size: binary.LittleEndian.Uint64(b[8:16]),
+	}, nil
+}
+
+func (r *streamChunkReader) skip(n int) error {
+	for n > 0 {
+		r.ensureChunk()
+		if r.err != nil {
+			return r.err
+		}
+		if r.ci >= len(r.chunks) {
+			return fmt.Errorf("EOF during skip: %d bytes remain", n)
+		}
+		cur := r.chunks[r.ci]
+		avail := len(cur) - r.pos
+		if n < avail {
+			r.pos += n
+			return nil
+		}
+		n -= avail
+		r.ci++
+		r.pos = 0
+	}
+	return nil
+}
+
+func (r *streamChunkReader) close() {
+	if !r.closed {
+		r.closed = true
+		// Drain any remaining prefetched chunks.
+		for range r.ch {
+		}
+	}
+}
+
+func (r *streamChunkReader) pushback(n int) error {
+	if r.pos >= n {
+		r.pos -= n
+		return nil
+	}
+	// Cross-chunk pushback.
+	n -= r.pos
+	r.ci--
+	for r.ci >= 0 {
+		cur := r.chunks[r.ci]
+		if n <= len(cur) {
+			r.pos = len(cur) - n
+			return nil
+		}
+		n -= len(cur)
+		r.ci--
+	}
+	return fmt.Errorf("pushback past start of stream")
+}
+
+// BuildDirIndex builds a lightweight directory location index by scanning
+// metadata chunks on demand. It fetches and processes one chunk at a time
+// with a background prefetch goroutine, keeping at most 2-3 decoded chunks
+// in memory regardless of total metadata size.
+//
+// Peak memory: O(directory_count × avg_path_length) for the index + 2–3
+// chunks (~8–12 MB for 4 MB chunks) during the scan.
 func BuildDirIndex(
 	metaIdx *DynamicIndexReader,
 	source ChunkSource,
@@ -73,33 +307,26 @@ func BuildDirIndex(
 		}, nil
 	}
 
-	maxWorkers := resolveMaxWorkers(opts.MaxWorkers, metaIdx.Count())
+	sr := newStreamChunkReader(metaIdx, source)
+	defer sr.close()
 
-	// Phase 1: Parallel chunk download + decode.
-	decodedChunks, chunkErrs := downloadChunks(metaIdx, source, maxWorkers)
-	for i := range chunkErrs {
-		if chunkErrs[i] != nil {
-			return nil, chunkErrs[i]
-		}
-	}
-
-	// Phase 2: Single-pass scan using the unified tree scanner.
-	r := &chunkReader{chunks: decodedChunks}
 	result := &BuildResult{
 		Index: &DirIndex{entries: make(map[string]dirLocation)},
 	}
 
 	// Skip FORMAT_VERSION + PRELUDE headers.
-	for r.remaining() >= format.HeaderSize {
-		h := r.readHeader()
+	for {
+		h, err := sr.readHeader()
+		if err != nil {
+			break
+		}
 		if h.Type == format.PXARFormatVersion || h.Type == format.PXARPrelude {
-			if r.remaining() < int(h.ContentSize()) {
-				return nil, fmt.Errorf("not enough bytes for %s content", h.String())
+			if err := sr.skip(int(h.ContentSize())); err != nil {
+				return nil, fmt.Errorf("skipping %s content: %w", h.String(), err)
 			}
-			r.skip(int(h.ContentSize()))
 			continue
 		}
-		if err := scanTree(r, h, &treeVisitor{
+		if err := scanTree(sr, h, &treeVisitor{
 			Child: func(parentPath, name string, kind EntryKind, size int64) {
 				if parentPath == "/" {
 					result.RootChildren = append(result.RootChildren, CatalogChild{

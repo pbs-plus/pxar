@@ -220,10 +220,7 @@ func (c *pbsH2Conn) do(method, path string, params url.Values, body []byte, cont
 func (c *pbsH2Conn) writeDataFrames(streamID uint32, data []byte) error {
 	max := int(c.maxFrameSize)
 	for len(data) > 0 {
-		n := len(data)
-		if n > max {
-			n = max
-		}
+		n := min(len(data), max)
 		end := len(data) == n
 		if err := c.framer.WriteData(streamID, end, data[:n]); err != nil {
 			return err

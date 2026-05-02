@@ -9,7 +9,7 @@ import (
 )
 
 var zstdEncoderPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
 		if err != nil {
 			panic(fmt.Sprintf("zstd encoder init: %v", err))
@@ -19,7 +19,7 @@ var zstdEncoderPool = sync.Pool{
 }
 
 var zstdDecoderPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		dec, err := zstd.NewReader(nil)
 		if err != nil {
 			panic(fmt.Sprintf("zstd decoder init: %v", err))

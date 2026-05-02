@@ -1,16 +1,21 @@
 package datastore
 
 import (
+	"container/list"
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"github.com/pbs-plus/pxar/format"
 )
 
-// dirLocation records where a directory's children start in the metadata stream.
+// dirLocation records where a directory's children live in the metadata
+// stream and where they end (the byte AFTER the directory's GOODBYE).
 type dirLocation struct {
-	chunkIdx int // index into DynamicIndexReader
-	offset   int // byte offset within the decoded chunk
+	chunkIdx    int // where children start
+	offset      int // byte offset within decoded chunk
+	endChunkIdx int // byte after GOODBYE — next sibling or parent continuation
+	endOffset   int
 }
 
 // DirIndex is a lightweight mapping from directory paths to their positions
@@ -42,30 +47,35 @@ func (idx *DirIndex) NumDirs() int {
 	return len(idx.entries)
 }
 
+// BuildResult is returned by BuildDirIndex. It contains the lightweight
+// DirIndex and, as a free side effect of the scan, the root directory's
+// direct children.
+type BuildResult struct {
+	Index        *DirIndex
+	RootChildren []CatalogChild
+}
+
 // BuildDirIndex builds a lightweight directory location index by scanning
-// metadata chunks. Unlike BuildCatalogFast, it does not store child entries —
-// only path → (chunk, offset) mappings for each directory.
+// metadata chunks. It records start and end positions for every directory
+// and returns root children as a side effect.
 //
-// Peak memory: O(directory_count × avg_path_length) for the index + transient
-// chunk data during download (released after indexing).
+// Peak memory: O(directory_count × avg_path_length) for the index + one
+// chunk at a time during download/scan (streaming).
 func BuildDirIndex(
 	metaIdx *DynamicIndexReader,
 	source ChunkSource,
 	opts CatalogOptions,
-) (*DirIndex, error) {
+) (*BuildResult, error) {
 	if metaIdx.Count() == 0 {
-		return &DirIndex{entries: make(map[string]dirLocation)}, nil
+		return &BuildResult{
+			Index:        &DirIndex{entries: make(map[string]dirLocation)},
+			RootChildren: nil,
+		}, nil
 	}
 
-	maxWorkers := opts.MaxWorkers
-	if maxWorkers <= 0 {
-		maxWorkers = 4
-	}
-	if maxWorkers > metaIdx.Count() {
-		maxWorkers = metaIdx.Count()
-	}
+	maxWorkers := resolveMaxWorkers(opts.MaxWorkers, metaIdx.Count())
 
-	// Phase 1: Parallel chunk download + decode (transient).
+	// Phase 1: Parallel chunk download + decode.
 	decodedChunks, chunkErrs := downloadChunks(metaIdx, source, maxWorkers)
 	for i := range chunkErrs {
 		if chunkErrs[i] != nil {
@@ -73,9 +83,11 @@ func BuildDirIndex(
 		}
 	}
 
-	// Phase 2: Sequential scan for directory locations only.
+	// Phase 2: Single-pass scan using the unified tree scanner.
 	r := &chunkReader{chunks: decodedChunks}
-	index := &DirIndex{entries: make(map[string]dirLocation)}
+	result := &BuildResult{
+		Index: &DirIndex{entries: make(map[string]dirLocation)},
+	}
 
 	// Skip FORMAT_VERSION + PRELUDE headers.
 	for r.remaining() >= format.HeaderSize {
@@ -87,139 +99,62 @@ func BuildDirIndex(
 			r.skip(int(h.ContentSize()))
 			continue
 		}
-		if err := indexDirTree(r, h, index); err != nil {
+		if err := scanTree(r, h, &treeVisitor{
+			Child: func(parentPath, name string, kind EntryKind, size int64) {
+				if parentPath == "/" {
+					result.RootChildren = append(result.RootChildren, CatalogChild{
+						Name: name,
+						Kind: kind,
+						Size: size,
+					})
+				}
+			},
+			EnterDir: func(path string, chunkIdx, offset int) {
+				result.Index.entries[path] = dirLocation{
+					chunkIdx: chunkIdx,
+					offset:   offset,
+				}
+			},
+			ExitDir: func(path string, endChunkIdx, endOffset int) {
+				if loc, ok := result.Index.entries[path]; ok {
+					loc.endChunkIdx = endChunkIdx
+					loc.endOffset = endOffset
+					result.Index.entries[path] = loc
+				}
+			},
+		}); err != nil {
 			return nil, err
 		}
-		return index, nil
+		return result, nil
 	}
 
-	return index, nil
-}
-
-// indexDirTree scans the metadata stream and records directory locations.
-// Reuses chunkReader and scanEntryAttributes from catalog_fast.go.
-func indexDirTree(r *chunkReader, first format.Header, index *DirIndex) error {
-	if first.Type != format.PXAREntry {
-		return fmt.Errorf("expected ENTRY header, got %s", first.String())
-	}
-
-	if r.remaining() < 40 {
-		return fmt.Errorf("not enough bytes for root stat")
-	}
-	stat := format.UnmarshalStatBytes(r.read(40))
-
-	if !stat.IsDir() {
-		return fmt.Errorf("root entry is not a directory")
-	}
-
-	if err := skipUntilStructural(r); err != nil {
-		return fmt.Errorf("scanning root attributes: %w", err)
-	}
-
-	// Record root directory location.
-	index.entries["/"] = dirLocation{chunkIdx: r.ci, offset: r.pos}
-
-	dirStack := make([]string, 0, 32)
-	dirStack = append(dirStack, "/")
-	var pathBuf []byte
-
-	for r.remaining() >= format.HeaderSize {
-		h := r.readHeader()
-
-		switch h.Type {
-		case format.PXARFilename:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for filename content")
-			}
-			name := readFilename(r, h)
-			if len(dirStack) == 0 {
-				return fmt.Errorf("filename %q outside of directory", name)
-			}
-			parentPath := dirStack[len(dirStack)-1]
-
-			if r.remaining() < format.HeaderSize {
-				return fmt.Errorf("not enough bytes for entry after filename %q", name)
-			}
-			h2 := r.readHeader()
-
-			switch h2.Type {
-			case format.PXARHardlink:
-				if r.remaining() < int(h2.ContentSize()) {
-					return fmt.Errorf("not enough bytes for hardlink content of %q", name)
-				}
-				r.skip(int(h2.ContentSize()))
-
-			case format.PXAREntry:
-				if r.remaining() < 40 {
-					return fmt.Errorf("not enough bytes for stat of %q", name)
-				}
-				es := format.UnmarshalStatBytes(r.read(40))
-
-				kind, _, err := scanEntryAttributes(r, es)
-				if err != nil {
-					return fmt.Errorf("scanning attributes for %q: %w", name, err)
-				}
-
-				if kind == KindDirectory {
-					pathBuf = buildChildPath(pathBuf[:0], parentPath, name)
-					childPath := string(append([]byte(nil), pathBuf...))
-					// Current position is at the directory's first FILENAME
-					// or GOODBYE child — record it.
-					index.entries[childPath] = dirLocation{chunkIdx: r.ci, offset: r.pos}
-					dirStack = append(dirStack, childPath)
-				}
-
-			default:
-				return fmt.Errorf("expected ENTRY or HARDLINK after filename %q, got %s", name, h2.String())
-			}
-
-		case format.PXARGoodbye:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for goodbye content")
-			}
-			r.skip(int(h.ContentSize()))
-			if len(dirStack) > 1 {
-				dirStack = dirStack[:len(dirStack)-1]
-			}
-
-		default:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for unknown header content")
-			}
-			r.skip(int(h.ContentSize()))
-		}
-	}
-
-	return nil
+	return result, nil
 }
 
 // --- OnDemandCatalog ---
 
 // OnDemandCatalog provides lazy directory listing over a metadata stream.
 // Only the lightweight DirIndex (~80 MB for 1M dirs) is held in memory;
-// chunks are fetched from the source when ListDir is called. A single-chunk
-// cache avoids re-fetching the most recently used chunk.
+// chunks are fetched from the source when ListDir is called. An LRU cache
+// of decoded chunks avoids re-fetching recently used chunks.
 //
-// Not safe for concurrent use. Caller-side synchronization is required
-// if multiple goroutines access the catalog simultaneously.
-//
-// Memory: DirIndex + 1 cached chunk (~4 MB).
+// Safe for concurrent use. Internal LRU cache is mutex-protected.
 type OnDemandCatalog struct {
 	index   *DirIndex
 	source  ChunkSource
 	metaIdx *DynamicIndexReader
 
-	cachedIdx  int
-	cachedData []byte
+	mu    sync.Mutex
+	cache lruChunkCache
 }
 
 // NewOnDemandCatalog creates a lazy catalog backed by the given index and source.
 func NewOnDemandCatalog(index *DirIndex, metaIdx *DynamicIndexReader, source ChunkSource) *OnDemandCatalog {
 	return &OnDemandCatalog{
-		index:     index,
-		source:    source,
-		metaIdx:   metaIdx,
-		cachedIdx: -1,
+		index:   index,
+		source:  source,
+		metaIdx: metaIdx,
+		cache:   newLRUChunkCache(16),
 	}
 }
 
@@ -243,8 +178,9 @@ func (c *OnDemandCatalog) NumDirs() int {
 // Returned children own their data — safe to retain across calls.
 //
 // If the directory has nested subdirectories, their subtrees are skipped
-// without being parsed. Only the direct children of the requested directory
-// are returned.
+// using end offsets from the DirIndex (when available) or depth tracking
+// (fallback). Only the direct children of the requested directory are
+// returned.
 func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
 	loc, ok := c.index.entries[path]
 	if !ok {
@@ -266,20 +202,11 @@ func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
 
 	children := make([]CatalogChild, 0, 16)
 	depth := 0 // nesting depth for skipping subtrees
-	var pending format.Header
-	hasPending := false
 
 	for {
-		var h format.Header
-		if hasPending {
-			h = pending
-			hasPending = false
-		} else {
-			var err error
-			h, err = lr.readHeader()
-			if err != nil {
-				return children, nil // EOF
-			}
+		h, err := lr.readHeader()
+		if err != nil {
+			return children, nil // EOF
 		}
 
 		switch h.Type {
@@ -319,11 +246,22 @@ func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
 					children = append(children, CatalogChild{Size: size, Name: name, Kind: kind})
 				}
 				if kind == KindDirectory {
+					if depth == 0 {
+						// Try to skip the entire subtree using end offsets.
+						childPath := buildChildPathStr(path, name)
+						if childLoc, ok := c.index.entries[childPath]; ok && childLoc.endChunkIdx > 0 {
+							if err := lr.seekTo(childLoc.endChunkIdx, childLoc.endOffset); err == nil {
+								continue // subtree skipped
+							}
+						}
+					}
 					depth++
 				}
 				if peeked != nil {
-					pending = *peeked
-					hasPending = true
+					// Rewind: re-process the peeked header in the next iteration.
+					if err := lr.pushbackHeader(*peeked); err != nil {
+						return nil, err
+					}
 				}
 
 			default:
@@ -348,10 +286,13 @@ func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
 	}
 }
 
-// fetchChunk returns decoded chunk data using a single-entry cache.
+// fetchChunk returns decoded chunk data using the LRU cache.
 func (c *OnDemandCatalog) fetchChunk(idx int) ([]byte, error) {
-	if idx == c.cachedIdx && c.cachedData != nil {
-		return c.cachedData, nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if data, ok := c.cache.Get(idx); ok {
+		return data, nil
 	}
 	if idx < 0 || idx >= c.metaIdx.Count() {
 		return nil, fmt.Errorf("chunk index %d out of range [0, %d)", idx, c.metaIdx.Count())
@@ -365,16 +306,71 @@ func (c *OnDemandCatalog) fetchChunk(idx int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.cachedIdx = idx
-	c.cachedData = decoded
+	c.cache.Put(idx, decoded)
 	return decoded, nil
+}
+
+// buildChildPathStr constructs a child directory path. Used by ListDir
+// to look up subdirectory end offsets.
+func buildChildPathStr(parentPath, name string) string {
+	if parentPath == "/" {
+		return "/" + name
+	}
+	return parentPath + "/" + name
+}
+
+// --- LRU chunk cache ---
+
+// lruChunkCache is a simple LRU cache for decoded chunk data.
+// Not goroutine-safe — callers must hold external locks.
+type lruChunkCache struct {
+	capacity int
+	items    map[int]*list.Element
+	order    *list.List // front = most recent
+}
+
+type cacheEntry struct {
+	idx  int
+	data []byte
+}
+
+func newLRUChunkCache(capacity int) lruChunkCache {
+	return lruChunkCache{
+		capacity: capacity,
+		items:    make(map[int]*list.Element, capacity),
+		order:    list.New(),
+	}
+}
+
+func (c *lruChunkCache) Get(idx int) ([]byte, bool) {
+	if e, ok := c.items[idx]; ok {
+		c.order.MoveToFront(e)
+		return e.Value.(*cacheEntry).data, true
+	}
+	return nil, false
+}
+
+func (c *lruChunkCache) Put(idx int, data []byte) {
+	if e, ok := c.items[idx]; ok {
+		c.order.MoveToFront(e)
+		e.Value.(*cacheEntry).data = data
+		return
+	}
+	if c.order.Len() >= c.capacity {
+		oldest := c.order.Back()
+		if oldest != nil {
+			c.order.Remove(oldest)
+			delete(c.items, oldest.Value.(*cacheEntry).idx)
+		}
+	}
+	e := c.order.PushFront(&cacheEntry{idx: idx, data: data})
+	c.items[idx] = e
 }
 
 // --- lazyChunkReader ---
 
 // lazyChunkReader reads across chunks, fetching new ones on demand from
-// the OnDemandCatalog's chunk source. Unlike chunkReader, it does not
-// support pushback — peeked headers are returned to the caller instead.
+// the OnDemandCatalog's chunk source. Supports seeking for subtree skip.
 type lazyChunkReader struct {
 	cat       *OnDemandCatalog
 	baseChunk int      // chunks[0] corresponds to this metaIdx index
@@ -414,7 +410,6 @@ func (r *lazyChunkReader) read(n int) ([]byte, error) {
 		return b, nil
 	}
 
-	// Cross-chunk span: assemble into a new buffer.
 	buf := make([]byte, 0, n)
 	buf = append(buf, cur[r.pos:]...)
 	need := n - len(buf)
@@ -478,11 +473,56 @@ func (r *lazyChunkReader) skip(n int) error {
 	return nil
 }
 
+// seekTo jumps to an absolute (metaIdx chunk index, offset) position.
+// Fetches the target chunk if not already cached. Chunks between the
+// current position and target may be fetched but their data is discarded
+// from the local chunks slice (still in the LRU cache).
+func (r *lazyChunkReader) seekTo(metaChunkIdx, offset int) error {
+	localIdx := metaChunkIdx - r.baseChunk
+	if localIdx < 0 {
+		return fmt.Errorf("cannot seek backwards past base chunk")
+	}
+
+	// Fetch chunks up to the target if not already fetched.
+	for len(r.chunks) <= localIdx {
+		nextIdx := r.baseChunk + len(r.chunks)
+		if nextIdx >= r.cat.metaIdx.Count() {
+			return fmt.Errorf("seek target chunk %d beyond stream", metaChunkIdx)
+		}
+		data, err := r.cat.fetchChunk(nextIdx)
+		if err != nil {
+			return err
+		}
+		r.chunks = append(r.chunks, data)
+	}
+
+	r.ci = localIdx
+	r.pos = offset
+	return nil
+}
+
+// pushbackHeader "unreads" a single header by rewinding 16 bytes.
+// Only valid if the current position allows it.
+func (r *lazyChunkReader) pushbackHeader(h format.Header) error {
+	// Try to rewind within current chunk.
+	if r.pos >= format.HeaderSize {
+		r.pos -= format.HeaderSize
+		return nil
+	}
+	// Cross-chunk pushback — rare but possible when a structural header
+	// lands at the start of a new chunk.
+	n := format.HeaderSize - r.pos
+	if r.ci == 0 {
+		return fmt.Errorf("pushback at start of stream")
+	}
+	r.ci--
+	r.pos = len(r.chunks[r.ci]) - n
+	return nil
+}
+
 // scanAttributes reads attribute headers after an ENTRY+Stat and returns
 // the entry kind, file size, and a peeked header if the scan terminated at
 // a structural header (FILENAME or GOODBYE) without consuming it.
-// Unlike chunkReader's scanEntryAttributes, this does NOT push back —
-// the caller is responsible for processing the peeked header.
 func (r *lazyChunkReader) scanAttributes(stat format.Stat) (EntryKind, int64, *format.Header, error) {
 	fileType := stat.Mode & format.ModeIFMT
 
@@ -524,7 +564,6 @@ func (r *lazyChunkReader) scanAttributes(stat format.Stat) (EntryKind, int64, *f
 			return KindFile, sz, nil, nil
 
 		case format.PXARFilename, format.PXARGoodbye:
-			// Non-terminal — peeked but not consumed.
 			switch fileType {
 			case format.ModeIFIFO:
 				return KindFifo, 0, &h, nil

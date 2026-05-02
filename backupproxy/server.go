@@ -48,10 +48,6 @@ func (cb *catalogBuilder) addSymlink(name string) {
 	cb.w.AddSymlink(name)
 }
 
-func (cb *catalogBuilder) addHardlink(name string) {
-	cb.w.AddHardlink(name)
-}
-
 func (cb *catalogBuilder) addBlockDevice(name string) {
 	cb.w.AddBlockDevice(name)
 }

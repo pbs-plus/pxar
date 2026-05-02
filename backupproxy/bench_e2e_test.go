@@ -24,7 +24,7 @@ func benchFS(fileCount int, fileSize int) memFS {
 	data := make([]byte, fileSize)
 	rand.Read(data)
 
-	for i := 0; i < fileCount; i++ {
+	for i := range fileCount {
 		dirPath := fmt.Sprintf("/root/d%d", i%5)
 		subPath := fmt.Sprintf("/root/d%d/sub%d", i%5, (i/5)%5)
 		deepPath := fmt.Sprintf("/root/d%d/sub%d/dd%d", i%5, (i/5)%5, (i/25)%5)
@@ -384,7 +384,7 @@ func BenchmarkMetadataMixed(b *testing.B) {
 func BenchmarkLegacyRoundTrip(b *testing.B) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		data := make([]byte, 8192)
 		rand.Read(data)
 		fs.addFile(fmt.Sprintf("/root/file%d.txt", i), "/root", data, 0o644)
@@ -417,7 +417,7 @@ func BenchmarkLegacyRoundTrip(b *testing.B) {
 
 		// Verify round-trip
 		acc := restoreLegacyArchiveFromDir(b, dir)
-		for j := 0; j < 50; j++ {
+		for j := range 50 {
 			entry, err := acc.Lookup(fmt.Sprintf("file%d.txt", j))
 			if err != nil {
 				b.Fatalf("lookup file%d.txt: %v", j, err)
@@ -434,7 +434,7 @@ func BenchmarkLegacyRoundTrip(b *testing.B) {
 func BenchmarkDataRoundTrip(b *testing.B) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		data := make([]byte, 8192)
 		rand.Read(data)
 		fs.addFile(fmt.Sprintf("/root/file%d.txt", i), "/root", data, 0o644)
@@ -467,7 +467,7 @@ func BenchmarkDataRoundTrip(b *testing.B) {
 		b.StopTimer()
 
 		metaAcc, _ := restoreSplitArchiveFromDir(b, dir)
-		for j := 0; j < 50; j++ {
+		for j := range 50 {
 			entry, err := metaAcc.Lookup(fmt.Sprintf("file%d.txt", j))
 			if err != nil {
 				b.Fatalf("lookup file%d.txt: %v", j, err)

@@ -46,6 +46,146 @@ type CatalogOptions struct {
 	MaxWorkers int // parallel chunk downloads (default 4)
 }
 
+// resolveMaxWorkers clamps opts.MaxWorkers to a valid range.
+func resolveMaxWorkers(maxWorkers, count int) int {
+	if maxWorkers <= 0 {
+		maxWorkers = 4
+	}
+	if maxWorkers > count {
+		maxWorkers = count
+	}
+	return maxWorkers
+}
+
+// treeVisitor receives callbacks during scanTree. Set only the callbacks
+// you need; nil callbacks are skipped.
+type treeVisitor struct {
+	// Child is called for every entry (file, dir, symlink, hardlink, etc.).
+	Child func(parentPath, name string, kind EntryKind, size int64)
+
+	// EnterDir is called when a directory's first child is about to be
+	// scanned. chunkIdx/offset point to where the children start.
+	EnterDir func(path string, chunkIdx, offset int)
+
+	// ExitDir is called when a directory's GOODBYE marker has been
+	// consumed. chunkIdx/offset point to the byte AFTER the GOODBYE
+	// content — the position of the next sibling or the parent's
+	// continuation.
+	ExitDir func(path string, endChunkIdx, endOffset int)
+}
+
+// scanTree performs a single sequential pass over the pxar metadata stream,
+// calling visitor callbacks at each structural boundary. It replaces the
+// duplicated scanning loops previously in parseRootAndChildren and
+// indexDirTree.
+func scanTree(r *chunkReader, first format.Header, visit *treeVisitor) error {
+	if first.Type != format.PXAREntry {
+		return fmt.Errorf("expected ENTRY header, got %s", first.String())
+	}
+
+	if r.remaining() < 40 {
+		return fmt.Errorf("not enough bytes for root stat")
+	}
+	stat := format.UnmarshalStatBytes(r.read(40))
+
+	if !stat.IsDir() {
+		return fmt.Errorf("root entry is not a directory")
+	}
+
+	if err := skipUntilStructural(r); err != nil {
+		return fmt.Errorf("scanning root attributes: %w", err)
+	}
+
+	// Record root directory.
+	if visit.EnterDir != nil {
+		visit.EnterDir("/", r.ci, r.pos)
+	}
+
+	dirStack := make([]string, 0, 32)
+	dirStack = append(dirStack, "/")
+	var pathBuf []byte
+
+	for r.remaining() >= format.HeaderSize {
+		h := r.readHeader()
+
+		switch h.Type {
+		case format.PXARFilename:
+			if r.remaining() < int(h.ContentSize()) {
+				return fmt.Errorf("not enough bytes for filename content")
+			}
+			name := readFilename(r, h)
+			if len(dirStack) == 0 {
+				return fmt.Errorf("filename %q outside of directory", name)
+			}
+			parentPath := dirStack[len(dirStack)-1]
+
+			if r.remaining() < format.HeaderSize {
+				return fmt.Errorf("not enough bytes for entry after filename %q", name)
+			}
+			h2 := r.readHeader()
+
+			switch h2.Type {
+			case format.PXARHardlink:
+				if r.remaining() < int(h2.ContentSize()) {
+					return fmt.Errorf("not enough bytes for hardlink content of %q", name)
+				}
+				r.skip(int(h2.ContentSize()))
+				if visit.Child != nil {
+					visit.Child(parentPath, name, KindHardlink, 0)
+				}
+
+			case format.PXAREntry:
+				if r.remaining() < 40 {
+					return fmt.Errorf("not enough bytes for stat of %q", name)
+				}
+				es := format.UnmarshalStatBytes(r.read(40))
+
+				kind, size, err := scanEntryAttributes(r, es)
+				if err != nil {
+					return fmt.Errorf("scanning attributes for %q: %w", name, err)
+				}
+
+				if visit.Child != nil {
+					visit.Child(parentPath, name, kind, size)
+				}
+
+				if kind == KindDirectory {
+					pathBuf = buildChildPath(pathBuf[:0], parentPath, name)
+					childPath := string(append([]byte(nil), pathBuf...))
+					if visit.EnterDir != nil {
+						visit.EnterDir(childPath, r.ci, r.pos)
+					}
+					dirStack = append(dirStack, childPath)
+				}
+
+			default:
+				return fmt.Errorf("expected ENTRY or HARDLINK after filename %q, got %s", name, h2.String())
+			}
+
+		case format.PXARGoodbye:
+			if r.remaining() < int(h.ContentSize()) {
+				return fmt.Errorf("not enough bytes for goodbye content")
+			}
+			r.skip(int(h.ContentSize()))
+
+			if len(dirStack) > 0 && visit.ExitDir != nil {
+				visit.ExitDir(dirStack[len(dirStack)-1], r.ci, r.pos)
+			}
+			if len(dirStack) > 1 {
+				dirStack = dirStack[:len(dirStack)-1]
+			}
+
+		default:
+			if r.remaining() < int(h.ContentSize()) {
+				return fmt.Errorf("not enough bytes for unknown header content")
+			}
+			r.skip(int(h.ContentSize()))
+		}
+	}
+
+	return nil
+}
+
 // chunkReader reads sequentially across an ordered slice of byte chunks
 // without concatenating them. Zero-copy for in-chunk reads; small allocation
 // only at chunk boundaries (rare — headers are 16 bytes, chunks are typically 4 MB).
@@ -166,13 +306,7 @@ func BuildCatalogFast(
 		return &Catalog{Dirs: make(map[string][]CatalogChild)}, nil
 	}
 
-	maxWorkers := opts.MaxWorkers
-	if maxWorkers <= 0 {
-		maxWorkers = 4
-	}
-	if maxWorkers > metaIdx.Count() {
-		maxWorkers = metaIdx.Count()
-	}
+	maxWorkers := resolveMaxWorkers(opts.MaxWorkers, metaIdx.Count())
 
 	// Phase 1: Parallel chunk download + decode.
 	decodedChunks, chunkErrs := downloadChunks(metaIdx, source, maxWorkers)
@@ -212,99 +346,11 @@ func BuildCatalogFast(
 
 // parseRootAndChildren handles the root ENTRY and all subsequent children.
 func parseRootAndChildren(r *chunkReader, first format.Header, catalog *Catalog) error {
-	if first.Type != format.PXAREntry {
-		return fmt.Errorf("expected ENTRY header, got %s", first.String())
-	}
-
-	if r.remaining() < 40 {
-		return fmt.Errorf("not enough bytes for root stat")
-	}
-	stat := format.UnmarshalStatBytes(r.read(40))
-
-	if !stat.IsDir() {
-		return fmt.Errorf("root entry is not a directory")
-	}
-
-	// Skip any remaining root ENTRY content (xattrs etc.) and scan for
-	// the first structural header (FILENAME or GOODBYE).
-	if err := skipUntilStructural(r); err != nil {
-		return fmt.Errorf("scanning root attributes: %w", err)
-	}
-
-	// Preallocate dir stack for typical depth.
-	dirStack := make([]string, 0, 32)
-	dirStack = append(dirStack, "/")
-
-	// Scratch buffer for building child paths. Reused across iterations
-	// to avoid per-entry string concatenation allocations.
-	var pathBuf []byte
-
-	for r.remaining() >= format.HeaderSize {
-		h := r.readHeader()
-
-		switch h.Type {
-		case format.PXARFilename:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for filename content")
-			}
-			name := readFilename(r, h)
-			if len(dirStack) == 0 {
-				return fmt.Errorf("filename %q outside of directory", name)
-			}
-			parentPath := dirStack[len(dirStack)-1]
-
-			if r.remaining() < format.HeaderSize {
-				return fmt.Errorf("not enough bytes for entry after filename %q", name)
-			}
-			h2 := r.readHeader()
-
-			switch h2.Type {
-			case format.PXARHardlink:
-				if r.remaining() < int(h2.ContentSize()) {
-					return fmt.Errorf("not enough bytes for hardlink content of %q", name)
-				}
-				r.skip(int(h2.ContentSize()))
-				catalog.addChild(parentPath, name, KindHardlink, 0)
-
-			case format.PXAREntry:
-				if r.remaining() < 40 {
-					return fmt.Errorf("not enough bytes for stat of %q", name)
-				}
-				es := format.UnmarshalStatBytes(r.read(40))
-
-				kind, size, err := scanEntryAttributes(r, es)
-				if err != nil {
-					return fmt.Errorf("scanning attributes for %q: %w", name, err)
-				}
-				catalog.addChild(parentPath, name, kind, size)
-
-				if kind == KindDirectory {
-					pathBuf = buildChildPath(pathBuf[:0], parentPath, name)
-					dirStack = append(dirStack, string(append([]byte(nil), pathBuf...)))
-				}
-
-			default:
-				return fmt.Errorf("expected ENTRY or HARDLINK after filename %q, got %s", name, h2.String())
-			}
-
-		case format.PXARGoodbye:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for goodbye content")
-			}
-			r.skip(int(h.ContentSize()))
-			if len(dirStack) > 1 {
-				dirStack = dirStack[:len(dirStack)-1]
-			}
-
-		default:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for unknown header content")
-			}
-			r.skip(int(h.ContentSize()))
-		}
-	}
-
-	return nil
+	return scanTree(r, first, &treeVisitor{
+		Child: func(parentPath, name string, kind EntryKind, size int64) {
+			catalog.addChild(parentPath, name, kind, size)
+		},
+	})
 }
 
 // scanEntryAttributes reads attribute headers after an ENTRY+Stat to determine

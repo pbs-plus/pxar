@@ -144,7 +144,7 @@ func BenchmarkDynamicIndexWriterAdd(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		w := NewDynamicIndexWriter(0)
 		var offset uint64
-		for j := 0; j < 256; j++ {
+		for j := range 256 {
 			offset += 4096
 			var digest [32]byte
 			digest[0] = byte(j)
@@ -165,7 +165,7 @@ func BenchmarkDynamicIndexWriterFinish(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		w := NewDynamicIndexWriter(0)
 		var offset uint64
-		for j := 0; j < 256; j++ {
+		for j := range 256 {
 			offset += 4096
 			w.Add(offset, entries[j])
 		}
@@ -176,7 +176,7 @@ func BenchmarkDynamicIndexWriterFinish(b *testing.B) {
 func BenchmarkDynamicIndexWriterCsum(b *testing.B) {
 	w := NewDynamicIndexWriter(0)
 	var offset uint64
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		offset += 4096
 		var digest [32]byte
 		digest[0] = byte(i)
@@ -194,7 +194,7 @@ func BenchmarkDynamicIndexWriterCsum(b *testing.B) {
 func BenchmarkDynamicIndexWriterCsumAfterFinish(b *testing.B) {
 	w := NewDynamicIndexWriter(0)
 	var offset uint64
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		offset += 4096
 		var digest [32]byte
 		digest[0] = byte(i)
@@ -213,7 +213,7 @@ func BenchmarkDynamicIndexWriterCsumAfterFinish(b *testing.B) {
 func BenchmarkDynamicIndexReadAndComputeCsum(b *testing.B) {
 	w := NewDynamicIndexWriter(0)
 	var offset uint64
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		offset += 4096
 		var digest [32]byte
 		digest[0] = byte(i)

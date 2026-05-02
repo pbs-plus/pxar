@@ -241,7 +241,7 @@ func TestLocalStoreDeduplication(t *testing.T) {
 	}
 
 	// Verify same digests
-	for i := 0; i < chunkCount; i++ {
+	for i := range chunkCount {
 		d1, _ := reader1.IndexDigest(i)
 		d2, _ := reader2.IndexDigest(i)
 		if d1 != d2 {

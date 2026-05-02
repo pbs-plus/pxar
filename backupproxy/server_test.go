@@ -739,17 +739,6 @@ func verifyFileContent(t *testing.T, acc *accessor.Accessor, path, expected stri
 	}
 }
 
-func verifyIsDir(t *testing.T, acc *accessor.Accessor, path string) {
-	t.Helper()
-	entry, err := acc.Lookup(path)
-	if err != nil {
-		t.Fatalf("lookup %q: %v", path, err)
-	}
-	if !entry.IsDir() {
-		t.Errorf("expected %q to be a directory, got kind=%v", path, entry.Kind)
-	}
-}
-
 func verifyIsSymlink(t *testing.T, acc *accessor.Accessor, path, expectedTarget string) {
 	t.Helper()
 	entry, err := acc.Lookup(path)

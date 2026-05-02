@@ -16,12 +16,12 @@ func TestBuildDirIndexEmpty(t *testing.T) {
 	idxData, _ := idx.Finish()
 	reader, _ := ReadDynamicIndex(idxData)
 
-	dirIndex, err := BuildDirIndex(reader, nil, CatalogOptions{})
+	result, err := BuildDirIndex(reader, nil, CatalogOptions{})
 	if err != nil {
 		t.Fatalf("BuildDirIndex: %v", err)
 	}
-	if dirIndex.NumDirs() != 0 {
-		t.Errorf("expected 0 dirs, got %d", dirIndex.NumDirs())
+	if result.Index.NumDirs() != 0 {
+		t.Errorf("expected 0 dirs, got %d", result.Index.NumDirs())
 	}
 }
 
@@ -29,11 +29,11 @@ func TestBuildDirIndexRootOnly(t *testing.T) {
 	archive := buildPxarArchive(t, func(enc *encoder.Encoder) {})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
-	dirIndex, err := BuildDirIndex(reader, source, CatalogOptions{})
+	result, err := BuildDirIndex(reader, source, CatalogOptions{})
 	if err != nil {
 		t.Fatalf("BuildDirIndex: %v", err)
 	}
-	if !dirIndex.HasDir("/") {
+	if !result.Index.HasDir("/") {
 		t.Error("expected root directory in index")
 	}
 }
@@ -50,18 +50,18 @@ func TestBuildDirIndexSimpleTree(t *testing.T) {
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
-	dirIndex, err := BuildDirIndex(reader, source, CatalogOptions{})
+	result, err := BuildDirIndex(reader, source, CatalogOptions{})
 	if err != nil {
 		t.Fatalf("BuildDirIndex: %v", err)
 	}
 
 	for _, path := range []string{"/", "/subdir"} {
-		if !dirIndex.HasDir(path) {
+		if !result.Index.HasDir(path) {
 			t.Errorf("expected %q in index", path)
 		}
 	}
-	if dirIndex.NumDirs() != 2 {
-		t.Errorf("expected 2 dirs, got %d", dirIndex.NumDirs())
+	if result.Index.NumDirs() != 2 {
+		t.Errorf("expected 2 dirs, got %d", result.Index.NumDirs())
 	}
 }
 
@@ -78,13 +78,13 @@ func TestBuildDirIndexDeepTree(t *testing.T) {
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
-	dirIndex, err := BuildDirIndex(reader, source, CatalogOptions{})
+	result, err := BuildDirIndex(reader, source, CatalogOptions{})
 	if err != nil {
 		t.Fatalf("BuildDirIndex: %v", err)
 	}
 
 	for _, path := range []string{"/", "/a", "/a/b"} {
-		if !dirIndex.HasDir(path) {
+		if !result.Index.HasDir(path) {
 			t.Errorf("expected %q in index", path)
 		}
 	}
@@ -113,15 +113,15 @@ func TestBuildDirIndexMultiChunk(t *testing.T) {
 		t.Fatalf("expected multiple chunks, got %d", reader.Count())
 	}
 
-	dirIndex, err := BuildDirIndex(reader, source, CatalogOptions{MaxWorkers: 4})
+	result, err := BuildDirIndex(reader, source, CatalogOptions{MaxWorkers: 4})
 	if err != nil {
 		t.Fatalf("BuildDirIndex: %v", err)
 	}
 
-	if !dirIndex.HasDir("/") {
+	if !result.Index.HasDir("/") {
 		t.Error("expected / in index")
 	}
-	if !dirIndex.HasDir("/subdir") {
+	if !result.Index.HasDir("/subdir") {
 		t.Error("expected /subdir in index")
 	}
 }
@@ -145,7 +145,7 @@ func TestOnDemandListDirRoot(t *testing.T) {
 		t.Fatalf("BuildDirIndex: %v", err)
 	}
 
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 	children, err := cat.ListDir("/")
 	if err != nil {
 		t.Fatalf("ListDir /: %v", err)
@@ -194,7 +194,7 @@ func TestOnDemandListDirSubdir(t *testing.T) {
 
 	reader, source := chunkArchive(t, archive, 64*1024)
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	children, err := cat.ListDir("/subdir")
 	if err != nil {
@@ -231,7 +231,7 @@ func TestOnDemandListDirDeepNested(t *testing.T) {
 
 	reader, source := chunkArchive(t, archive, 64*1024)
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	// Root should have: a (dir), root.txt (file)
 	root, err := cat.ListDir("/")
@@ -286,7 +286,7 @@ func TestOnDemandListDirSkipsSubtrees(t *testing.T) {
 
 	reader, source := chunkArchive(t, archive, 64*1024)
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	root, err := cat.ListDir("/")
 	if err != nil {
@@ -326,7 +326,7 @@ func TestOnDemandListDirEntryTypes(t *testing.T) {
 
 	reader, source := chunkArchive(t, archive, 64*1024)
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	children, err := cat.ListDir("/")
 	if err != nil {
@@ -359,7 +359,7 @@ func TestOnDemandListDirNotFound(t *testing.T) {
 	archive := buildPxarArchive(t, func(enc *encoder.Encoder) {})
 	reader, source := chunkArchive(t, archive, 64*1024)
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	_, err := cat.ListDir("/nonexistent")
 	if err == nil {
@@ -380,7 +380,7 @@ func TestOnDemandListDirEmptyDir(t *testing.T) {
 
 	reader, source := chunkArchive(t, archive, 64*1024)
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	// Root should still list all 3 children.
 	root, err := cat.ListDir("/")
@@ -425,7 +425,7 @@ func TestOnDemandListDirMultiChunk(t *testing.T) {
 	}
 
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{MaxWorkers: 4})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	root, err := cat.ListDir("/")
 	if err != nil {
@@ -452,7 +452,7 @@ func TestOnDemandCachesChunks(t *testing.T) {
 
 	reader, source := chunkArchive(t, archive, 64*1024)
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	// First call — fetches and caches.
 	children1, err := cat.ListDir("/")
@@ -485,7 +485,7 @@ func TestOnDemandDirPaths(t *testing.T) {
 
 	reader, source := chunkArchive(t, archive, 64*1024)
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
-	cat := NewOnDemandCatalog(dirIndex, reader, source)
+	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	paths := cat.DirPaths()
 	if len(paths) != 3 { // /, /a, /a/b
@@ -493,5 +493,104 @@ func TestOnDemandDirPaths(t *testing.T) {
 	}
 	if cat.NumDirs() != 3 {
 		t.Errorf("expected NumDirs=3, got %d", cat.NumDirs())
+	}
+}
+
+// --- BuildResult / RootChildren tests ---
+
+func TestBuildDirIndexRootChildren(t *testing.T) {
+	archive := buildPxarArchive(t, func(enc *encoder.Encoder) {
+		fileMeta := pxar.FileMetadata(0o644).Build()
+		dirMeta := pxar.DirMetadata(0o755).Build()
+
+		enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
+		enc.CreateDirectory("subdir", &dirMeta)
+		enc.AddFile(&fileMeta, "nested.txt", []byte("nested"))
+		enc.Finish()
+	})
+
+	reader, source := chunkArchive(t, archive, 64*1024)
+	result, err := BuildDirIndex(reader, source, CatalogOptions{})
+	if err != nil {
+		t.Fatalf("BuildDirIndex: %v", err)
+	}
+
+	if len(result.RootChildren) != 2 {
+		t.Fatalf("expected 2 root children, got %d: %+v", len(result.RootChildren), result.RootChildren)
+	}
+
+	var foundFile, foundDir bool
+	for _, c := range result.RootChildren {
+		switch c.Name {
+		case "hello.txt":
+			foundFile = true
+			if c.Kind != KindFile {
+				t.Errorf("hello.txt kind = %d, want KindFile", c.Kind)
+			}
+			if c.Size != 11 {
+				t.Errorf("hello.txt size = %d, want 11", c.Size)
+			}
+		case "subdir":
+			foundDir = true
+			if c.Kind != KindDirectory {
+				t.Errorf("subdir kind = %d, want KindDirectory", c.Kind)
+			}
+		}
+	}
+	if !foundFile {
+		t.Error("hello.txt not found in root children")
+	}
+	if !foundDir {
+		t.Error("subdir not found in root children")
+	}
+}
+
+func TestBuildDirIndexRootChildrenEmpty(t *testing.T) {
+	archive := buildPxarArchive(t, func(enc *encoder.Encoder) {})
+
+	reader, source := chunkArchive(t, archive, 64*1024)
+	result, err := BuildDirIndex(reader, source, CatalogOptions{})
+	if err != nil {
+		t.Fatalf("BuildDirIndex: %v", err)
+	}
+
+	if len(result.RootChildren) != 0 {
+		t.Errorf("expected 0 root children for empty root, got %d", len(result.RootChildren))
+	}
+}
+
+func TestBuildDirIndexEndOffsets(t *testing.T) {
+	archive := buildPxarArchive(t, func(enc *encoder.Encoder) {
+		fileMeta := pxar.FileMetadata(0o644).Build()
+		dirMeta := pxar.DirMetadata(0o755).Build()
+
+		enc.AddFile(&fileMeta, "before.txt", []byte("before"))
+		enc.CreateDirectory("subdir", &dirMeta)
+		enc.AddFile(&fileMeta, "nested.txt", []byte("nested"))
+		enc.Finish()
+		enc.AddFile(&fileMeta, "after.txt", []byte("after"))
+	})
+
+	reader, source := chunkArchive(t, archive, 64*1024)
+	result, err := BuildDirIndex(reader, source, CatalogOptions{})
+	if err != nil {
+		t.Fatalf("BuildDirIndex: %v", err)
+	}
+
+	// Root should have an end offset.
+	rootLoc := result.Index.entries["/"]
+	if rootLoc.endChunkIdx == 0 && rootLoc.endOffset == 0 {
+		t.Error("root directory has no end offset recorded")
+	}
+
+	// Subdir should have an end offset.
+	subLoc := result.Index.entries["/subdir"]
+	if subLoc.endChunkIdx == 0 && subLoc.endOffset == 0 {
+		t.Error("/subdir has no end offset recorded")
+	}
+
+	// Subdir end should be before root end (subdir is nested).
+	if subLoc.endChunkIdx < subLoc.chunkIdx {
+		t.Error("/subdir end offset is before its start")
 	}
 }

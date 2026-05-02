@@ -67,7 +67,7 @@ func TestFlowControlReplenishment(t *testing.T) {
 		// 3. Expect WINDOW_UPDATE for connection (stream 0) and stream 1
 		gotConnUpdate := false
 		gotStreamUpdate := false
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			frame, err := serverFramer.ReadFrame()
 			if err != nil {
 				errChan <- fmt.Errorf("server read frame: %v", err)
@@ -223,7 +223,7 @@ func TestIdleTimeout(t *testing.T) {
 	// that it DOESN'T time out if we send frames periodically.
 	// Since we can't mock time easily, we just test the logic that the
 	// deadline is updated.
-	
+
 	errChan := make(chan error, 1)
 	go func() {
 		serverFramer := http2.NewFramer(serverConn, serverConn)
@@ -237,7 +237,7 @@ func TestIdleTimeout(t *testing.T) {
 		})
 
 		// Send multiple data frames with small delays to ensure the deadline is reset
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			// In a real test we'd wait, but here we just check it doesn't fail
 			if err := serverFramer.WriteData(1, false, []byte("data")); err != nil {
 				errChan <- err
@@ -291,7 +291,7 @@ func TestInitialSettings(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected SETTINGS frame, got %T", frame)
 	}
-	
+
 	if val, ok := sf.Value(http2.SettingInitialWindowSize); !ok || val != 1<<30 {
 		t.Errorf("expected initial window 1GiB, got %v", val)
 	}
@@ -312,4 +312,3 @@ func TestInitialSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-

@@ -64,7 +64,7 @@ func walkCatalogDir(acc *accessor.Accessor, dirPath string, dirOffset int64, cat
 
 	for _, entry := range entries {
 		// Build normalized path
-		entryPath := entry.Path
+		var entryPath string
 		if dirPath != "/" {
 			entryPath = dirPath + "/" + entry.Path
 		} else {

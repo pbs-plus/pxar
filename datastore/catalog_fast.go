@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
-	"unsafe"
 
 	"github.com/pbs-plus/pxar/format"
 )
@@ -46,6 +45,22 @@ type CatalogOptions struct {
 	MaxWorkers int // parallel chunk downloads (default 4)
 }
 
+// streamReader abstracts sequential reading across decoded pxar chunks.
+// Both the pre-loaded chunkReader and the on-demand streamChunkReader
+// implement this interface. readHeader returns an error when the
+// stream is exhausted.
+//
+// remaining() is deliberately omitted: for streaming readers the total
+// remaining bytes is unknowable without fetching all chunks, so
+// validation is done via error returns from read/skip instead.
+type streamReader interface {
+	read(n int) ([]byte, error)
+	readHeader() (format.Header, error)
+	skip(n int) error
+	pushback(n int) error
+	chunkPosition() (ci, offset int)
+}
+
 // resolveMaxWorkers clamps opts.MaxWorkers to a valid range.
 func resolveMaxWorkers(maxWorkers, count int) int {
 	if maxWorkers <= 0 {
@@ -78,15 +93,19 @@ type treeVisitor struct {
 // calling visitor callbacks at each structural boundary. It replaces the
 // duplicated scanning loops previously in parseRootAndChildren and
 // indexDirTree.
-func scanTree(r *chunkReader, first format.Header, visit *treeVisitor) error {
+//
+// The reader fetches chunks on demand; no remaining() pre-checks are used.
+// Truncated data is caught by error returns from read/skip.
+func scanTree(r streamReader, first format.Header, visit *treeVisitor) error {
 	if first.Type != format.PXAREntry {
 		return fmt.Errorf("expected ENTRY header, got %s", first.String())
 	}
 
-	if r.remaining() < 40 {
-		return fmt.Errorf("not enough bytes for root stat")
+	statBytes, err := r.read(40)
+	if err != nil {
+		return fmt.Errorf("not enough bytes for root stat: %w", err)
 	}
-	stat := format.UnmarshalStatBytes(r.read(40))
+	stat := format.UnmarshalStatBytes(statBytes)
 
 	if !stat.IsDir() {
 		return fmt.Errorf("root entry is not a directory")
@@ -97,48 +116,52 @@ func scanTree(r *chunkReader, first format.Header, visit *treeVisitor) error {
 	}
 
 	// Record root directory.
+	rootCi, rootPos := r.chunkPosition()
 	if visit.EnterDir != nil {
-		visit.EnterDir("/", r.ci, r.pos)
+		visit.EnterDir("/", rootCi, rootPos)
 	}
 
 	dirStack := make([]string, 0, 32)
 	dirStack = append(dirStack, "/")
 	var pathBuf []byte
 
-	for r.remaining() >= format.HeaderSize {
-		h := r.readHeader()
+	for {
+		h, err := r.readHeader()
+		if err != nil {
+			break // EOF or error — scan complete
+		}
 
 		switch h.Type {
 		case format.PXARFilename:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for filename content")
+			name, err := readFilename(r, h)
+			if err != nil {
+				return fmt.Errorf("reading filename content: %w", err)
 			}
-			name := readFilename(r, h)
 			if len(dirStack) == 0 {
 				return fmt.Errorf("filename %q outside of directory", name)
 			}
 			parentPath := dirStack[len(dirStack)-1]
 
-			if r.remaining() < format.HeaderSize {
-				return fmt.Errorf("not enough bytes for entry after filename %q", name)
+			h2, err := r.readHeader()
+			if err != nil {
+				return fmt.Errorf("reading entry after filename %q: %w", name, err)
 			}
-			h2 := r.readHeader()
 
 			switch h2.Type {
 			case format.PXARHardlink:
-				if r.remaining() < int(h2.ContentSize()) {
-					return fmt.Errorf("not enough bytes for hardlink content of %q", name)
+				if err := r.skip(int(h2.ContentSize())); err != nil {
+					return fmt.Errorf("reading hardlink content of %q: %w", name, err)
 				}
-				r.skip(int(h2.ContentSize()))
 				if visit.Child != nil {
 					visit.Child(parentPath, name, KindHardlink, 0)
 				}
 
 			case format.PXAREntry:
-				if r.remaining() < 40 {
-					return fmt.Errorf("not enough bytes for stat of %q", name)
+				statBytes, err := r.read(40)
+				if err != nil {
+					return fmt.Errorf("reading stat for %q: %w", name, err)
 				}
-				es := format.UnmarshalStatBytes(r.read(40))
+				es := format.UnmarshalStatBytes(statBytes)
 
 				kind, size, err := scanEntryAttributes(r, es)
 				if err != nil {
@@ -152,8 +175,9 @@ func scanTree(r *chunkReader, first format.Header, visit *treeVisitor) error {
 				if kind == KindDirectory {
 					pathBuf = buildChildPath(pathBuf[:0], parentPath, name)
 					childPath := string(append([]byte(nil), pathBuf...))
+					ci, pos := r.chunkPosition()
 					if visit.EnterDir != nil {
-						visit.EnterDir(childPath, r.ci, r.pos)
+						visit.EnterDir(childPath, ci, pos)
 					}
 					dirStack = append(dirStack, childPath)
 				}
@@ -163,23 +187,22 @@ func scanTree(r *chunkReader, first format.Header, visit *treeVisitor) error {
 			}
 
 		case format.PXARGoodbye:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for goodbye content")
+			if err := r.skip(int(h.ContentSize())); err != nil {
+				return fmt.Errorf("skipping goodbye content: %w", err)
 			}
-			r.skip(int(h.ContentSize()))
 
 			if len(dirStack) > 0 && visit.ExitDir != nil {
-				visit.ExitDir(dirStack[len(dirStack)-1], r.ci, r.pos)
+				ci, pos := r.chunkPosition()
+				visit.ExitDir(dirStack[len(dirStack)-1], ci, pos)
 			}
 			if len(dirStack) > 1 {
 				dirStack = dirStack[:len(dirStack)-1]
 			}
 
 		default:
-			if r.remaining() < int(h.ContentSize()) {
-				return fmt.Errorf("not enough bytes for unknown header content")
+			if err := r.skip(int(h.ContentSize())); err != nil {
+				return fmt.Errorf("skipping header %s content: %w", h.String(), err)
 			}
-			r.skip(int(h.ContentSize()))
 		}
 	}
 
@@ -195,11 +218,16 @@ type chunkReader struct {
 	pos    int // offset within chunks[ci]
 }
 
+func (r *chunkReader) chunkPosition() (int, int) { return r.ci, r.pos }
+
 // read returns n contiguous bytes. For the common case (data fully within
 // the current chunk), this is zero-copy — the returned slice points directly
 // into the chunk's backing array. For cross-chunk spans (rare), a new buffer
 // is allocated.
-func (r *chunkReader) read(n int) []byte {
+func (r *chunkReader) read(n int) ([]byte, error) {
+	if r.ci >= len(r.chunks) {
+		return nil, fmt.Errorf("no more data: need %d bytes", n)
+	}
 	cur := r.chunks[r.ci]
 	avail := len(cur) - r.pos
 	if n <= avail {
@@ -209,7 +237,7 @@ func (r *chunkReader) read(n int) []byte {
 			r.ci++
 			r.pos = 0
 		}
-		return b
+		return b, nil
 	}
 
 	// Cross-chunk span: assemble into a new buffer.
@@ -229,52 +257,47 @@ func (r *chunkReader) read(n int) []byte {
 			r.pos = 0
 		}
 	}
-	return buf
+	return buf, nil
 }
 
 // readHeader reads a 16-byte pxar header.
-func (r *chunkReader) readHeader() format.Header {
-	b := r.read(format.HeaderSize)
+func (r *chunkReader) readHeader() (format.Header, error) {
+	b, err := r.read(format.HeaderSize)
+	if err != nil {
+		return format.Header{}, err
+	}
 	return format.Header{
 		Type: binary.LittleEndian.Uint64(b[0:8]),
 		Size: binary.LittleEndian.Uint64(b[8:16]),
-	}
+	}, nil
 }
 
 // skip advances the reader position by n bytes across chunk boundaries.
-func (r *chunkReader) skip(n int) {
+func (r *chunkReader) skip(n int) error {
 	for n > 0 {
+		if r.ci >= len(r.chunks) {
+			return fmt.Errorf("no more data: need to skip %d more bytes", n)
+		}
 		cur := r.chunks[r.ci]
 		avail := len(cur) - r.pos
 		if n < avail {
 			r.pos += n
-			return
+			return nil
 		}
 		n -= avail
 		r.ci++
 		r.pos = 0
 	}
-}
-
-// remaining returns the total unread bytes across all remaining chunks.
-func (r *chunkReader) remaining() int {
-	if r.ci >= len(r.chunks) {
-		return 0
-	}
-	total := len(r.chunks[r.ci]) - r.pos
-	for i := r.ci + 1; i < len(r.chunks); i++ {
-		total += len(r.chunks[i])
-	}
-	return total
+	return nil
 }
 
 // pushback rewinds by n bytes (used for header pushback after peeking).
 // Only valid for small n (typically format.HeaderSize = 16) within the
 // current chunk. Panics if n exceeds current chunk position.
-func (r *chunkReader) pushback(n int) {
+func (r *chunkReader) pushback(n int) error {
 	if r.pos >= n {
 		r.pos -= n
-		return
+		return nil
 	}
 	// Cross-chunk pushback: step back through chunks to find the position.
 	// This is rare and only happens when a structural header (FILENAME/GOODBYE)
@@ -285,12 +308,12 @@ func (r *chunkReader) pushback(n int) {
 		cur := r.chunks[r.ci]
 		if n <= len(cur) {
 			r.pos = len(cur) - n
-			return
+			return nil
 		}
 		n -= len(cur)
 		r.ci--
 	}
-	panic("chunkReader.pushback: rewound past start of data")
+	return fmt.Errorf("pushback past start of stream")
 }
 
 // BuildCatalogFast downloads metadata chunks in parallel and performs a
@@ -325,13 +348,15 @@ func BuildCatalogFast(
 	r := &chunkReader{chunks: decodedChunks}
 
 	// Skip FORMAT_VERSION header + content and optional PRELUDE.
-	for r.remaining() >= format.HeaderSize {
-		h := r.readHeader()
+	for {
+		h, err := r.readHeader()
+		if err != nil {
+			break
+		}
 		if h.Type == format.PXARFormatVersion || h.Type == format.PXARPrelude {
-			if r.remaining() < int(h.ContentSize()) {
-				return nil, fmt.Errorf("not enough bytes for %s content", h.String())
+			if err := r.skip(int(h.ContentSize())); err != nil {
+				return nil, fmt.Errorf("skipping %s content: %w", h.String(), err)
 			}
-			r.skip(int(h.ContentSize()))
 			continue
 		}
 		// Not a skip-able header — process it below.
@@ -357,40 +382,41 @@ func parseRootAndChildren(r *chunkReader, first format.Header, catalog *Catalog)
 // the entry kind and size. Returns the kind, file size, and any error.
 // After this function returns, the reader is positioned right after the
 // terminal attribute, ready for the next structural header.
-func scanEntryAttributes(r *chunkReader, stat format.Stat) (EntryKind, int64, error) {
+func scanEntryAttributes(r streamReader, stat format.Stat) (EntryKind, int64, error) {
 	fileType := stat.Mode & format.ModeIFMT
 
-	for r.remaining() >= format.HeaderSize {
-		h := r.readHeader()
+	for {
+		h, err := r.readHeader()
+		if err != nil {
+			// EOF during attribute scan — treat as directory.
+			return KindDirectory, 0, nil
+		}
 		contentSize := int(h.ContentSize())
 
 		switch h.Type {
 		case format.PXARSymlink:
-			if r.remaining() < contentSize {
-				return 0, 0, fmt.Errorf("not enough bytes for symlink content")
+			if err := r.skip(contentSize); err != nil {
+				return 0, 0, fmt.Errorf("skipping symlink content: %w", err)
 			}
-			r.skip(contentSize)
 			return KindSymlink, 0, nil
 
 		case format.PXARDevice:
-			if r.remaining() < contentSize {
-				return 0, 0, fmt.Errorf("not enough bytes for device content")
+			if err := r.skip(contentSize); err != nil {
+				return 0, 0, fmt.Errorf("skipping device content: %w", err)
 			}
-			r.skip(contentSize)
 			return KindDevice, 0, nil
 
 		case format.PXARPayload:
-			if r.remaining() < contentSize {
-				return 0, 0, fmt.Errorf("not enough bytes for payload content")
+			if err := r.skip(contentSize); err != nil {
+				return 0, 0, fmt.Errorf("skipping payload content: %w", err)
 			}
-			r.skip(contentSize)
 			return KindFile, int64(contentSize), nil
 
 		case format.PXARPayloadRef:
-			if r.remaining() < contentSize {
-				return 0, 0, fmt.Errorf("not enough bytes for PAYLOAD_REF")
+			refBytes, err := r.read(contentSize)
+			if err != nil {
+				return 0, 0, fmt.Errorf("reading PAYLOAD_REF: %w", err)
 			}
-			refBytes := r.read(contentSize)
 			if len(refBytes) >= 16 {
 				return KindFile, int64(binary.LittleEndian.Uint64(refBytes[8:16])), nil
 			}
@@ -400,7 +426,9 @@ func scanEntryAttributes(r *chunkReader, stat format.Stat) (EntryKind, int64, er
 			// Non-terminal entries (directories, FIFOs, sockets) have no
 			// PAYLOAD/SYMLINK/DEVICE. The next FILENAME or GOODBYE belongs
 			// to the parent structure. Do NOT consume it — push back.
-			r.pushback(format.HeaderSize)
+			if err := r.pushback(format.HeaderSize); err != nil {
+				return 0, 0, fmt.Errorf("pushback at structural: %w", err)
+			}
 			switch fileType {
 			case format.ModeIFIFO:
 				return KindFifo, 0, nil
@@ -412,43 +440,45 @@ func scanEntryAttributes(r *chunkReader, stat format.Stat) (EntryKind, int64, er
 
 		default:
 			// Skip unknown attributes (xattrs, ACLs, fcaps, etc.)
-			if r.remaining() < contentSize {
-				return 0, 0, fmt.Errorf("not enough bytes for unknown attribute")
+			if err := r.skip(contentSize); err != nil {
+				return 0, 0, fmt.Errorf("skipping attribute %s: %w", h.String(), err)
 			}
-			r.skip(contentSize)
 		}
 	}
-
-	// EOF during attribute scan — treat as directory (no terminal found).
-	return KindDirectory, 0, nil
 }
 
 // skipUntilStructural skips attribute headers until a FILENAME or GOODBYE
 // is found. Does NOT consume the structural header.
-func skipUntilStructural(r *chunkReader) error {
-	for r.remaining() >= format.HeaderSize {
-		h := r.readHeader()
+func skipUntilStructural(r streamReader) error {
+	for {
+		h, err := r.readHeader()
+		if err != nil {
+			return nil // EOF — no more structural headers, end of attributes
+		}
 		if h.Type == format.PXARFilename || h.Type == format.PXARGoodbye {
-			r.pushback(format.HeaderSize)
+			if err := r.pushback(format.HeaderSize); err != nil {
+				return fmt.Errorf("pushback after finding structural: %w", err)
+			}
 			return nil
 		}
-		if r.remaining() < int(h.ContentSize()) {
-			return fmt.Errorf("not enough bytes for attribute content")
+		if err := r.skip(int(h.ContentSize())); err != nil {
+			return fmt.Errorf("skipping attribute content: %w", err)
 		}
-		r.skip(int(h.ContentSize()))
 	}
-	return nil
 }
 
-// readFilename reads the content of a FILENAME header and strips the trailing null.
-// Returns a zero-copy string backed by the chunk data. Safe because Catalog.chunks
-// keeps the backing data alive for the catalog's lifetime.
-func readFilename(r *chunkReader, h format.Header) string {
-	data := r.read(int(h.ContentSize()))
+// readFilename reads the content of a FILENAME header and strips the
+// trailing null. Returns a safe copy — compatible with both the
+// pre-loaded chunkReader and on-demand streaming readers.
+func readFilename(r streamReader, h format.Header) (string, error) {
+	data, err := r.read(int(h.ContentSize()))
+	if err != nil {
+		return "", fmt.Errorf("reading %d bytes of filename: %w", h.ContentSize(), err)
+	}
 	if len(data) > 0 && data[len(data)-1] == 0 {
 		data = data[:len(data)-1]
 	}
-	return unsafe.String(unsafe.SliceData(data), len(data))
+	return string(data), nil
 }
 
 // addChild appends a child to the catalog under the given parent path.

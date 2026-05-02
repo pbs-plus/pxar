@@ -175,37 +175,7 @@ func BuildCatalogFast(
 	}
 
 	// Phase 1: Parallel chunk download + decode.
-	decodedChunks := make([][]byte, metaIdx.Count())
-	chunkErrs := make([]error, metaIdx.Count())
-
-	work := make(chan int, metaIdx.Count())
-	for i := 0; i < metaIdx.Count(); i++ {
-		work <- i
-	}
-	close(work)
-
-	var wg sync.WaitGroup
-	for range maxWorkers {
-		wg.Go(func() {
-			for i := range work {
-				entry := metaIdx.Entry(i)
-				raw, err := source.GetChunk(entry.Digest)
-				if err != nil {
-					chunkErrs[i] = fmt.Errorf("chunk %d/%d (digest %x): %w", i+1, metaIdx.Count(), entry.Digest[:8], err)
-					continue
-				}
-				decoded, err := DecodeBlob(raw)
-				if err != nil {
-					chunkErrs[i] = fmt.Errorf("decode chunk %d: %w", i, err)
-					continue
-				}
-				decodedChunks[i] = decoded
-			}
-		})
-	}
-	wg.Wait()
-
-	// Check for download errors before parsing.
+	decodedChunks, chunkErrs := downloadChunks(metaIdx, source, maxWorkers)
 	for i := range chunkErrs {
 		if chunkErrs[i] != nil {
 			return nil, chunkErrs[i]
@@ -449,6 +419,42 @@ func (c *Catalog) addChild(parentPath, name string, kind EntryKind, size int64) 
 		Kind: kind,
 	})
 	c.Dirs[parentPath] = children
+}
+
+// downloadChunks downloads and decodes all metadata chunks in parallel.
+// Returns the decoded chunks and any per-chunk errors.
+func downloadChunks(metaIdx *DynamicIndexReader, source ChunkSource, maxWorkers int) ([][]byte, []error) {
+	decodedChunks := make([][]byte, metaIdx.Count())
+	chunkErrs := make([]error, metaIdx.Count())
+
+	work := make(chan int, metaIdx.Count())
+	for i := 0; i < metaIdx.Count(); i++ {
+		work <- i
+	}
+	close(work)
+
+	var wg sync.WaitGroup
+	for range maxWorkers {
+		wg.Go(func() {
+			for i := range work {
+				entry := metaIdx.Entry(i)
+				raw, err := source.GetChunk(entry.Digest)
+				if err != nil {
+					chunkErrs[i] = fmt.Errorf("chunk %d/%d (digest %x): %w", i+1, metaIdx.Count(), entry.Digest[:8], err)
+					continue
+				}
+				decoded, err := DecodeBlob(raw)
+				if err != nil {
+					chunkErrs[i] = fmt.Errorf("decode chunk %d: %w", i, err)
+					continue
+				}
+				decodedChunks[i] = decoded
+			}
+		})
+	}
+	wg.Wait()
+
+	return decodedChunks, chunkErrs
 }
 
 // buildChildPath constructs a child path into dst, avoiding per-call allocation.

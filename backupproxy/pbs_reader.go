@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pbs-plus/pxar/datastore"
@@ -84,9 +85,23 @@ func (r *PBSReader) DownloadChunk(digest [32]byte) ([]byte, error) {
 	return r.conn.doBinary("GET", "chunk", params, nil, "")
 }
 
-// AsChunkSource returns a ChunkSource interface for the restorer.
+// AsChunkSource returns a goroutine-safe ChunkSource for the restorer.
+// The returned source serializes H2 encoder/framer access via an internal
+// mutex, making MaxWorkers > 1 safe without external synchronization.
 func (r *PBSReader) AsChunkSource() datastore.ChunkSource {
-	return &pbsChunkSource{reader: r}
+	return &mutexChunkSource{inner: &pbsChunkSource{reader: r}}
+}
+
+// mutexChunkSource wraps pbsChunkSource with a mutex for goroutine safety.
+type mutexChunkSource struct {
+	mu    sync.Mutex
+	inner *pbsChunkSource
+}
+
+func (m *mutexChunkSource) GetChunk(digest [32]byte) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.inner.GetChunk(digest)
 }
 
 // RestoreFile restores a complete file from a dynamic index.
@@ -339,10 +354,7 @@ func (c *pbsReaderConn) doBinary(method, path string, params url.Values, body []
 func (c *pbsReaderConn) writeDataFrames(streamID uint32, data []byte) error {
 	max := int(c.maxFrameSize)
 	for len(data) > 0 {
-		n := len(data)
-		if n > max {
-			n = max
-		}
+		n := min(len(data), max)
 		end := len(data) == n
 		if err := c.framer.WriteData(streamID, end, data[:n]); err != nil {
 			return err

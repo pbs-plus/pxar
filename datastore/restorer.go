@@ -63,10 +63,7 @@ func (r *Restorer) RestoreRange(idx *DynamicIndexReader, offset, length uint64, 
 		return fmt.Errorf("offset %d beyond file size", offset)
 	}
 
-	endOffset := offset + length
-	if endOffset > idx.IndexBytes() {
-		endOffset = idx.IndexBytes()
-	}
+	endOffset := min(offset+length, idx.IndexBytes())
 
 	bytesWritten := uint64(0)
 	for i := chunkIdx; i < idx.Count() && bytesWritten < length; i++ {

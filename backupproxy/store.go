@@ -16,7 +16,7 @@ import (
 )
 
 var blobBufPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		buf := make([]byte, 0, 4<<20)
 		return &buf
 	},

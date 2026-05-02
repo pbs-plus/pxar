@@ -45,7 +45,7 @@ func (sc *StoreChunker) ChunkStream(r io.Reader) ([]ChunkResult, *DynamicIndexWr
 }
 
 var blobBufPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		buf := make([]byte, 0, 4<<20)
 		return &buf
 	},

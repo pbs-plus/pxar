@@ -85,7 +85,7 @@ func (cr *CatalogReader) readDir(data []byte, dirStartPos int64) (*CatalogTreeEn
 		Name:      string(dirName),
 	}
 
-	for i := uint64(0); i < entryCount; i++ {
+	for i := range entryCount {
 		nameLen, err := catalogDecodeU64FromReader(r)
 		if err != nil {
 			return nil, fmt.Errorf("decode entry name len [%d]: %w", i, err)
@@ -177,7 +177,7 @@ func (cr *CatalogReader) readDir(data []byte, dirStartPos int64) (*CatalogTreeEn
 
 func catalogDecodeU64FromReader(r io.Reader) (uint64, error) {
 	var val uint64
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		var b [1]byte
 		if _, err := io.ReadFull(r, b[:]); err != nil {
 			return 0, err
@@ -193,7 +193,7 @@ func catalogDecodeU64FromReader(r io.Reader) (uint64, error) {
 func catalogDecodeI64FromReader(r io.Reader) (int64, error) {
 	var val uint64
 	negative := false
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		var b [1]byte
 		if _, err := io.ReadFull(r, b[:]); err != nil {
 			return 0, err

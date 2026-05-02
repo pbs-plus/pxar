@@ -59,7 +59,7 @@ func (p *h2Protocol) dynamicChunkUpload(wid uint64, digest string, size, encoded
 }
 
 func (p *h2Protocol) dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error {
-	body := map[string]interface{}{
+	body := map[string]any{
 		"wid":         wid,
 		"digest-list": digests,
 		"offset-list": offsets,
@@ -168,10 +168,10 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 	// Populate deduplication cache from previous snapshot if available
 	if s.knownChunks == nil {
 		s.knownChunks = make(map[[32]byte]bool)
-		
+
 		if s.config.PreviousBackup != nil {
 			prev := s.config.PreviousBackup
-			
+
 			// Try to download previous index for this specific archive name
 			data, err := s.store.ReadPreviousArchive(ctx, prev.BackupType, prev.BackupID, prev.BackupTime, prev.Namespace, name)
 			if err == nil {
@@ -235,7 +235,7 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 			if err := s.proto.dynamicChunkUpload(wid, hexDigest, len(chunk), len(blobData), blobData); err != nil {
 				return nil, err
 			}
-			
+
 			// Add to cache so we don't upload the same chunk twice in this session
 			if s.knownChunks != nil {
 				s.knownChunks[digest] = true

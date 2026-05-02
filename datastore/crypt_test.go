@@ -106,7 +106,7 @@ func TestManifestSigning(t *testing.T) {
 		t.Error("manifest should have unprotected key-fingerprint")
 	}
 
-	var unprotected map[string]interface{}
+	var unprotected map[string]any
 	if err := json.Unmarshal(manifest.Unprotected, &unprotected); err != nil {
 		t.Fatal(err)
 	}

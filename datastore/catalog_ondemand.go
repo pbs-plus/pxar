@@ -408,106 +408,120 @@ func (c *OnDemandCatalog) NumDirs() int {
 // using end offsets from the DirIndex (when available) or depth tracking
 // (fallback). Only the direct children of the requested directory are
 // returned.
-func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
+// ListDirCallback streams directory children without materializing a full
+// slice. For each child, fn is called with a CatalogChild; if fn returns
+// a non-nil error, iteration stops and the error is returned.
+func (c *OnDemandCatalog) ListDirCallback(path string, fn func(CatalogChild) error) error {
 	loc, ok := c.index.entries[path]
 	if !ok {
-		return nil, fmt.Errorf("directory %q not found in index", path)
+		return fmt.Errorf("directory %q not found in index", path)
 	}
-
-	// Fetch the first chunk containing this directory.
 	data, err := c.fetchChunk(loc.chunkIdx)
 	if err != nil {
-		return nil, fmt.Errorf("fetching chunk %d for dir %q: %w", loc.chunkIdx, path, err)
+		return fmt.Errorf("fetching chunk %d for dir %q: %w", loc.chunkIdx, path, err)
 	}
-
 	lr := &lazyChunkReader{
 		cat:       c,
 		baseChunk: loc.chunkIdx,
 		chunks:    [][]byte{data},
 		pos:       loc.offset,
 	}
+	return listDirFromReader(lr, path, c.index, fn)
+}
 
+// ListDir fetches and parses a single directory's children on demand.
+func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
 	children := make([]CatalogChild, 0, 16)
-	depth := 0 // nesting depth for skipping subtrees
+	err := c.ListDirCallback(path, func(ch CatalogChild) error {
+		children = append(children, ch)
+		return nil
+	})
+	return children, err
+}
+
+func listDirFromReader(lr *lazyChunkReader, path string, index *DirIndex, fn func(CatalogChild) error) error {
+	depth := 0
 
 	for {
 		h, err := lr.readHeader()
 		if err != nil {
-			return children, nil // EOF
+			return nil
 		}
 
 		switch h.Type {
 		case format.PXARFilename:
 			name, err := lr.readFilename(h)
 			if err != nil {
-				return nil, fmt.Errorf("reading filename in dir %q: %w", path, err)
+				return fmt.Errorf("reading filename in dir %q: %w", path, err)
 			}
 
 			h2, err := lr.readHeader()
 			if err != nil {
-				return nil, fmt.Errorf("reading entry after filename %q: %w", name, err)
+				return fmt.Errorf("reading entry after filename %q: %w", name, err)
 			}
 
 			switch h2.Type {
 			case format.PXARHardlink:
 				if err := lr.skip(int(h2.ContentSize())); err != nil {
-					return nil, err
+					return err
 				}
 				if depth == 0 {
-					children = append(children, CatalogChild{Name: name, Kind: pxar.KindHardlink})
+					if err := fn(CatalogChild{Name: name, Kind: pxar.KindHardlink}); err != nil {
+						return err
+					}
 				}
 
 			case format.PXAREntry:
 				statBytes, err := lr.read(40)
 				if err != nil {
-					return nil, fmt.Errorf("reading stat for %q: %w", name, err)
+					return fmt.Errorf("reading stat for %q: %w", name, err)
 				}
 				stat := format.UnmarshalStatBytes(statBytes)
 
 				kind, size, peeked, err := lr.scanAttributes(stat)
 				if err != nil {
-					return nil, fmt.Errorf("scanning attributes for %q: %w", name, err)
+					return fmt.Errorf("scanning attributes for %q: %w", name, err)
 				}
 
 				if depth == 0 {
-					children = append(children, CatalogChild{Size: size, Name: name, Kind: kind})
+					if err := fn(CatalogChild{Size: size, Name: name, Kind: kind}); err != nil {
+						return err
+					}
 				}
 				if kind == pxar.KindDirectory {
 					if depth == 0 {
-						// Try to skip the entire subtree using end offsets.
 						childPath := buildChildPathStr(path, name)
-						if childLoc, ok := c.index.entries[childPath]; ok && childLoc.endChunkIdx > 0 {
+						if childLoc, ok := index.entries[childPath]; ok && childLoc.endChunkIdx > 0 {
 							if err := lr.seekTo(childLoc.endChunkIdx, childLoc.endOffset); err == nil {
-								continue // subtree skipped
+								continue
 							}
 						}
 					}
 					depth++
 				}
 				if peeked != nil {
-					// Rewind: re-process the peeked header in the next iteration.
 					if err := lr.pushbackHeader(*peeked); err != nil {
-						return nil, err
+						return err
 					}
 				}
 
 			default:
-				return nil, fmt.Errorf("unexpected %s after filename %q in dir %q", h2.String(), name, path)
+				return fmt.Errorf("unexpected %s after filename %q in dir %q", h2.String(), name, path)
 			}
 
 		case format.PXARGoodbye:
 			if err := lr.skip(int(h.ContentSize())); err != nil {
-				return nil, err
+				return err
 			}
 			if depth > 0 {
-				depth-- // closing a nested subdirectory
+				depth--
 			} else {
-				return children, nil // closing our directory — done
+				return nil
 			}
 
 		default:
 			if err := lr.skip(int(h.ContentSize())); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}

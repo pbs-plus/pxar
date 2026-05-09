@@ -111,6 +111,10 @@ func (r *PBSArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOp
 	return r.inner.ListDirectoryWithOptions(dirOffset, opts)
 }
 
+func (r *PBSArchiveReader) ListDirectoryCallback(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
+	return r.inner.ListDirectoryCallback(dirOffset, opts, fn)
+}
+
 func (r *PBSArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 	return r.inner.ReadFileContent(entry)
 }

@@ -128,23 +128,39 @@ func (a *Accessor) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
 // When opts.Minimal is true, extended metadata (xattrs, fcaps, ACLs) is
 // skipped — only stat basics are decoded.
 func (a *Accessor) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
+	var entries []pxar.Entry
+	err := a.listDirectoryStream(dirOffset, opts, func(entry *pxar.Entry) error {
+		entries = append(entries, *entry)
+		return nil
+	})
+	return entries, err
+}
+
+// ListDirectoryCallback streams directory entries without materializing a slice.
+// For each entry, fn is called with a pointer that is only valid during the
+// callback. Callers must copy the Entry if they need to retain it beyond fn's
+// return. If fn returns a non-nil error, iteration stops and the error is returned.
+func (a *Accessor) ListDirectoryCallback(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
+	return a.listDirectoryStream(dirOffset, opts, fn)
+}
+
+func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
 	// Seek to directory content area
 	if _, err := a.reader.Seek(dirOffset, io.SeekStart); err != nil {
-		return nil, err
+		return err
 	}
 
 	// Read goodbye table first to get all entries
 	goodbyeOffset, err := a.findGoodbyeOffset(dirOffset)
 	if err != nil {
-		return nil, fmt.Errorf("finding goodbye table: %w", err)
+		return fmt.Errorf("finding goodbye table: %w", err)
 	}
 
 	items, err := a.readGoodbyeTable(goodbyeOffset)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	var entries []pxar.Entry
 	for _, item := range items {
 		if item.Hash == format.PXARGoodbyeTailMarker {
 			continue
@@ -160,12 +176,14 @@ func (a *Accessor) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([
 			entry, err = a.ReadEntryAt(entryOffset)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("reading entry at %d: %w", entryOffset, err)
+			return fmt.Errorf("reading entry at %d: %w", entryOffset, err)
 		}
-		entries = append(entries, *entry)
+		if err := fn(entry); err != nil {
+			return err
+		}
 	}
 
-	return entries, nil
+	return nil
 }
 
 // Lookup finds an entry by path in the archive.

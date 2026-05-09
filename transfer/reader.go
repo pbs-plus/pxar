@@ -31,6 +31,11 @@ type ArchiveReader interface {
 	// ListDirectoryWithOptions lists entries with selective metadata decoding.
 	ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error)
 
+	// ListDirectoryCallback streams directory entries without materializing
+	// a full slice. For each entry, fn is called with a pointer valid only
+	// during the callback. If fn returns a non-nil error, iteration stops.
+	ListDirectoryCallback(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error
+
 	// ReadFileContent reads the complete content of a regular file.
 	ReadFileContent(entry *pxar.Entry) ([]byte, error)
 
@@ -88,6 +93,10 @@ func (r *FileArchiveReader) ListDirectory(dirOffset int64) ([]pxar.Entry, error)
 
 func (r *FileArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
 	return r.accessor.ListDirectoryWithOptions(dirOffset, accessor.ListOption{Minimal: opts.Minimal})
+}
+
+func (r *FileArchiveReader) ListDirectoryCallback(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
+	return r.accessor.ListDirectoryCallback(dirOffset, accessor.ListOption{Minimal: opts.Minimal}, fn)
 }
 
 func (r *FileArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
@@ -186,6 +195,10 @@ func (r *ChunkedArchiveReader) ListDirectory(dirOffset int64) ([]pxar.Entry, err
 
 func (r *ChunkedArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
 	return r.inner.ListDirectoryWithOptions(dirOffset, opts)
+}
+
+func (r *ChunkedArchiveReader) ListDirectoryCallback(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
+	return r.inner.ListDirectoryCallback(dirOffset, opts, fn)
 }
 
 func (r *ChunkedArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
@@ -338,6 +351,10 @@ func (r *SplitArchiveReader) ListDirectory(dirOffset int64) ([]pxar.Entry, error
 
 func (r *SplitArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
 	return r.inner.ListDirectoryWithOptions(dirOffset, opts)
+}
+
+func (r *SplitArchiveReader) ListDirectoryCallback(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
+	return r.inner.ListDirectoryCallback(dirOffset, opts, fn)
 }
 
 func (r *SplitArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {

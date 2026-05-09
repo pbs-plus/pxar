@@ -4,10 +4,11 @@ import (
 	"fmt"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 )
 
 // readCatalog extracts the full directory tree as a flat list of CatalogEntry
-// values using minimal decoding. It walks the tree via ListDirectoryWithOptions
+// values using minimal decoding. It walks the tree via ListDirectory
 // with Minimal: true, avoiding payload reads entirely.
 func readCatalog(r ArchiveReader) ([]CatalogEntry, error) {
 	root, err := r.ReadRoot()
@@ -35,27 +36,21 @@ func catalogDir(r ArchiveReader, dir *pxar.Entry, parentPath string, out *[]Cata
 		return nil
 	}
 
-	children, err := r.ListDirectoryWithOptions(int64(dir.ContentOffset), ListOption{Minimal: true})
-	if err != nil {
-		return fmt.Errorf("list directory %q: %w", dir.Path, err)
-	}
-
 	dirPath := dir.Path
 	if dirPath != "/" {
 		dirPath = dirPath + "/"
 	}
 
-	for i := range children {
-		child := &children[i]
+	err := r.ListDirectory(int64(dir.ContentOffset), accessor.ListOption{Minimal: true}, func(child *pxar.Entry) error {
 		childPath := dirPath + child.Path
 
 		if child.IsDir() {
-			savedPath := child.Path
-			child.Path = childPath
-			if err := catalogDir(r, child, dirPath, out); err != nil {
+			// Copy the entry since we modify its path for recursion
+			childCopy := *child
+			childCopy.Path = childPath
+			if err := catalogDir(r, &childCopy, dirPath, out); err != nil {
 				return err
 			}
-			child.Path = savedPath
 		} else {
 			*out = append(*out, CatalogEntry{
 				Path:       childPath,
@@ -64,6 +59,10 @@ func catalogDir(r ArchiveReader, dir *pxar.Entry, parentPath string, out *[]Cata
 				ParentPath: dirPath,
 			})
 		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("list directory %q: %w", dir.Path, err)
 	}
 
 	return nil

@@ -118,29 +118,11 @@ func (a *Accessor) ReadRoot() (*pxar.Entry, error) {
 	}
 }
 
-// ListDirectory lists entries in a directory at the given offset.
-// The offset should point to the start of the directory's FILENAME range.
-func (a *Accessor) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
-	return a.ListDirectoryWithOptions(dirOffset, ListOption{})
-}
-
-// ListDirectoryWithOptions lists entries with selective metadata decoding.
-// When opts.Minimal is true, extended metadata (xattrs, fcaps, ACLs) is
-// skipped — only stat basics are decoded.
-func (a *Accessor) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
-	var entries []pxar.Entry
-	err := a.listDirectoryStream(dirOffset, opts, func(entry *pxar.Entry) error {
-		entries = append(entries, *entry)
-		return nil
-	})
-	return entries, err
-}
-
-// ListDirectoryCallback streams directory entries without materializing a slice.
+// ListDirectory streams directory entries without materializing a slice.
 // For each entry, fn is called with a pointer that is only valid during the
 // callback. Callers must copy the Entry if they need to retain it beyond fn's
 // return. If fn returns a non-nil error, iteration stops and the error is returned.
-func (a *Accessor) ListDirectoryCallback(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
+func (a *Accessor) ListDirectory(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
 	return a.listDirectoryStream(dirOffset, opts, fn)
 }
 

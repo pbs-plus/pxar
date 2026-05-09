@@ -67,24 +67,26 @@ func (s *Session) Lookup(parentInode uint64, name string) (uint64, Attr, error) 
 		return 0, Attr{}, err
 	}
 
-	entries, err := s.acc.ListDirectory(int64(dirOffset))
-	if err != nil {
-		return 0, Attr{}, err
-	}
-
-	for i := range entries {
-		if entries[i].FileName() != name {
-			continue
+	var result *pxar.Entry
+	sentinelErr := fmt.Errorf("found")
+	listErr := s.acc.ListDirectory(int64(dirOffset), accessor.ListOption{}, func(entry *pxar.Entry) error {
+		if entry.FileName() == name {
+			result = entry
+			return sentinelErr // sentinel to stop iteration
 		}
-		entry := &entries[i]
-		inode := s.toInode(entry)
-		s.ensureNode(inode, parentInode, entry)
-
-		attr := StatToAttr(inode, entry.Metadata.Stat, entry.FileSize)
-		return inode, attr, nil
+		return nil
+	})
+	if result == nil {
+		return 0, Attr{}, syscall.ENOENT
 	}
 
-	return 0, Attr{}, syscall.ENOENT
+	entry := result
+	_ = listErr // ignore sentinel error, result is non-nil
+	inode := s.toInode(entry)
+	s.ensureNode(inode, parentInode, entry)
+
+	attr := StatToAttr(inode, entry.Metadata.Stat, entry.FileSize)
+	return inode, attr, nil
 }
 
 // Getattr returns attributes for the given inode.
@@ -120,8 +122,12 @@ func (s *Session) Readdir(inode uint64, offset uint64) ([]DirEntryIndex, error) 
 		return nil, err
 	}
 
-	entries, err := s.acc.ListDirectory(int64(dirOffset))
-	if err != nil {
+	// Collect entries into a local slice for offset-based indexing
+	var entries []pxar.Entry
+	if err := s.acc.ListDirectory(int64(dirOffset), accessor.ListOption{}, func(entry *pxar.Entry) error {
+		entries = append(entries, *entry)
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 

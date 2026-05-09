@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
 	"github.com/pbs-plus/pxar/transfer"
@@ -154,14 +155,12 @@ func TestFileArchiveReaderListDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, err := reader.ListDirectory(int64(root.ContentOffset))
-	if err != nil {
-		t.Fatalf("ListDirectory: %v", err)
-	}
-
 	names := map[string]bool{}
-	for _, e := range entries {
-		names[e.Path] = true
+	if err := reader.ListDirectory(int64(root.ContentOffset), accessor.ListOption{}, func(entry *pxar.Entry) error {
+		names[entry.Path] = true
+		return nil
+	}); err != nil {
+		t.Fatalf("ListDirectory: %v", err)
 	}
 
 	for _, name := range []string{"hello.txt", "link", "subdir"} {
@@ -365,14 +364,12 @@ func TestMergeArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, err := dstReader.ListDirectory(int64(root.ContentOffset))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	names := map[string]bool{}
-	for _, e := range entries {
-		names[e.Path] = true
+	if err := dstReader.ListDirectory(int64(root.ContentOffset), accessor.ListOption{}, func(entry *pxar.Entry) error {
+		names[entry.Path] = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	for _, name := range []string{"hello.txt", "link", "subdir"} {

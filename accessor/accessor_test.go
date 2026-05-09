@@ -82,19 +82,18 @@ func TestAccessorListDirectory(t *testing.T) {
 		t.Fatalf("getRootContentOffset: %v", err)
 	}
 
-	entries, err := acc.ListDirectory(rootOffset)
-	if err != nil {
+	entries := make(map[string]bool)
+	if err := acc.ListDirectory(rootOffset, ListOption{}, func(entry *pxar.Entry) error {
+		entries[entry.FileName()] = true
+		return nil
+	}); err != nil {
 		t.Fatalf("ListDirectory: %v", err)
 	}
 
-	names := make(map[string]bool)
-	for _, e := range entries {
-		names[e.FileName()] = true
-	}
-	if !names["file1.txt"] {
+	if !entries["file1.txt"] {
 		t.Error("file1.txt not found in directory listing")
 	}
-	if !names["file2.txt"] {
+	if !entries["file2.txt"] {
 		t.Error("file2.txt not found in directory listing")
 	}
 }
@@ -176,15 +175,14 @@ func TestAccessorListNestedDirectory(t *testing.T) {
 		t.Fatalf("findDirContentOffset: %v", err)
 	}
 
-	entries, err := acc.ListDirectory(subDirOffset)
-	if err != nil {
+	names := make(map[string]bool)
+	if err := acc.ListDirectory(subDirOffset, ListOption{}, func(entry *pxar.Entry) error {
+		names[entry.FileName()] = true
+		return nil
+	}); err != nil {
 		t.Fatalf("ListDirectory subdir: %v", err)
 	}
 
-	names := make(map[string]bool)
-	for _, e := range entries {
-		names[e.FileName()] = true
-	}
 	if !names["a.txt"] {
 		t.Error("a.txt not found in subdir listing")
 	}

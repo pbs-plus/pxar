@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 	"github.com/pbs-plus/pxar/backupproxy"
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
@@ -527,29 +528,22 @@ func runLs() error {
 		if err != nil {
 			return fmt.Errorf("read root: %w", err)
 		}
-		entries, err := reader.ListDirectory(int64(root.ContentOffset))
-		if err != nil {
-			return fmt.Errorf("list root: %w", err)
-		}
-		for _, e := range entries {
+		return reader.ListDirectory(int64(root.ContentOffset), accessor.ListOption{}, func(e *pxar.Entry) error {
 			fmt.Printf("%s\n", e.Path)
-		}
+			return nil
+		})
 	} else {
 		entry, err := reader.Lookup(listPath)
 		if err != nil {
 			return fmt.Errorf("lookup %q: %w", listPath, err)
 		}
 		if entry.IsDir() {
-			entries, err := reader.ListDirectory(int64(entry.ContentOffset))
-			if err != nil {
-				return fmt.Errorf("list directory: %w", err)
-			}
-			for _, e := range entries {
+			return reader.ListDirectory(int64(entry.ContentOffset), accessor.ListOption{}, func(e *pxar.Entry) error {
 				fmt.Printf("%s\n", e.Path)
-			}
-		} else {
-			fmt.Printf("%s (size=%d)\n", entry.Path, entry.FileSize)
+				return nil
+			})
 		}
+		fmt.Printf("%s (size=%d)\n", entry.Path, entry.FileSize)
 	}
 	return nil
 }

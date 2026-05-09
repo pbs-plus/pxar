@@ -6,6 +6,7 @@ import (
 	"io"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 	"github.com/pbs-plus/pxar/backupproxy"
 )
 
@@ -103,16 +104,8 @@ func (r *PBSArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
 	return r.inner.LookupBatch(paths)
 }
 
-func (r *PBSArchiveReader) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
-	return r.inner.ListDirectory(dirOffset)
-}
-
-func (r *PBSArchiveReader) ListDirectoryWithOptions(dirOffset int64, opts ListOption) ([]pxar.Entry, error) {
-	return r.inner.ListDirectoryWithOptions(dirOffset, opts)
-}
-
-func (r *PBSArchiveReader) ListDirectoryCallback(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
-	return r.inner.ListDirectoryCallback(dirOffset, opts, fn)
+func (r *PBSArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
+	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
 func (r *PBSArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {

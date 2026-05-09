@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 )
 
 // ErrSkipDir can be returned by a WalkFunc to skip a directory's children.
@@ -106,24 +107,15 @@ func walkDirDescend(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn W
 }
 
 func walkDirChildren(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn WalkFunc) error {
+	var err error
 
-	// List children
-	entries, err := reader.ListDirectory(int64(dir.ContentOffset))
-	if err != nil {
-		return fmt.Errorf("list directory: %w", err)
-	}
-
-	// Build full paths for children
-	for i := range entries {
+	err = reader.ListDirectory(int64(dir.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
+		// Build full path
 		if dir.Path == "/" {
-			entries[i].Path = "/" + entries[i].Path
+			child.Path = "/" + child.Path
 		} else {
-			entries[i].Path = dir.Path + "/" + entries[i].Path
+			child.Path = dir.Path + "/" + child.Path
 		}
-	}
-
-	for i := range entries {
-		child := &entries[i]
 
 		if child.IsDir() {
 			// Always descend into directories. Only invoke the callback if
@@ -141,7 +133,7 @@ func walkDirChildren(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn 
 		} else {
 			// Skip non-directory entries that don't match the filter.
 			if opts.Filter != 0 && !opts.Filter.matches(child.Kind) {
-				continue
+				return nil
 			}
 			var content []byte
 			if !opts.MetaOnly && child.IsRegularFile() {
@@ -154,6 +146,10 @@ func walkDirChildren(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn 
 				return err
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("list directory: %w", err)
 	}
 
 	return nil

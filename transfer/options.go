@@ -70,14 +70,6 @@ func (f WalkFilter) matches(kind pxar.EntryKind) bool {
 	}
 }
 
-// ListOption controls which metadata is decoded during ListDirectory calls.
-type ListOption struct {
-	// Minimal skips decoding xattrs, fcaps, ACLs, and other extended
-	// metadata. Only stat basics (mode, uid, gid, times) are populated.
-	// Significantly reduces per-entry decode cost for indexing/browsing.
-	Minimal bool
-}
-
 // CatalogEntry is a stripped-down entry for index-building. It contains
 // only the fields needed for cataloging: path, kind, size, and parent.
 type CatalogEntry struct {

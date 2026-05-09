@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 )
 
 // walkFrame holds the iteration state for one directory level.
@@ -102,19 +103,21 @@ func (w *TreeWalker) Next() bool {
 
 		// If it's a directory, push its children for subsequent iterations.
 		if src.Kind == pxar.KindDirectory {
-			children, err := w.reader.ListDirectory(int64(src.ContentOffset))
+			var children []pxar.Entry
+			err := w.reader.ListDirectory(int64(src.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
+				// Build full path
+				if src.Path == "/" {
+					child.Path = "/" + child.Path
+				} else {
+					child.Path = src.Path + "/" + child.Path
+				}
+				// Copy entry since entry memory is reused between callbacks
+				children = append(children, *child)
+				return nil
+			})
 			if err != nil {
 				w.err = fmt.Errorf("list directory %q: %w", src.Path, err)
 				return false
-			}
-
-			// Build full paths for children
-			for i := range children {
-				if src.Path == "/" {
-					children[i].Path = "/" + children[i].Path
-				} else {
-					children[i].Path = src.Path + "/" + children[i].Path
-				}
 			}
 
 			if len(children) > 0 {

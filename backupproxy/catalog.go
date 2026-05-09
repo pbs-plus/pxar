@@ -57,12 +57,7 @@ func BuildCatalog(metaIdx *datastore.DynamicIndexReader, chunkSource datastore.C
 }
 
 func walkCatalogDir(acc *accessor.Accessor, dirPath string, dirOffset int64, catalog SnapshotCatalog) error {
-	entries, err := acc.ListDirectory(dirOffset)
-	if err != nil {
-		return fmt.Errorf("list directory %q: %w", dirPath, err)
-	}
-
-	for _, entry := range entries {
+	return acc.ListDirectory(dirOffset, accessor.ListOption{}, func(entry *pxar.Entry) error {
 		// Build normalized path
 		var entryPath string
 		if dirPath != "/" {
@@ -87,9 +82,8 @@ func walkCatalogDir(acc *accessor.Accessor, dirPath string, dirOffset int64, cat
 				return err
 			}
 		}
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // EntryMatches checks if a current directory entry matches a catalog entry

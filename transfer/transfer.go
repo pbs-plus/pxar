@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 	"github.com/pbs-plus/pxar/format"
 )
 
@@ -78,13 +79,7 @@ func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, srcPath, dst
 		return fmt.Errorf("begin directory %q: %w", dir.Path, err)
 	}
 
-	entries, err := src.ListDirectory(int64(dir.ContentOffset))
-	if err != nil {
-		return fmt.Errorf("list directory %q: %w", dir.Path, err)
-	}
-
-	for i := range entries {
-		child := &entries[i]
+	err := src.ListDirectory(int64(dir.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
 		// Remap path for the target
 		if dstPath != "" && dstPath != srcPath {
 			childPath := child.Path
@@ -102,6 +97,10 @@ func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, srcPath, dst
 				return err
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("list directory %q: %w", dir.Path, err)
 	}
 
 	return dst.EndDirectory()
@@ -110,16 +109,10 @@ func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, srcPath, dst
 // walkAndCopy walks a source directory tree and copies entries to dst,
 // remapping paths from srcPath to dstPath.
 func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath, dstPath string, opts TransferOption) error {
-	entries, err := src.ListDirectory(int64(root.ContentOffset))
-	if err != nil {
-		return fmt.Errorf("list directory %q: %w", root.Path, err)
-	}
-
 	// When srcPath is "/", we're copying from the archive root — don't create
 	// a new directory since the target writer already has one from Begin.
 	if srcPath == "/" {
-		for i := range entries {
-			child := &entries[i]
+		return src.ListDirectory(int64(root.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
 			if dstPath != "" && dstPath != "/" {
 				childPath := child.Path
 				if after, ok := strings.CutPrefix(childPath, srcPath); ok {
@@ -136,8 +129,8 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 					return err
 				}
 			}
-		}
-		return nil
+			return nil
+		})
 	}
 
 	// Create intermediate directories for dstPath components that don't exist
@@ -169,8 +162,7 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 		return fmt.Errorf("begin directory %q: %w", dirName, err)
 	}
 
-	for i := range entries {
-		child := &entries[i]
+	err := src.ListDirectory(int64(root.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
 		if dstPath != "" && dstPath != srcPath {
 			childPath := child.Path
 			if after, ok := strings.CutPrefix(childPath, srcPath); ok {
@@ -187,6 +179,10 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 				return err
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("list directory %q: %w", root.Path, err)
 	}
 
 	if err := dst.EndDirectory(); err != nil {

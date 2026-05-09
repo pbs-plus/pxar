@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/accessor"
 	"github.com/pbs-plus/pxar/datastore"
 )
 
@@ -83,8 +84,8 @@ func (r *DecryptingReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
-func (r *DecryptingReader) ListDirectory(dirOffset int64) ([]pxar.Entry, error) {
-	return r.inner.ListDirectory(dirOffset)
+func (r *DecryptingReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
+	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
 func (r *DecryptingReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {

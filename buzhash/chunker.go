@@ -107,11 +107,11 @@ func (c *Chunker) Next() ([]byte, error) {
 
 			chunkSize := c.outLen + (c.bufPos - chunkStart)
 			if chunkSize >= c.config.MaxChunkSize {
-				return c.emitChunk(chunkStart, c.bufPos-chunkStart)
+				return c.emitAndReset(chunkStart, c.bufPos-chunkStart)
 			}
 			if chunkSize >= c.config.MinChunkSize &&
 				(c.hasher.h&c.config.Mask) >= c.config.Threshold {
-				return c.emitChunk(chunkStart, c.bufPos-chunkStart)
+				return c.emitAndReset(chunkStart, c.bufPos-chunkStart)
 			}
 		}
 
@@ -122,15 +122,19 @@ func (c *Chunker) Next() ([]byte, error) {
 	}
 }
 
-// emitChunk returns chunk data. If no spill (outLen == 0), returns a direct
-// view into the read buffer. Otherwise copies remaining data into the spill
-// buffer and returns that.
-func (c *Chunker) emitChunk(start, length int) ([]byte, error) {
+// emitAndReset returns chunk data and resets the hasher state after a boundary.
+// PBS resets h=0, chunk_size=0, window_size=0 after every chunk boundary.
+func (c *Chunker) emitAndReset(start, length int) ([]byte, error) {
+	var result []byte
 	if c.outLen == 0 {
-		return c.buf[start : start+length], nil
+		result = c.buf[start : start+length]
+	} else {
+		c.outLen += copy(c.out[c.outLen:], c.buf[start:start+length])
+		result = c.out[:c.outLen]
 	}
-	c.outLen += copy(c.out[c.outLen:], c.buf[start:start+length])
-	return c.out[:c.outLen], nil
+	c.hasher.Reset()
+	c.inited = false
+	return result, nil
 }
 
 // feedInit feeds bytes into the hasher using the initial formula (no outgoing byte).

@@ -106,15 +106,12 @@ func (c *Chunker) Next() ([]byte, error) {
 			c.bufPos++
 
 			chunkSize := c.outLen + (c.bufPos - chunkStart)
-
 			if chunkSize >= c.config.MaxChunkSize {
 				return c.emitChunk(chunkStart, c.bufPos-chunkStart)
 			}
-
-			if chunkSize >= c.config.MinChunkSize {
-				if (c.hasher.h & c.config.Mask) >= c.config.Threshold {
-					return c.emitChunk(chunkStart, c.bufPos-chunkStart)
-				}
+			if chunkSize >= c.config.MinChunkSize &&
+				(c.hasher.h&c.config.Mask) >= c.config.Threshold {
+				return c.emitChunk(chunkStart, c.bufPos-chunkStart)
 			}
 		}
 

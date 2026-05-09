@@ -1,0 +1,45 @@
+name: parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Clone PBS pxar reference
+        run: git clone --depth 1 https://git.proxmox.com/git/pxar.git /tmp/pxar
+
+      - name: Verify SipHash parity with PBS
+        run: |
+          cd /tmp/pxar && cargo run --example mk-format-hashes > /tmp/pbs_hashes.txt 2>/dev/null || true
+          cd $GITHUB_WORKSPACE
+          go test -v -run TestFormatConstantGeneration ./format/
+
+      - name: Full test suite (race)
+        run: go test -race -count=1 ./...
+
+      - name: Benchmarks (spot check)
+        run: go test -bench=. -benchtime=200ms -benchmem ./buzhash/ ./datastore/
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m

@@ -19,12 +19,6 @@ type ArchiveReader interface {
 	// Lookup finds an entry by archive-internal path.
 	Lookup(path string) (*pxar.Entry, error)
 
-	// LookupBatch looks up multiple paths in a single pass. More efficient
-	// than N separate Lookup calls because it shares directory traversals
-	// for common prefixes. Returns entries in the same order as paths;
-	// nil means not found.
-	LookupBatch(paths []string) ([]*pxar.Entry, error)
-
 	// ListDirectory streams directory entries without materializing a slice.
 	// For each entry, fn is called with a pointer valid only during the callback.
 	// If fn returns a non-nil error, iteration stops.
@@ -38,10 +32,11 @@ type ArchiveReader interface {
 	// buffering the entire content in memory.
 	ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error)
 
-	// ReadCatalog extracts the full directory tree as a flat list of
-	// CatalogEntry values with minimal decoding. Significantly faster
-	// than WalkTree for indexing.
-	ReadCatalog() ([]CatalogEntry, error)
+	// ReadCatalog streams the full directory tree via a callback with
+	// minimal decoding. For each entry, fn is called. If fn returns a
+	// non-nil error, iteration stops and the error is returned.
+	// Significantly faster than WalkTree for indexing.
+	ReadCatalog(fn func(CatalogEntry) error) error
 
 	// Close releases resources.
 	Close() error
@@ -77,10 +72,6 @@ func (r *FileArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.accessor.Lookup(path)
 }
 
-func (r *FileArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
-	return r.accessor.LookupBatch(paths)
-}
-
 func (r *FileArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.accessor.ListDirectory(dirOffset, opts, fn)
 }
@@ -93,8 +84,8 @@ func (r *FileArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadClo
 	return r.accessor.ReadFileContentReader(entry)
 }
 
-func (r *FileArchiveReader) ReadCatalog() ([]CatalogEntry, error) {
-	return readCatalog(r)
+func (r *FileArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
+	return readCatalog(r, fn)
 }
 
 func (r *FileArchiveReader) Close() error {
@@ -171,10 +162,6 @@ func (r *ChunkedArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
-func (r *ChunkedArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
-	return r.inner.LookupBatch(paths)
-}
-
 func (r *ChunkedArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
@@ -187,8 +174,8 @@ func (r *ChunkedArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.Read
 	return r.inner.ReadFileContentReader(entry)
 }
 
-func (r *ChunkedArchiveReader) ReadCatalog() ([]CatalogEntry, error) {
-	return r.inner.ReadCatalog()
+func (r *ChunkedArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
+	return readCatalog(r.inner, fn)
 }
 
 func (r *ChunkedArchiveReader) Close() error {
@@ -319,10 +306,6 @@ func (r *SplitArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
-func (r *SplitArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
-	return r.inner.LookupBatch(paths)
-}
-
 func (r *SplitArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
@@ -335,8 +318,8 @@ func (r *SplitArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCl
 	return r.inner.ReadFileContentReader(entry)
 }
 
-func (r *SplitArchiveReader) ReadCatalog() ([]CatalogEntry, error) {
-	return r.inner.ReadCatalog()
+func (r *SplitArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
+	return readCatalog(r.inner, fn)
 }
 
 func (r *SplitArchiveReader) Close() error {

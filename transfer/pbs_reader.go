@@ -100,10 +100,6 @@ func (r *PBSArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
-func (r *PBSArchiveReader) LookupBatch(paths []string) ([]*pxar.Entry, error) {
-	return r.inner.LookupBatch(paths)
-}
-
 func (r *PBSArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
@@ -116,8 +112,8 @@ func (r *PBSArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadClos
 	return r.inner.ReadFileContentReader(entry)
 }
 
-func (r *PBSArchiveReader) ReadCatalog() ([]CatalogEntry, error) {
-	return r.inner.ReadCatalog()
+func (r *PBSArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
+	return readCatalog(r.inner, fn)
 }
 
 func (r *PBSArchiveReader) Close() error {

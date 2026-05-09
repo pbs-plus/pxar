@@ -7,30 +7,26 @@ import (
 	"github.com/pbs-plus/pxar/accessor"
 )
 
-// readCatalog extracts the full directory tree as a flat list of CatalogEntry
-// values using minimal decoding. It walks the tree via ListDirectory
-// with Minimal: true, avoiding payload reads entirely.
-func readCatalog(r ArchiveReader) ([]CatalogEntry, error) {
+// readCatalog streams the full directory tree via a callback with minimal
+// decoding. For each entry, fn is called; if fn returns a non-nil error,
+// iteration stops and the error is returned.
+func readCatalog(r ArchiveReader, fn func(CatalogEntry) error) error {
 	root, err := r.ReadRoot()
 	if err != nil {
-		return nil, fmt.Errorf("read root: %w", err)
+		return fmt.Errorf("read root: %w", err)
 	}
-
-	var entries []CatalogEntry
-	err = catalogDir(r, root, "/", &entries)
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
+	return catalogDir(r, root, "/", fn)
 }
 
-func catalogDir(r ArchiveReader, dir *pxar.Entry, parentPath string, out *[]CatalogEntry) error {
-	*out = append(*out, CatalogEntry{
+func catalogDir(r ArchiveReader, dir *pxar.Entry, parentPath string, fn func(CatalogEntry) error) error {
+	if err := fn(CatalogEntry{
 		Path:       dir.Path,
 		Kind:       dir.Kind,
 		FileSize:   dir.FileSize,
 		ParentPath: parentPath,
-	})
+	}); err != nil {
+		return err
+	}
 
 	if !dir.IsDir() {
 		return nil
@@ -41,37 +37,20 @@ func catalogDir(r ArchiveReader, dir *pxar.Entry, parentPath string, out *[]Cata
 		dirPath = dirPath + "/"
 	}
 
-	err := r.ListDirectory(int64(dir.ContentOffset), accessor.ListOption{Minimal: true}, func(child *pxar.Entry) error {
+	return r.ListDirectory(int64(dir.ContentOffset), accessor.ListOption{Minimal: true}, func(child *pxar.Entry) error {
 		childPath := dirPath + child.Path
-
 		if child.IsDir() {
-			// Copy the entry since we modify its path for recursion
 			childCopy := *child
 			childCopy.Path = childPath
-			if err := catalogDir(r, &childCopy, dirPath, out); err != nil {
-				return err
-			}
-		} else {
-			*out = append(*out, CatalogEntry{
-				Path:       childPath,
-				Kind:       child.Kind,
-				FileSize:   child.FileSize,
-				ParentPath: dirPath,
-			})
+			return catalogDir(r, &childCopy, dirPath, fn)
 		}
-		return nil
+		return fn(CatalogEntry{
+			Path:       childPath,
+			Kind:       child.Kind,
+			FileSize:   child.FileSize,
+			ParentPath: dirPath,
+		})
 	})
-	if err != nil {
-		return fmt.Errorf("list directory %q: %w", dir.Path, err)
-	}
-
-	return nil
-}
-
-// ReadCatalogOn is a convenience function that extracts a catalog from any
-// ArchiveReader. It is equivalent to calling r.ReadCatalog().
-func ReadCatalogOn(r ArchiveReader) ([]CatalogEntry, error) {
-	return r.ReadCatalog()
 }
 
 // Compile-time check: pxar.Entry kind helpers are available for catalogDir.

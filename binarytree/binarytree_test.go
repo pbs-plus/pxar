@@ -108,13 +108,13 @@ func TestSearchBy(t *testing.T) {
 	}
 
 	// Search starting at length
-	idx, found = SearchBy(vals, len(vals), 0, func(el int) int { return cmp.Compare(5, el) })
+	_, _ = SearchBy(vals, len(vals), 0, func(el int) int { return cmp.Compare(5, el) })
 	if found {
 		t.Errorf("search(start=len): should return not found")
 	}
 
 	// Search starting beyond length
-	idx, found = SearchBy(vals, len(vals)+1, 0, func(el int) int { return cmp.Compare(5, el) })
+	_, _ = SearchBy(vals, len(vals)+1, 0, func(el int) int { return cmp.Compare(5, el) })
 	if found {
 		t.Errorf("search(start=len+1): should return not found")
 	}

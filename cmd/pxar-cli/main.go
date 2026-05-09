@@ -274,7 +274,7 @@ func runBackup() error {
 	compressFlag := fs.Bool("compress", false, "compress chunks with zstd")
 	keyfile := fs.String("keyfile", "", "path to encryption key file (JSON)")
 	keyPassword := fs.String("key-password", "", "password for encrypted key file (or set PBS_ENCRYPTION_PASSWORD)")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	if *repo == "" {
 		*repo = os.Getenv("PBS_REPOSITORY")
@@ -432,7 +432,7 @@ func parseRepo(s string) *repoInfo {
 func runKeygen() error {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	keyPassword := fs.String("password", "", "password to protect the key file")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	var keyData []byte
 	var err error
@@ -505,7 +505,7 @@ func openArchiveReader(path string) (transfer.ArchiveReader, error) {
 
 func runLs() error {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	if fs.NArg() < 1 {
 		return fmt.Errorf("usage: pxar-cli ls <archive> [path]")
@@ -557,7 +557,7 @@ func runLs() error {
 func runExtract() error {
 	fs := flag.NewFlagSet("extract", flag.ExitOnError)
 	output := fs.String("o", "", "output file (default: stdout)")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	if fs.NArg() < 2 {
 		return fmt.Errorf("usage: pxar-cli extract <archive> <path> [-o output]")
@@ -600,7 +600,7 @@ func runCp() error {
 	fs := flag.NewFlagSet("cp", flag.ExitOnError)
 	formatFlag := fs.String("format", "v1", "output format: v1 or v2")
 	outputPath := fs.String("o", "", "output file (required)")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	if fs.NArg() < 2 || *outputPath == "" {
 		return fmt.Errorf("usage: pxar-cli cp <source_archive> <src_path> [dst_path] -o <output_archive> [-format v1|v2]")
@@ -652,7 +652,7 @@ func runMerge() error {
 	fs := flag.NewFlagSet("merge", flag.ExitOnError)
 	formatFlag := fs.String("format", "v1", "output format: v1 or v2")
 	outputPath := fs.String("o", "", "output file (required)")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	if fs.NArg() < 1 || *outputPath == "" {
 		return fmt.Errorf("usage: pxar-cli merge <source_archive> -o <output_archive> [-format v1|v2]")

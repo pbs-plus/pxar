@@ -47,7 +47,7 @@ func TestFlowControlReplenishment(t *testing.T) {
 		// 1. Send HEADERS for stream 1
 		var hb bytes.Buffer
 		henc := hpack.NewEncoder(&hb)
-		henc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
+		_ = henc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
 		if err := serverFramer.WriteHeaders(http2.HeadersFrameParam{
 			StreamID:      1,
 			BlockFragment: hb.Bytes(),
@@ -140,7 +140,7 @@ func TestHPACKConsistency(t *testing.T) {
 		// 1. Send HEADERS for a DIFFERENT stream (ID 3)
 		// We add a field to the dynamic table.
 		hb.Reset()
-		henc.WriteField(hpack.HeaderField{Name: "x-custom", Value: "value-for-stream-3"})
+		_ = henc.WriteField(hpack.HeaderField{Name: "x-custom", Value: "value-for-stream-3"})
 		if err := serverFramer.WriteHeaders(http2.HeadersFrameParam{
 			StreamID:      3,
 			BlockFragment: hb.Bytes(),
@@ -152,7 +152,7 @@ func TestHPACKConsistency(t *testing.T) {
 
 		// 2. Send HEADERS for the TARGET stream (ID 1)
 		hb.Reset()
-		henc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
+		_ = henc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
 		if err := serverFramer.WriteHeaders(http2.HeadersFrameParam{
 			StreamID:      1,
 			BlockFragment: hb.Bytes(),
@@ -182,8 +182,8 @@ func TestHPACKConsistency(t *testing.T) {
 		henc := hpack.NewEncoder(&hb)
 
 		hb.Reset()
-		henc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
-		serverFramer.WriteHeaders(http2.HeadersFrameParam{
+		_ = henc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
+		_ = serverFramer.WriteHeaders(http2.HeadersFrameParam{
 			StreamID:      5,
 			BlockFragment: hb.Bytes(),
 			EndHeaders:    true,
@@ -229,8 +229,8 @@ func TestIdleTimeout(t *testing.T) {
 		serverFramer := http2.NewFramer(serverConn, serverConn)
 		var hb bytes.Buffer
 		henc := hpack.NewEncoder(&hb)
-		henc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
-		serverFramer.WriteHeaders(http2.HeadersFrameParam{
+		_ = henc.WriteField(hpack.HeaderField{Name: ":status", Value: "200"})
+		_ = serverFramer.WriteHeaders(http2.HeadersFrameParam{
 			StreamID:      1,
 			BlockFragment: hb.Bytes(),
 			EndHeaders:    true,
@@ -244,7 +244,7 @@ func TestIdleTimeout(t *testing.T) {
 				return
 			}
 		}
-		serverFramer.WriteData(1, true, nil) // END_STREAM
+		_ = serverFramer.WriteData(1, true, nil) // END_STREAM
 		errChan <- nil
 	}()
 
@@ -268,12 +268,12 @@ func TestInitialSettings(t *testing.T) {
 	go func() {
 		// Simulate client writing preface and settings
 		framer := http2.NewFramer(clientConn, clientConn)
-		clientConn.Write([]byte(http2.ClientPreface))
-		framer.WriteSettings(
+		_, _ = clientConn.Write([]byte(http2.ClientPreface))
+		_ = framer.WriteSettings(
 			http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 30},
 			http2.Setting{ID: http2.SettingMaxFrameSize, Val: 1 << 22},
 		)
-		framer.WriteWindowUpdate(0, uint32((1<<30)-65535))
+		_ = framer.WriteWindowUpdate(0, uint32((1<<30)-65535))
 		errChan <- nil
 	}()
 

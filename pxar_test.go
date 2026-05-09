@@ -152,11 +152,11 @@ func TestRoundTripV1AllEntryTypes(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
 
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "file.txt", []byte("content"))
-	enc.AddSymlink(symlinkMeta(0o777, 0, 0), "link", "/target")
-	enc.AddDevice(deviceMeta(format.ModeIFCHR|0o644, 0, 0), "dev", format.Device{Major: 1, Minor: 3})
-	enc.AddFIFO(fifoMeta(0o644, 1000, 1000), "pipe")
-	enc.AddSocket(socketMeta(0o644, 1000, 1000), "sock")
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "file.txt", []byte("content"))
+	_ = enc.AddSymlink(symlinkMeta(0o777, 0, 0), "link", "/target")
+	_ = enc.AddDevice(deviceMeta(format.ModeIFCHR|0o644, 0, 0), "dev", format.Device{Major: 1, Minor: 3})
+	_ = enc.AddFIFO(fifoMeta(0o644, 1000, 1000), "pipe")
+	_ = enc.AddSocket(socketMeta(0o644, 1000, 1000), "sock")
 	enc.Close()
 
 	dec := decoder.NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -196,13 +196,13 @@ func TestRoundTripV1NestedDirectories(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
 
-	enc.CreateDirectory("a", dirMeta(0o755))
-	enc.CreateDirectory("b", dirMeta(0o755))
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "deep.txt", []byte("deep"))
-	enc.Finish()
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "mid.txt", []byte("mid"))
-	enc.Finish()
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "top.txt", []byte("top"))
+	_ = enc.CreateDirectory("a", dirMeta(0o755))
+	_ = enc.CreateDirectory("b", dirMeta(0o755))
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "deep.txt", []byte("deep"))
+	_ = enc.Finish()
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "mid.txt", []byte("mid"))
+	_ = enc.Finish()
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "top.txt", []byte("top"))
 	enc.Close()
 
 	dec := decoder.NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -229,7 +229,7 @@ func TestRoundTripV1FileContents(t *testing.T) {
 	content := []byte("This is a test file with some binary data: \x00\x01\x02\xff")
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "binary.dat", content)
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "binary.dat", content)
 	enc.Close()
 
 	dec := decoder.NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -261,8 +261,8 @@ func TestRoundTripV1StreamingWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fw.Write([]byte("hello "))
-	fw.WriteAll([]byte("world!"))
+	_, _ = fw.Write([]byte("hello "))
+	_ = fw.WriteAll([]byte("world!"))
 	fw.Close()
 	enc.Close()
 
@@ -293,7 +293,7 @@ func TestRoundTripV1XAttrs(t *testing.T) {
 		format.NewXAttr([]byte("user.test"), []byte("value1")),
 		format.NewXAttr([]byte("user.other"), []byte("value2")),
 	}
-	enc.AddFile(meta, "xattr.txt", []byte("data"))
+	_, _ = enc.AddFile(meta, "xattr.txt", []byte("data"))
 	enc.Close()
 
 	dec := decoder.NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -324,7 +324,7 @@ func TestRoundTripV1Hardlink(t *testing.T) {
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
 
 	offset, _ := enc.AddFile(fileMeta(0o644, 1000, 1000), "original.txt", []byte("data"))
-	enc.AddHardlink("link.txt", "original.txt", offset)
+	_ = enc.AddHardlink("link.txt", "original.txt", offset)
 	enc.Close()
 
 	dec := decoder.NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -359,7 +359,7 @@ func TestRoundTripV2SplitArchive(t *testing.T) {
 	var payloadBuf bytes.Buffer
 	enc := encoder.NewEncoder(&archiveBuf, &payloadBuf, dirMeta(0o755), nil)
 
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "file.txt", []byte("payload data"))
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "file.txt", []byte("payload data"))
 	enc.Close()
 
 	data := archiveBuf.Bytes()
@@ -391,7 +391,7 @@ func TestRoundTripV2WithPrelude(t *testing.T) {
 	prelude := []byte("test prelude data")
 	enc := encoder.NewEncoder(&archiveBuf, &payloadBuf, dirMeta(0o755), prelude)
 
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "file.txt", []byte("content"))
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "file.txt", []byte("content"))
 	enc.Close()
 
 	dec := decoder.NewDecoder(bytes.NewReader(archiveBuf.Bytes()), bytes.NewReader(payloadBuf.Bytes()))
@@ -412,9 +412,9 @@ func TestAccessorRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
 
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "file1.txt", []byte("content1"))
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "file2.txt", []byte("content2"))
-	enc.AddSymlink(symlinkMeta(0o777, 0, 0), "link", "/target")
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "file1.txt", []byte("content1"))
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "file2.txt", []byte("content2"))
+	_ = enc.AddSymlink(symlinkMeta(0o777, 0, 0), "link", "/target")
 	enc.Close()
 
 	acc := accessor.NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -459,9 +459,9 @@ func TestAccessorRoundTripNested(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
 
-	enc.CreateDirectory("subdir", dirMeta(0o755))
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "nested.txt", []byte("nested"))
-	enc.Finish()
+	_ = enc.CreateDirectory("subdir", dirMeta(0o755))
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "nested.txt", []byte("nested"))
+	_ = enc.Finish()
 	enc.Close()
 
 	acc := accessor.NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -487,11 +487,11 @@ func TestEncoderDecoderAccessorRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
 
-	enc.AddFile(fileMeta(0o644, 0, 0), "readme.txt", []byte("readme content"))
-	enc.CreateDirectory("src", dirMeta(0o755))
-	enc.AddFile(fileMeta(0o644, 0, 0), "main.go", []byte("package main"))
-	enc.Finish()
-	enc.AddSocket(socketMeta(0o644, 0, 0), "sock")
+	_, _ = enc.AddFile(fileMeta(0o644, 0, 0), "readme.txt", []byte("readme content"))
+	_ = enc.CreateDirectory("src", dirMeta(0o755))
+	_, _ = enc.AddFile(fileMeta(0o644, 0, 0), "main.go", []byte("package main"))
+	_ = enc.Finish()
+	_ = enc.AddSocket(socketMeta(0o644, 0, 0), "sock")
 	enc.Close()
 
 	archiveData := buf.Bytes()

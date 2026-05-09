@@ -57,13 +57,13 @@ func createTestArchive(t *testing.T) (*bytes.Reader, int64) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
 
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "hello.txt", []byte("hello world"))
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "hello.txt", []byte("hello world"))
 
-	enc.CreateDirectory("subdir", dirMeta(0o755))
-	enc.AddFile(fileMeta(0o644, 1000, 1000), "nested.txt", []byte("nested content"))
-	enc.Finish() // finish subdir
+	_ = enc.CreateDirectory("subdir", dirMeta(0o755))
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "nested.txt", []byte("nested content"))
+	_ = enc.Finish() // finish subdir
 
-	enc.AddSymlink(symlinkMeta(0o777, 0, 0), "link", "hello.txt")
+	_ = enc.AddSymlink(symlinkMeta(0o777, 0, 0), "link", "hello.txt")
 
 	enc.Close() // closes root
 

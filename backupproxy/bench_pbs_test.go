@@ -186,7 +186,7 @@ func BenchmarkPBSUploadRaw(b *testing.B) {
 	pbsCfg := pbsConfigFromBench(b)
 	store := newBenchStore(b)
 	data := make([]byte, 1<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -219,8 +219,8 @@ func BenchmarkPBSUploadSplitRaw(b *testing.B) {
 	store := newBenchStore(b)
 	metaData := make([]byte, 1<<20)
 	payloadData := make([]byte, 1<<20)
-	rand.Read(metaData)
-	rand.Read(payloadData)
+	_, _ = rand.Read(metaData)
+	_, _ = rand.Read(payloadData)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -257,7 +257,7 @@ func benchPBSFS(fileCount, fileSize int) memFS {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
 	data := make([]byte, fileSize)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 	for i := 0; i < fileCount; i++ {
 		fs.addFile(fmt.Sprintf("/root/file%d.txt", i), "/root", data, 0o644)
 	}
@@ -268,7 +268,7 @@ func newMemFSUnchanged(mtime format.StatxTimestamp, fileCount, fileSize int) mem
 	fs := newMemFS()
 	fs.addDirWithMtime("/root", "", 0o755, mtime)
 	data := make([]byte, fileSize)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 	for i := 0; i < fileCount; i++ {
 		fs.addFileWithMtime(fmt.Sprintf("/root/file%d.txt", i), "/root", data, 0o644, mtime)
 	}
@@ -280,7 +280,7 @@ func newMemFSMixed(mtime, newMtime format.StatxTimestamp, fileCount, fileSize in
 	fs.addDirWithMtime("/root", "", 0o755, mtime)
 	for i := 0; i < fileCount; i++ {
 		data := make([]byte, fileSize)
-		rand.Read(data)
+		_, _ = rand.Read(data)
 		if i < fileCount/2 {
 			fs.addFileWithMtime(fmt.Sprintf("/root/file%d.txt", i), "/root", data, 0o644, mtime)
 		} else {

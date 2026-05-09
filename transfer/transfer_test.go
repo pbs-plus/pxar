@@ -201,8 +201,8 @@ func TestWalkTree(t *testing.T) {
 	var paths []string
 	err := transfer.WalkTree(reader, "/", func(entry *pxar.Entry, content []byte) error {
 		paths = append(paths, entry.Path)
-		if entry.IsRegularFile() && string(content) != "" {
-			// Verify file content is populated
+		if entry.IsRegularFile() && len(content) == 0 {
+			t.Error("file content is empty")
 		}
 		return nil
 	})
@@ -867,7 +867,7 @@ func TestEntryPathBytes(t *testing.T) {
 	}
 
 	// Verify zero-copy: the byte slices should reference the same memory
-	if len(pb) > 0 && &pb[0] != nil {
+	if len(pb) > 0 {
 		// Just verify they don't panic and return correct content
 		var buf strings.Builder
 		buf.Write(pb)

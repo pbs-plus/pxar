@@ -79,11 +79,11 @@ func TestBackupInfoFiles(t *testing.T) {
 		Timestamp: time.Unix(1700000000, 0),
 	}
 	snapDir := filepath.Join(dir, bd.Path())
-	os.MkdirAll(snapDir, 0o755)
+	_ = os.MkdirAll(snapDir, 0o755)
 
 	// Create some files
-	os.WriteFile(filepath.Join(snapDir, "root.pxar.didx"), []byte{}, 0o644)
-	os.WriteFile(filepath.Join(snapDir, "config.blob"), []byte{}, 0o644)
+	_ = os.WriteFile(filepath.Join(snapDir, "root.pxar.didx"), []byte{}, 0o644)
+	_ = os.WriteFile(filepath.Join(snapDir, "config.blob"), []byte{}, 0o644)
 
 	info, err := bd.Info()
 	if err != nil {
@@ -98,7 +98,7 @@ func TestBackupGroupDestroy(t *testing.T) {
 	dir := t.TempDir()
 	bg := BackupGroup{Type: BackupVM, ID: "100", Base: dir}
 	groupPath := filepath.Join(dir, bg.Path())
-	os.MkdirAll(groupPath, 0o755)
+	_ = os.MkdirAll(groupPath, 0o755)
 
 	if err := bg.Destroy(); err != nil {
 		t.Fatal(err)

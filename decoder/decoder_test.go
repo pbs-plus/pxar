@@ -47,8 +47,8 @@ func TestDecodeMultipleFiles(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
 	meta := fileMetadata(0o644, 1000, 1000)
-	enc.AddFile(meta, "file1.txt", []byte("content1"))
-	enc.AddFile(meta, "file2.txt", []byte("content2"))
+	_, _ = enc.AddFile(meta, "file1.txt", []byte("content1"))
+	_, _ = enc.AddFile(meta, "file2.txt", []byte("content2"))
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -69,9 +69,9 @@ func TestDecodeMultipleFiles(t *testing.T) {
 func TestDecodeNestedDirectories(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.CreateDirectory("subdir", dirMetadata(0o755))
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "nested.txt", []byte("nested"))
-	enc.Finish()
+	_ = enc.CreateDirectory("subdir", dirMetadata(0o755))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "nested.txt", []byte("nested"))
+	_ = enc.Finish()
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -89,7 +89,7 @@ func TestDecodeNestedDirectories(t *testing.T) {
 func TestDecodeSymlink(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddSymlink(symlinkMetadata(0o777, 1000, 1000), "link", "/usr/bin/python3")
+	_ = enc.AddSymlink(symlinkMetadata(0o777, 1000, 1000), "link", "/usr/bin/python3")
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -117,7 +117,7 @@ func TestDecodeHardlink(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
 	offset, _ := enc.AddFile(fileMetadata(0o644, 1000, 1000), "original.txt", []byte("content"))
-	enc.AddHardlink("link.txt", "original.txt", offset)
+	_ = enc.AddHardlink("link.txt", "original.txt", offset)
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -141,7 +141,7 @@ func TestDecodeHardlink(t *testing.T) {
 func TestDecodeDevice(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddDevice(deviceMetadata(format.ModeIFCHR|0o644, 0, 0), "null", format.Device{Major: 1, Minor: 3})
+	_ = enc.AddDevice(deviceMetadata(format.ModeIFCHR|0o644, 0, 0), "null", format.Device{Major: 1, Minor: 3})
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -162,7 +162,7 @@ func TestDecodeDevice(t *testing.T) {
 func TestDecodeFIFO(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddFIFO(fifoMetadata(0o644, 1000, 1000), "pipe")
+	_ = enc.AddFIFO(fifoMetadata(0o644, 1000, 1000), "pipe")
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -182,7 +182,7 @@ func TestDecodeFIFO(t *testing.T) {
 func TestDecodeSocket(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddSocket(socketMetadata(0o644, 1000, 1000), "sock")
+	_ = enc.AddSocket(socketMetadata(0o644, 1000, 1000), "sock")
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -203,7 +203,7 @@ func TestDecodeFileContents(t *testing.T) {
 	content := []byte("This is file content for testing.")
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "data.bin", content)
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "data.bin", content)
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -235,7 +235,7 @@ func TestDecodeFileContents(t *testing.T) {
 func TestDecodeMetadata(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "test.txt", []byte("hello"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "test.txt", []byte("hello"))
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -269,7 +269,7 @@ func TestDecodeXAttrs(t *testing.T) {
 	meta.XAttrs = []format.XAttr{
 		format.NewXAttr([]byte("user.test"), []byte("value")),
 	}
-	enc.AddFile(meta, "xattr.txt", []byte("content"))
+	_, _ = enc.AddFile(meta, "xattr.txt", []byte("content"))
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -300,14 +300,14 @@ func TestRoundTripEncodeDecode(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
 
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "regular.txt", []byte("file content"))
-	enc.AddSymlink(symlinkMetadata(0o777, 0, 0), "symlink", "/target")
-	enc.AddDevice(deviceMetadata(format.ModeIFCHR|0o644, 0, 0), "chardev", format.Device{Major: 1, Minor: 3})
-	enc.AddFIFO(fifoMetadata(0o644, 1000, 1000), "fifo")
-	enc.AddSocket(socketMetadata(0o644, 1000, 1000), "socket")
-	enc.CreateDirectory("subdir", dirMetadata(0o755))
-	enc.AddFile(fileMetadata(0o600, 0, 0), "secret.txt", []byte("secret"))
-	enc.Finish()
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "regular.txt", []byte("file content"))
+	_ = enc.AddSymlink(symlinkMetadata(0o777, 0, 0), "symlink", "/target")
+	_ = enc.AddDevice(deviceMetadata(format.ModeIFCHR|0o644, 0, 0), "chardev", format.Device{Major: 1, Minor: 3})
+	_ = enc.AddFIFO(fifoMetadata(0o644, 1000, 1000), "fifo")
+	_ = enc.AddSocket(socketMetadata(0o644, 1000, 1000), "socket")
+	_ = enc.CreateDirectory("subdir", dirMetadata(0o755))
+	_, _ = enc.AddFile(fileMetadata(0o600, 0, 0), "secret.txt", []byte("secret"))
+	_ = enc.Finish()
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
@@ -354,7 +354,7 @@ func TestDecodeV2Archive(t *testing.T) {
 	var archiveBuf bytes.Buffer
 	var payloadBuf bytes.Buffer
 	enc := encoder.NewEncoder(&archiveBuf, &payloadBuf, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", []byte("content"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", []byte("content"))
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(archiveBuf.Bytes()), bytes.NewReader(payloadBuf.Bytes()))
@@ -375,7 +375,7 @@ func TestDecodePrelude(t *testing.T) {
 	var payloadBuf bytes.Buffer
 	prelude := []byte("test prelude")
 	enc := encoder.NewEncoder(&archiveBuf, &payloadBuf, dirMetadata(0o755), prelude)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", []byte("content"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", []byte("content"))
 	enc.Close()
 
 	dec := NewDecoder(bytes.NewReader(archiveBuf.Bytes()), bytes.NewReader(payloadBuf.Bytes()))
@@ -408,12 +408,12 @@ func TestDecodeManualV1Archive(t *testing.T) {
 	binary.LittleEndian.PutUint64(stat[24:], uint64(1430487000)) // mtime secs
 	binary.LittleEndian.PutUint32(stat[32:], 0) // mtime nanos
 
-	w(&buf, binary.LittleEndian, &format.Header{Type: format.PXAREntry, Size: uint64(16 + len(stat))})
+	_ = w(&buf, binary.LittleEndian, &format.Header{Type: format.PXAREntry, Size: uint64(16 + len(stat))})
 	buf.Write(stat)
 
 	// FILENAME "test.txt"
 	filename := append([]byte("test.txt"), 0)
-	w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARFilename, Size: uint64(16 + len(filename))})
+	_ = w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARFilename, Size: uint64(16 + len(filename))})
 	buf.Write(filename)
 
 	// File ENTRY
@@ -425,12 +425,12 @@ func TestDecodeManualV1Archive(t *testing.T) {
 	binary.LittleEndian.PutUint64(fileStat[24:], uint64(1430487000))
 	binary.LittleEndian.PutUint32(fileStat[32:], 0)
 
-	w(&buf, binary.LittleEndian, &format.Header{Type: format.PXAREntry, Size: uint64(16 + len(fileStat))})
+	_ = w(&buf, binary.LittleEndian, &format.Header{Type: format.PXAREntry, Size: uint64(16 + len(fileStat))})
 	buf.Write(fileStat)
 
 	// PAYLOAD
 	content := []byte("hello")
-	w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARPayload, Size: uint64(16 + len(content))})
+	_ = w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARPayload, Size: uint64(16 + len(content))})
 	buf.Write(content)
 
 	// GOODBYE (empty: just tail marker)
@@ -438,11 +438,11 @@ func TestDecodeManualV1Archive(t *testing.T) {
 	binary.LittleEndian.PutUint64(tailItem[0:], format.PXARGoodbyeTailMarker)
 	binary.LittleEndian.PutUint64(tailItem[8:], 0) // offset to root entry
 	binary.LittleEndian.PutUint64(tailItem[16:], uint64(16+24)) // goodbye size
-	w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARGoodbye, Size: uint64(16 + len(tailItem))})
+	_ = w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARGoodbye, Size: uint64(16 + len(tailItem))})
 	buf.Write(tailItem)
 
 	// Root GOODBYE (same)
-	w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARGoodbye, Size: uint64(16 + len(tailItem))})
+	_ = w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARGoodbye, Size: uint64(16 + len(tailItem))})
 	buf.Write(tailItem)
 
 	dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)

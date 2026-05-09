@@ -134,7 +134,7 @@ func TestManifestTamperDetection(t *testing.T) {
 		CryptMode: "encrypt",
 	}
 
-	SignManifest(manifest, cc)
+	_ = SignManifest(manifest, cc)
 
 	manifest.BackupID = "tampered"
 

@@ -22,7 +22,7 @@ func benchFS(fileCount int, fileSize int) memFS {
 	fs.addDir("/root", "", 0o755)
 
 	data := make([]byte, fileSize)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	for i := range fileCount {
 		dirPath := fmt.Sprintf("/root/d%d", i%5)
@@ -98,7 +98,7 @@ func BenchmarkLegacySingleFile1KB(b *testing.B) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
 	data := make([]byte, 1024)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 	fs.addFile("/root/file.txt", "/root", data, 0o644)
 	benchmarkLocalStore(b, fs, DetectionLegacy)
 }
@@ -107,7 +107,7 @@ func BenchmarkLegacySingleFile1MB(b *testing.B) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
 	data := make([]byte, 1<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 	fs.addFile("/root/file.txt", "/root", data, 0o644)
 	benchmarkLocalStore(b, fs, DetectionLegacy)
 }
@@ -139,7 +139,7 @@ func BenchmarkDataSingleFile1KB(b *testing.B) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
 	data := make([]byte, 1024)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 	fs.addFile("/root/file.txt", "/root", data, 0o644)
 	benchmarkLocalStore(b, fs, DetectionData)
 }
@@ -148,7 +148,7 @@ func BenchmarkDataSingleFile1MB(b *testing.B) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
 	data := make([]byte, 1<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 	fs.addFile("/root/file.txt", "/root", data, 0o644)
 	benchmarkLocalStore(b, fs, DetectionData)
 }
@@ -175,7 +175,7 @@ func BenchmarkMetadataAllUnchanged(b *testing.B) {
 	cfg, _ := buzhash.NewConfig(4096)
 
 	data := make([]byte, 4096)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -245,9 +245,9 @@ func BenchmarkMetadataAllChanged(b *testing.B) {
 	cfg, _ := buzhash.NewConfig(4096)
 
 	data1 := make([]byte, 4096)
-	rand.Read(data1)
+	_, _ = rand.Read(data1)
 	data2 := make([]byte, 4096)
-	rand.Read(data2)
+	_, _ = rand.Read(data2)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -315,9 +315,9 @@ func BenchmarkMetadataMixed(b *testing.B) {
 	cfg, _ := buzhash.NewConfig(4096)
 
 	unchanged := make([]byte, 4096)
-	rand.Read(unchanged)
+	_, _ = rand.Read(unchanged)
 	changed := make([]byte, 4096)
-	rand.Read(changed)
+	_, _ = rand.Read(changed)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -386,7 +386,7 @@ func BenchmarkLegacyRoundTrip(b *testing.B) {
 	fs.addDir("/root", "", 0o755)
 	for i := range 50 {
 		data := make([]byte, 8192)
-		rand.Read(data)
+		_, _ = rand.Read(data)
 		fs.addFile(fmt.Sprintf("/root/file%d.txt", i), "/root", data, 0o644)
 	}
 
@@ -436,7 +436,7 @@ func BenchmarkDataRoundTrip(b *testing.B) {
 	fs.addDir("/root", "", 0o755)
 	for i := range 50 {
 		data := make([]byte, 8192)
-		rand.Read(data)
+		_, _ = rand.Read(data)
 		fs.addFile(fmt.Sprintf("/root/file%d.txt", i), "/root", data, 0o644)
 	}
 

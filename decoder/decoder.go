@@ -586,7 +586,7 @@ func (d *Decoder) readContent() ([]byte, error) {
 
 func (d *Decoder) skipPayload() {
 	if d.payload != nil {
-		io.CopyN(io.Discard, d.payload, d.payload.remain)
+		_, _ = io.CopyN(io.Discard, d.payload, d.payload.remain)
 		d.payload = nil
 	}
 }

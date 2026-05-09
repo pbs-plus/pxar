@@ -238,7 +238,7 @@ func TestBlobZeroAllocEncode(t *testing.T) {
 	}
 
 	allocs := testing.AllocsPerRun(100, func() {
-		EncodeBlob(data)
+		_, _ = EncodeBlob(data)
 	})
 	if allocs > 2 {
 		t.Errorf("EncodeBlob allocated %.1f times, expected <= 2", allocs)

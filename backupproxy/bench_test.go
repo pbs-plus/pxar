@@ -47,7 +47,7 @@ func BenchmarkEncodeChunkBlobCompressed(b *testing.B) {
 
 func BenchmarkAddFileInfo(b *testing.B) {
 	var digest [32]byte
-	rand.Read(digest[:])
+	_, _ = rand.Read(digest[:])
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -60,7 +60,7 @@ func BenchmarkAddFileInfo(b *testing.B) {
 
 func BenchmarkHexEncodeDigest(b *testing.B) {
 	var digest [32]byte
-	rand.Read(digest[:])
+	_, _ = rand.Read(digest[:])
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -72,7 +72,7 @@ func BenchmarkHexEncodeDigest(b *testing.B) {
 
 func BenchmarkHexEncodeDigestBuffer(b *testing.B) {
 	var digest [32]byte
-	rand.Read(digest[:])
+	_, _ = rand.Read(digest[:])
 	var buf [64]byte
 
 	b.ResetTimer()

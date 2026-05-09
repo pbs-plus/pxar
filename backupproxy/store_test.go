@@ -27,7 +27,7 @@ func newTestLocalStore(t *testing.T) (*LocalStore, string) {
 func TestLocalStoreStartSession(t *testing.T) {
 	ls, _ := newTestLocalStore(t)
 
-	sess, err := ls.StartSession(nil, BackupConfig{
+	sess, err := ls.StartSession(context.TODO(), BackupConfig{
 		BackupType: datastore.BackupVM,
 		BackupID:   "100",
 		BackupTime: 1700000000,
@@ -43,7 +43,7 @@ func TestLocalStoreStartSession(t *testing.T) {
 func TestLocalStoreUploadArchive(t *testing.T) {
 	ls, dir := newTestLocalStore(t)
 
-	sess, err := ls.StartSession(nil, BackupConfig{
+	sess, err := ls.StartSession(context.TODO(), BackupConfig{
 		BackupType: datastore.BackupVM,
 		BackupID:   "100",
 		BackupTime: 1700000000,
@@ -53,7 +53,7 @@ func TestLocalStoreUploadArchive(t *testing.T) {
 	}
 
 	data := make([]byte, 50<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -87,13 +87,13 @@ func TestLocalStoreUploadArchive(t *testing.T) {
 func TestLocalStoreUploadBlob(t *testing.T) {
 	ls, dir := newTestLocalStore(t)
 
-	sess, _ := ls.StartSession(nil, BackupConfig{
+	sess, _ := ls.StartSession(context.TODO(), BackupConfig{
 		BackupType: datastore.BackupCT,
 		BackupID:   "200",
 	})
 
 	blobData := []byte(`{"key": "value"}`)
-	if err := sess.UploadBlob(nil, "config.json", blobData); err != nil {
+	if err := sess.UploadBlob(context.TODO(), "config.json", blobData); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,19 +114,19 @@ func TestLocalStoreUploadBlob(t *testing.T) {
 func TestLocalStoreFinish(t *testing.T) {
 	ls, dir := newTestLocalStore(t)
 
-	sess, _ := ls.StartSession(nil, BackupConfig{
+	sess, _ := ls.StartSession(context.TODO(), BackupConfig{
 		BackupType: datastore.BackupHost,
 		BackupID:   "myhost",
 		BackupTime: 1700000000,
 	})
 
 	data := make([]byte, 10<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
-	sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
-	sess.UploadBlob(nil, "config.json", []byte("config"))
+	_, _ = sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
+	_ = sess.UploadBlob(context.TODO(), "config.json", []byte("config"))
 
-	manifest, err := sess.Finish(nil)
+	manifest, err := sess.Finish(context.TODO())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,13 +160,13 @@ func TestLocalStoreFinish(t *testing.T) {
 func TestLocalStoreRoundTrip(t *testing.T) {
 	ls, dir := newTestLocalStore(t)
 
-	sess, _ := ls.StartSession(nil, BackupConfig{
+	sess, _ := ls.StartSession(context.TODO(), BackupConfig{
 		BackupType: datastore.BackupVM,
 		BackupID:   "100",
 	})
 
 	data := make([]byte, 30<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -209,10 +209,10 @@ func TestLocalStoreDeduplication(t *testing.T) {
 	ls, _ := newTestLocalStore(t)
 
 	data := make([]byte, 20<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	// First upload
-	sess1, _ := ls.StartSession(nil, BackupConfig{BackupID: "1"})
+	sess1, _ := ls.StartSession(context.TODO(), BackupConfig{BackupID: "1"})
 	_, err := sess1.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func TestLocalStoreDeduplication(t *testing.T) {
 	chunkCount := reader1.Count()
 
 	// Second upload with same data
-	sess2, _ := ls.StartSession(nil, BackupConfig{BackupID: "2"})
+	sess2, _ := ls.StartSession(context.TODO(), BackupConfig{BackupID: "2"})
 	_, err = sess2.UploadArchive(context.Background(), "root2.pxar.didx", bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestLocalStoreDeduplication(t *testing.T) {
 func TestLocalStoreIndexDigest(t *testing.T) {
 	ls, _ := newTestLocalStore(t)
 
-	sess, _ := ls.StartSession(nil, BackupConfig{})
+	sess, _ := ls.StartSession(context.TODO(), BackupConfig{})
 	data := []byte("test data for index digest verification")
 
 	result, err := sess.UploadArchive(context.Background(), "test.pxar.didx", bytes.NewReader(data))
@@ -268,24 +268,24 @@ func TestLocalStoreIndexDigest(t *testing.T) {
 	}
 
 	// Verify manifest entry has the digest
-	sess.Finish(nil)
+	_, _ = sess.Finish(context.TODO())
 }
 
 func TestLocalStoreUploadSplitArchive(t *testing.T) {
 	ls, dir := newTestLocalStore(t)
 
-	sess, _ := ls.StartSession(nil, BackupConfig{
+	sess, _ := ls.StartSession(context.TODO(), BackupConfig{
 		BackupType: datastore.BackupVM,
 		BackupID:   "200",
 	})
 
 	metaData := make([]byte, 8*1024)
 	payloadData := make([]byte, 50*1024)
-	rand.Read(metaData)
-	rand.Read(payloadData)
+	_, _ = rand.Read(metaData)
+	_, _ = rand.Read(payloadData)
 
 	splitResult, err := sess.UploadSplitArchive(
-		nil,
+		context.TODO(),
 		"root.mpxar.didx", bytes.NewReader(metaData),
 		"root.ppxar.didx", bytes.NewReader(payloadData),
 	)

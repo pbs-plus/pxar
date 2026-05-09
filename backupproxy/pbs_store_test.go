@@ -117,7 +117,7 @@ func TestPBSUploadArchive(t *testing.T) {
 	sess, mock := newTestPBSSession(t)
 
 	data := make([]byte, 50<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -159,9 +159,9 @@ func TestPBSFinish(t *testing.T) {
 	sess.config.BackupTime = 1700000000
 
 	data := make([]byte, 10<<10)
-	rand.Read(data)
-	sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
-	sess.UploadBlob(context.Background(), "config.blob", []byte("config"))
+	_, _ = rand.Read(data)
+	_, _ = sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
+	_ = sess.UploadBlob(context.Background(), "config.blob", []byte("config"))
 
 	manifest, err := sess.Finish(context.Background())
 	if err != nil {
@@ -183,7 +183,7 @@ func TestPBSChunkDedup(t *testing.T) {
 	sess, mock := newTestPBSSession(t)
 
 	data := make([]byte, 20<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	// First upload
 	sess.config.BackupID = "1"
@@ -212,7 +212,7 @@ func TestPBSRoundTrip(t *testing.T) {
 	sess, mock := newTestPBSSession(t)
 
 	data := make([]byte, 30<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -261,11 +261,11 @@ func TestPBSManifestFileEntries(t *testing.T) {
 	sess, _ := newTestPBSSession(t)
 
 	archiveData := make([]byte, 10<<10)
-	rand.Read(archiveData)
-	sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData))
+	_, _ = rand.Read(archiveData)
+	_, _ = sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData))
 
 	blobData := []byte(`{"test": true}`)
-	sess.UploadBlob(context.Background(), "config.blob", blobData)
+	_ = sess.UploadBlob(context.Background(), "config.blob", blobData)
 
 	manifest, err := sess.Finish(context.Background())
 	if err != nil {

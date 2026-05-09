@@ -25,7 +25,7 @@ func TestStoreChunkerBasic(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 100<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	results, _, err := sc.ChunkStream(bytes.NewReader(data))
 	if err != nil {
@@ -60,7 +60,7 @@ func TestStoreChunkerIndexRoundTrip(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 50<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	results, idxWriter, err := sc.ChunkStream(bytes.NewReader(data))
 	if err != nil {
@@ -97,7 +97,7 @@ func TestStoreChunkerChunkStoreIntegration(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 50<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	results, _, err := sc.ChunkStream(bytes.NewReader(data))
 	if err != nil {
@@ -129,7 +129,7 @@ func TestStoreChunkerDeduplication(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 20<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	// First pass
 	results1, _, err := sc.ChunkStream(bytes.NewReader(data))
@@ -202,7 +202,7 @@ func TestStoreChunkerCallback(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 50<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	var offsets []uint64
 	var sizes []int
@@ -243,7 +243,7 @@ func TestStoreChunkerCallbackEarlyStop(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 100<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	stopErr := fmt.Errorf("stop")
 	count := 0
@@ -304,7 +304,7 @@ func TestStoreChunkerDeterminism(t *testing.T) {
 	sc2, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 50<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	r1, _, err := sc1.ChunkStream(bytes.NewReader(data))
 	if err != nil {
@@ -364,7 +364,7 @@ func TestStoreChunkerLoadVerifyChunks(t *testing.T) {
 
 func BenchmarkStoreChunker(b *testing.B) {
 	data := make([]byte, 1<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	buf := make([]byte, len(data))
 	copy(buf, data)

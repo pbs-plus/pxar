@@ -41,12 +41,12 @@ func TestBuildDirIndexRootOnly(t *testing.T) {
 func TestBuildDirIndexSimpleTree(t *testing.T) {
 	archive := buildPxarArchive(t, func(enc *encoder.Encoder) {
 		fileMeta := pxar.FileMetadata(0o644).Build()
-		enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
+		_, _ = enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
 
 		dirMeta := pxar.DirMetadata(0o755).Build()
-		enc.CreateDirectory("subdir", &dirMeta)
-		enc.AddFile(&fileMeta, "nested.txt", []byte("nested content"))
-		enc.Finish()
+		_ = enc.CreateDirectory("subdir", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "nested.txt", []byte("nested content"))
+		_ = enc.Finish()
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -70,11 +70,11 @@ func TestBuildDirIndexDeepTree(t *testing.T) {
 		dirMeta := pxar.DirMetadata(0o755).Build()
 		fileMeta := pxar.FileMetadata(0o644).Build()
 
-		enc.CreateDirectory("a", &dirMeta)
-		enc.CreateDirectory("b", &dirMeta)
-		enc.AddFile(&fileMeta, "deep.txt", []byte("deep"))
-		enc.Finish() // b
-		enc.Finish() // a
+		_ = enc.CreateDirectory("a", &dirMeta)
+		_ = enc.CreateDirectory("b", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "deep.txt", []byte("deep"))
+		_ = enc.Finish() // b
+		_ = enc.Finish() // a
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -98,14 +98,14 @@ func TestBuildDirIndexMultiChunk(t *testing.T) {
 		// Many files to force multiple chunks.
 		for i := range 20 {
 			name := "file_" + string(rune('a'+i)) + ".txt"
-			enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 100))
+			_, _ = enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 100))
 		}
-		enc.CreateDirectory("subdir", &dirMeta)
+		_ = enc.CreateDirectory("subdir", &dirMeta)
 		for i := range 10 {
 			name := "nested_" + string(rune('a'+i)) + ".txt"
-			enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 100))
+			_, _ = enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 100))
 		}
-		enc.Finish()
+		_ = enc.Finish()
 	})
 
 	reader, source := chunkArchive(t, archive, 256)
@@ -133,10 +133,10 @@ func TestOnDemandListDirRoot(t *testing.T) {
 		fileMeta := pxar.FileMetadata(0o644).Build()
 		dirMeta := pxar.DirMetadata(0o755).Build()
 
-		enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
-		enc.CreateDirectory("subdir", &dirMeta)
-		enc.AddFile(&fileMeta, "nested.txt", []byte("nested"))
-		enc.Finish()
+		_, _ = enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
+		_ = enc.CreateDirectory("subdir", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "nested.txt", []byte("nested"))
+		_ = enc.Finish()
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -186,10 +186,10 @@ func TestOnDemandListDirSubdir(t *testing.T) {
 		fileMeta := pxar.FileMetadata(0o644).Build()
 		dirMeta := pxar.DirMetadata(0o755).Build()
 
-		enc.AddFile(&fileMeta, "top.txt", []byte("top"))
-		enc.CreateDirectory("subdir", &dirMeta)
-		enc.AddFile(&fileMeta, "nested.txt", []byte("nested content"))
-		enc.Finish()
+		_, _ = enc.AddFile(&fileMeta, "top.txt", []byte("top"))
+		_ = enc.CreateDirectory("subdir", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "nested.txt", []byte("nested content"))
+		_ = enc.Finish()
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -220,13 +220,13 @@ func TestOnDemandListDirDeepNested(t *testing.T) {
 		dirMeta := pxar.DirMetadata(0o755).Build()
 		fileMeta := pxar.FileMetadata(0o644).Build()
 
-		enc.CreateDirectory("a", &dirMeta)
-		enc.CreateDirectory("b", &dirMeta)
-		enc.AddFile(&fileMeta, "deep.txt", []byte("deep"))
-		enc.Finish() // b
-		enc.AddFile(&fileMeta, "a_file.txt", []byte("afile"))
-		enc.Finish() // a
-		enc.AddFile(&fileMeta, "root.txt", []byte("root"))
+		_ = enc.CreateDirectory("a", &dirMeta)
+		_ = enc.CreateDirectory("b", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "deep.txt", []byte("deep"))
+		_ = enc.Finish() // b
+		_, _ = enc.AddFile(&fileMeta, "a_file.txt", []byte("afile"))
+		_ = enc.Finish() // a
+		_, _ = enc.AddFile(&fileMeta, "root.txt", []byte("root"))
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -268,20 +268,20 @@ func TestOnDemandListDirSkipsSubtrees(t *testing.T) {
 		fileMeta := pxar.FileMetadata(0o644).Build()
 		dirMeta := pxar.DirMetadata(0o755).Build()
 
-		enc.AddFile(&fileMeta, "before.txt", []byte("before"))
+		_, _ = enc.AddFile(&fileMeta, "before.txt", []byte("before"))
 
 		// Large nested subtree.
-		enc.CreateDirectory("bigdir", &dirMeta)
+		_ = enc.CreateDirectory("bigdir", &dirMeta)
 		for i := range 20 {
 			name := "file_" + string(rune('a'+i)) + ".txt"
-			enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 50))
+			_, _ = enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 50))
 		}
-		enc.CreateDirectory("inner", &dirMeta)
-		enc.AddFile(&fileMeta, "inner_file.txt", []byte("inner"))
-		enc.Finish() // inner
-		enc.Finish() // bigdir
+		_ = enc.CreateDirectory("inner", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "inner_file.txt", []byte("inner"))
+		_ = enc.Finish() // inner
+		_ = enc.Finish() // bigdir
 
-		enc.AddFile(&fileMeta, "after.txt", []byte("after"))
+		_, _ = enc.AddFile(&fileMeta, "after.txt", []byte("after"))
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -317,11 +317,11 @@ func TestOnDemandListDirEntryTypes(t *testing.T) {
 		fifoMeta := pxar.FIFOMetadata(0o644).Build()
 		sockMeta := pxar.SocketMetadata(0o755).Build()
 
-		enc.AddFile(&fileMeta, "file.txt", []byte("data"))
-		enc.AddSymlink(&symMeta, "link", "/target")
-		enc.AddDevice(&devMeta, "null", format.Device{Major: 1, Minor: 3})
-		enc.AddFIFO(&fifoMeta, "myfifo")
-		enc.AddSocket(&sockMeta, "mysock")
+		_, _ = enc.AddFile(&fileMeta, "file.txt", []byte("data"))
+		_ = enc.AddSymlink(&symMeta, "link", "/target")
+		_ = enc.AddDevice(&devMeta, "null", format.Device{Major: 1, Minor: 3})
+		_ = enc.AddFIFO(&fifoMeta, "myfifo")
+		_ = enc.AddSocket(&sockMeta, "mysock")
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -372,10 +372,10 @@ func TestOnDemandListDirEmptyDir(t *testing.T) {
 		dirMeta := pxar.DirMetadata(0o755).Build()
 		fileMeta := pxar.FileMetadata(0o644).Build()
 
-		enc.AddFile(&fileMeta, "before.txt", []byte("before"))
-		enc.CreateDirectory("empty", &dirMeta)
-		enc.Finish() // empty — no children
-		enc.AddFile(&fileMeta, "after.txt", []byte("after"))
+		_, _ = enc.AddFile(&fileMeta, "before.txt", []byte("before"))
+		_ = enc.CreateDirectory("empty", &dirMeta)
+		_ = enc.Finish() // empty — no children
+		_, _ = enc.AddFile(&fileMeta, "after.txt", []byte("after"))
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -409,14 +409,14 @@ func TestOnDemandListDirMultiChunk(t *testing.T) {
 
 		for i := range 20 {
 			name := "file_" + string(rune('a'+i)) + ".txt"
-			enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 100))
+			_, _ = enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 100))
 		}
-		enc.CreateDirectory("subdir", &dirMeta)
+		_ = enc.CreateDirectory("subdir", &dirMeta)
 		for i := range 10 {
 			name := "nested_" + string(rune('a'+i)) + ".txt"
-			enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 100))
+			_, _ = enc.AddFile(&fileMeta, name, bytes.Repeat([]byte{byte(i)}, 100))
 		}
-		enc.Finish()
+		_ = enc.Finish()
 	})
 
 	reader, source := chunkArchive(t, archive, 256)
@@ -447,7 +447,7 @@ func TestOnDemandListDirMultiChunk(t *testing.T) {
 func TestOnDemandCachesChunks(t *testing.T) {
 	archive := buildPxarArchive(t, func(enc *encoder.Encoder) {
 		fileMeta := pxar.FileMetadata(0o644).Build()
-		enc.AddFile(&fileMeta, "test.txt", []byte("data"))
+		_, _ = enc.AddFile(&fileMeta, "test.txt", []byte("data"))
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -476,11 +476,11 @@ func TestOnDemandDirPaths(t *testing.T) {
 		dirMeta := pxar.DirMetadata(0o755).Build()
 		fileMeta := pxar.FileMetadata(0o644).Build()
 
-		enc.CreateDirectory("a", &dirMeta)
-		enc.CreateDirectory("b", &dirMeta)
-		enc.AddFile(&fileMeta, "deep.txt", []byte("deep"))
-		enc.Finish() // b
-		enc.Finish() // a
+		_ = enc.CreateDirectory("a", &dirMeta)
+		_ = enc.CreateDirectory("b", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "deep.txt", []byte("deep"))
+		_ = enc.Finish() // b
+		_ = enc.Finish() // a
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -503,10 +503,10 @@ func TestBuildDirIndexRootChildren(t *testing.T) {
 		fileMeta := pxar.FileMetadata(0o644).Build()
 		dirMeta := pxar.DirMetadata(0o755).Build()
 
-		enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
-		enc.CreateDirectory("subdir", &dirMeta)
-		enc.AddFile(&fileMeta, "nested.txt", []byte("nested"))
-		enc.Finish()
+		_, _ = enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
+		_ = enc.CreateDirectory("subdir", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "nested.txt", []byte("nested"))
+		_ = enc.Finish()
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)
@@ -564,11 +564,11 @@ func TestBuildDirIndexEndOffsets(t *testing.T) {
 		fileMeta := pxar.FileMetadata(0o644).Build()
 		dirMeta := pxar.DirMetadata(0o755).Build()
 
-		enc.AddFile(&fileMeta, "before.txt", []byte("before"))
-		enc.CreateDirectory("subdir", &dirMeta)
-		enc.AddFile(&fileMeta, "nested.txt", []byte("nested"))
-		enc.Finish()
-		enc.AddFile(&fileMeta, "after.txt", []byte("after"))
+		_, _ = enc.AddFile(&fileMeta, "before.txt", []byte("before"))
+		_ = enc.CreateDirectory("subdir", &dirMeta)
+		_, _ = enc.AddFile(&fileMeta, "nested.txt", []byte("nested"))
+		_ = enc.Finish()
+		_, _ = enc.AddFile(&fileMeta, "after.txt", []byte("after"))
 	})
 
 	reader, source := chunkArchive(t, archive, 64*1024)

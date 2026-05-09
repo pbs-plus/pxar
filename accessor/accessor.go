@@ -366,7 +366,9 @@ func (a *Accessor) skipEntryItems(isDir bool) error {
 				}
 			} else {
 				// FIFO/socket: FILENAME belongs to parent, rewind
-				a.reader.Seek(-format.HeaderSize, io.SeekCurrent)
+				if _, err := a.reader.Seek(-format.HeaderSize, io.SeekCurrent); err != nil {
+					return err
+				}
 				return nil
 			}
 
@@ -379,7 +381,9 @@ func (a *Accessor) skipEntryItems(isDir bool) error {
 				return nil
 			}
 			// FIFO/socket: GOODBYE belongs to parent, rewind
-			a.reader.Seek(-format.HeaderSize, io.SeekCurrent)
+			if _, err := a.reader.Seek(-format.HeaderSize, io.SeekCurrent); err != nil {
+				return err
+			}
 			return nil
 
 		case format.PXARPayload, format.PXARSymlink, format.PXARDevice, format.PXARPayloadRef:
@@ -772,7 +776,9 @@ func (a *Accessor) findDirContentOffset(entryOffset int64) (int64, error) {
 		switch h2.Type {
 		case format.PXARFilename, format.PXARGoodbye:
 			// Rewind to before this header
-			a.reader.Seek(-format.HeaderSize, io.SeekCurrent)
+			if _, err := a.reader.Seek(-format.HeaderSize, io.SeekCurrent); err != nil {
+				return 0, err
+			}
 			return a.reader.Seek(0, io.SeekCurrent)
 		default:
 			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {

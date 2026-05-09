@@ -315,15 +315,15 @@ func (c *pbsReaderConn) doBinary(method, path string, params url.Values, body []
 
 	// Encode HPACK headers
 	c.hdrBuf.Reset()
-	c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
-	c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
-	c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
-	c.enc.WriteField(hpack.HeaderField{Name: ":authority", Value: c.authority})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":authority", Value: c.authority})
 	if contentType != "" {
-		c.enc.WriteField(hpack.HeaderField{Name: "content-type", Value: contentType})
+		_ = c.enc.WriteField(hpack.HeaderField{Name: "content-type", Value: contentType})
 	}
 	if body != nil {
-		c.enc.WriteField(hpack.HeaderField{Name: "content-length", Value: strconv.Itoa(len(body))})
+		_ = c.enc.WriteField(hpack.HeaderField{Name: "content-length", Value: strconv.Itoa(len(body))})
 	}
 
 	// Write HEADERS frame
@@ -415,7 +415,7 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 	}
 
 	// Clear deadline when done
-	defer c.conn.SetReadDeadline(time.Time{})
+	defer func() { _ = c.conn.SetReadDeadline(time.Time{}) }()
 
 	for !gotEnd {
 		// Set a per-frame deadline to prevent indefinite hanging
@@ -435,7 +435,7 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 		case *http2.HeadersFrame:
 			if f.StreamID != streamID {
 				if f.Flags.Has(http2.FlagHeadersEndHeaders) {
-					c.dec.DecodeFull(f.HeaderBlockFragment())
+					_, _ = c.dec.DecodeFull(f.HeaderBlockFragment())
 				} else {
 					otherHdrBuf.Reset()
 					otherHdrBuf.Write(f.HeaderBlockFragment())
@@ -455,7 +455,7 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 			if f.StreamID != streamID {
 				otherHdrBuf.Write(f.HeaderBlockFragment())
 				if f.Flags.Has(http2.FlagHeadersEndHeaders) {
-					c.dec.DecodeFull(otherHdrBuf.Bytes())
+					_, _ = c.dec.DecodeFull(otherHdrBuf.Bytes())
 					otherHdrBuf.Reset()
 				}
 				continue
@@ -521,12 +521,12 @@ func (c *pbsReaderConn) readBinaryResponse(streamID uint32) ([]byte, error) {
 					// window is independent of SETTINGS_INITIAL_WINDOW_SIZE.
 					streamThreshold = v / 2
 				}
-				c.framer.WriteSettingsAck()
+				_ = c.framer.WriteSettingsAck()
 			}
 
 		case *http2.PingFrame:
 			if !f.IsAck() {
-				c.framer.WritePing(true, f.Data)
+				_ = c.framer.WritePing(true, f.Data)
 			}
 
 		case *http2.WindowUpdateFrame:

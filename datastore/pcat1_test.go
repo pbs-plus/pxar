@@ -200,7 +200,7 @@ func TestCatalogEncodeU64(t *testing.T) {
 
 	cw.StartDirectory("")
 	cw.AddFile("bigfile", 1<<32, 0)
-	cw.Finish()
+	_ = cw.Finish()
 
 	tree, err := ReadCatalogTree(buf.Bytes())
 	if err != nil {
@@ -220,7 +220,7 @@ func TestCatalogEncodeNegativeMtime(t *testing.T) {
 	cw.AddFile("pos", 0, 1)
 	cw.AddFile("zero", 0, 0)
 	cw.AddFile("large_neg", 0, -100000)
-	cw.Finish()
+	_ = cw.Finish()
 
 	tree, err := ReadCatalogTree(buf.Bytes())
 	if err != nil {

@@ -71,8 +71,8 @@ func TestAccessorLookupNotFound(t *testing.T) {
 func TestAccessorListDirectory(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file1.txt", []byte("one"))
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file2.txt", []byte("two"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "file1.txt", []byte("one"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "file2.txt", []byte("two"))
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -121,9 +121,9 @@ func TestAccessorReadFileContent(t *testing.T) {
 func TestAccessorLookupNestedDirectory(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.CreateDirectory("subdir", dirMetadata(0o755))
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "nested.txt", []byte("nested content"))
-	enc.Finish()
+	_ = enc.CreateDirectory("subdir", dirMetadata(0o755))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "nested.txt", []byte("nested content"))
+	_ = enc.Finish()
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -153,10 +153,10 @@ func TestAccessorLookupNestedDirectory(t *testing.T) {
 func TestAccessorListNestedDirectory(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.CreateDirectory("subdir", dirMetadata(0o755))
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "a.txt", []byte("aaa"))
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "b.txt", []byte("bbb"))
-	enc.Finish()
+	_ = enc.CreateDirectory("subdir", dirMetadata(0o755))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "a.txt", []byte("aaa"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "b.txt", []byte("bbb"))
+	_ = enc.Finish()
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -197,11 +197,11 @@ func TestAccessorReadNestedFileContent(t *testing.T) {
 	content := []byte("deeply nested file data")
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.CreateDirectory("level1", dirMetadata(0o755))
-	enc.CreateDirectory("level2", dirMetadata(0o755))
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "deep.txt", content)
-	enc.Finish()
-	enc.Finish()
+	_ = enc.CreateDirectory("level1", dirMetadata(0o755))
+	_ = enc.CreateDirectory("level2", dirMetadata(0o755))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "deep.txt", content)
+	_ = enc.Finish()
+	_ = enc.Finish()
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -223,7 +223,7 @@ func TestAccessorReadNestedFileContent(t *testing.T) {
 func TestAccessorSymlink(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddSymlink(symlinkMetadata(0o777, 0, 0), "link", "/usr/bin/python3")
+	_ = enc.AddSymlink(symlinkMetadata(0o777, 0, 0), "link", "/usr/bin/python3")
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -243,7 +243,7 @@ func TestAccessorSymlink(t *testing.T) {
 func TestAccessorDevice(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddDevice(deviceMetadata(format.ModeIFCHR|0o644, 0, 0), "null", format.Device{Major: 1, Minor: 3})
+	_ = enc.AddDevice(deviceMetadata(format.ModeIFCHR|0o644, 0, 0), "null", format.Device{Major: 1, Minor: 3})
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -263,7 +263,7 @@ func TestAccessorDevice(t *testing.T) {
 func TestAccessorFIFO(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddFIFO(fifoMetadata(0o644, 1000, 1000), "pipe")
+	_ = enc.AddFIFO(fifoMetadata(0o644, 1000, 1000), "pipe")
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -280,7 +280,7 @@ func TestAccessorFIFO(t *testing.T) {
 func TestAccessorSocket(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddSocket(socketMetadata(0o644, 1000, 1000), "sock")
+	_ = enc.AddSocket(socketMetadata(0o644, 1000, 1000), "sock")
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -298,7 +298,7 @@ func TestAccessorHardlink(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
 	offset, _ := enc.AddFile(fileMetadata(0o644, 1000, 1000), "original.txt", []byte("content"))
-	enc.AddHardlink("link.txt", "original.txt", offset)
+	_ = enc.AddHardlink("link.txt", "original.txt", offset)
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -318,7 +318,7 @@ func TestAccessorHardlink(t *testing.T) {
 func TestAccessorMetadata(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "test.txt", []byte("hello"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "test.txt", []byte("hello"))
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -356,9 +356,9 @@ func TestAccessorRootIsNotRegularFile(t *testing.T) {
 func TestAccessorMultipleLookups(t *testing.T) {
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "a.txt", []byte("aaa"))
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "b.txt", []byte("bbb"))
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "c.txt", []byte("ccc"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "a.txt", []byte("aaa"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "b.txt", []byte("bbb"))
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "c.txt", []byte("ccc"))
 	enc.Close()
 
 	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
@@ -379,7 +379,7 @@ func TestAccessorV2Archive(t *testing.T) {
 	var archiveBuf bytes.Buffer
 	var payloadBuf bytes.Buffer
 	enc := encoder.NewEncoder(&archiveBuf, &payloadBuf, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", content)
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", content)
 	enc.Close()
 
 	// For split archives, provide both archive and payload readers
@@ -422,7 +422,7 @@ func TestAccessorV2ArchiveWithoutPayloadReader(t *testing.T) {
 	var archiveBuf bytes.Buffer
 	var payloadBuf bytes.Buffer
 	enc := encoder.NewEncoder(&archiveBuf, &payloadBuf, dirMetadata(0o755), nil)
-	enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", content)
+	_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "file.txt", content)
 	enc.Close()
 
 	// Try to read without providing payload reader - should fail

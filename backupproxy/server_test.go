@@ -297,7 +297,7 @@ func TestServerLargeFile(t *testing.T) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
 	largeData := make([]byte, 100<<10)
-	rand.Read(largeData)
+	_, _ = rand.Read(largeData)
 	fs.addFile("/root/large.bin", "/root", largeData, 0o644)
 
 	srv, _ := newTestServer(t, fs)
@@ -913,7 +913,7 @@ func TestLegacyLargeFile(t *testing.T) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
 	largeData := make([]byte, 100<<10) // 100KB
-	rand.Read(largeData)
+	_, _ = rand.Read(largeData)
 	fs.addFile("/root/large.bin", "/root", largeData, 0o644)
 
 	srv, dir := newTestServer(t, fs)
@@ -1058,7 +1058,7 @@ func TestDataModeLargeFile(t *testing.T) {
 	fs := newMemFS()
 	fs.addDir("/root", "", 0o755)
 	largeData := make([]byte, 100<<10)
-	rand.Read(largeData)
+	_, _ = rand.Read(largeData)
 	fs.addFile("/root/large.bin", "/root", largeData, 0o644)
 
 	srv, dir := newTestServer(t, fs)

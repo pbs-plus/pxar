@@ -235,7 +235,7 @@ func BenchmarkDynamicIndexReadAndComputeCsum(b *testing.B) {
 
 func BenchmarkInMemoryChunkPipeline(b *testing.B) {
 	data := make([]byte, 1<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	config, _ := buzhash.NewConfig(64 << 10)
 	b.SetBytes(int64(len(data)))

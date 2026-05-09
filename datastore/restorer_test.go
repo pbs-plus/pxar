@@ -25,8 +25,8 @@ func TestRestorerRestoreFile(t *testing.T) {
 	// Store chunks as encoded blobs
 	blob1, _ := EncodeBlob(chunk1)
 	blob2, _ := EncodeBlob(chunk2)
-	store.InsertChunk(digest1, blob1.Bytes())
-	store.InsertChunk(digest2, blob2.Bytes())
+	_, _, _ = store.InsertChunk(digest1, blob1.Bytes())
+	_, _, _ = store.InsertChunk(digest2, blob2.Bytes())
 
 	// Create index
 	idx := NewDynamicIndexWriter(time.Now().Unix())
@@ -72,8 +72,8 @@ func TestRestorerRestoreFileCompressedChunks(t *testing.T) {
 	// Store chunks as compressed blobs
 	blob1, _ := EncodeCompressedBlob(chunk1)
 	blob2, _ := EncodeCompressedBlob(chunk2)
-	store.InsertChunk(digest1, blob1.Bytes())
-	store.InsertChunk(digest2, blob2.Bytes())
+	_, _, _ = store.InsertChunk(digest1, blob1.Bytes())
+	_, _, _ = store.InsertChunk(digest2, blob2.Bytes())
 
 	// Create index
 	idx := NewDynamicIndexWriter(time.Now().Unix())
@@ -122,9 +122,9 @@ func TestRestorerRestoreRange(t *testing.T) {
 	blob1, _ := EncodeBlob(chunk1)
 	blob2, _ := EncodeBlob(chunk2)
 	blob3, _ := EncodeBlob(chunk3)
-	store.InsertChunk(digest1, blob1.Bytes())
-	store.InsertChunk(digest2, blob2.Bytes())
-	store.InsertChunk(digest3, blob3.Bytes())
+	_, _, _ = store.InsertChunk(digest1, blob1.Bytes())
+	_, _, _ = store.InsertChunk(digest2, blob2.Bytes())
+	_, _, _ = store.InsertChunk(digest3, blob3.Bytes())
 
 	// Create index
 	idx := NewDynamicIndexWriter(time.Now().Unix())
@@ -198,7 +198,7 @@ func TestRestorerMissingChunk(t *testing.T) {
 	chunk1 := []byte("only this chunk exists")
 	digest1 := sha256Sum(chunk1)
 	blob1, _ := EncodeBlob(chunk1)
-	store.InsertChunk(digest1, blob1.Bytes())
+	_, _, _ = store.InsertChunk(digest1, blob1.Bytes())
 
 	// Create index referencing both chunks
 	idx := NewDynamicIndexWriter(time.Now().Unix())
@@ -226,7 +226,7 @@ func TestChunkStoreSource(t *testing.T) {
 	data := []byte("test chunk data")
 	digest := sha256Sum(data)
 	blob, _ := EncodeBlob(data)
-	store.InsertChunk(digest, blob.Bytes())
+	_, _, _ = store.InsertChunk(digest, blob.Bytes())
 
 	source := NewChunkStoreSource(store)
 	got, err := source.GetChunk(digest)

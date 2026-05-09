@@ -186,14 +186,14 @@ func (c *pbsH2Conn) do(method, path string, params url.Values, body []byte, cont
 
 	// Encode HPACK headers
 	c.hdrBuf.Reset()
-	c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
-	c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
-	c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
 	if contentType != "" {
-		c.enc.WriteField(hpack.HeaderField{Name: "content-type", Value: contentType})
+		_ = c.enc.WriteField(hpack.HeaderField{Name: "content-type", Value: contentType})
 	}
 	if body != nil {
-		c.enc.WriteField(hpack.HeaderField{Name: "content-length", Value: strconv.Itoa(len(body))})
+		_ = c.enc.WriteField(hpack.HeaderField{Name: "content-length", Value: strconv.Itoa(len(body))})
 	}
 
 	// Write HEADERS frame
@@ -263,7 +263,7 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 		case *http2.HeadersFrame:
 			if f.StreamID != streamID {
 				if f.Flags.Has(http2.FlagHeadersEndHeaders) {
-					c.dec.DecodeFull(f.HeaderBlockFragment())
+					_, _ = c.dec.DecodeFull(f.HeaderBlockFragment())
 				} else {
 					otherHdrBuf.Reset()
 					otherHdrBuf.Write(f.HeaderBlockFragment())
@@ -282,7 +282,7 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 			if f.StreamID != streamID {
 				otherHdrBuf.Write(f.HeaderBlockFragment())
 				if f.Flags.Has(http2.FlagHeadersEndHeaders) {
-					c.dec.DecodeFull(otherHdrBuf.Bytes())
+					_, _ = c.dec.DecodeFull(otherHdrBuf.Bytes())
 					otherHdrBuf.Reset()
 				}
 				continue
@@ -303,12 +303,12 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 
 		case *http2.SettingsFrame:
 			if !f.IsAck() {
-				c.framer.WriteSettingsAck()
+				_ = c.framer.WriteSettingsAck()
 			}
 
 		case *http2.PingFrame:
 			if !f.IsAck() {
-				c.framer.WritePing(true, f.Data)
+				_ = c.framer.WritePing(true, f.Data)
 			}
 
 		case *http2.RSTStreamFrame:

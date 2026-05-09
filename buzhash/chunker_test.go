@@ -21,7 +21,7 @@ func TestChunkerBasic(t *testing.T) {
 	}
 
 	data := make([]byte, 100<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	chunker := NewChunker(bytes.NewReader(data), config)
 	var chunks [][]byte
@@ -93,7 +93,7 @@ func TestChunkerSmallInput(t *testing.T) {
 func TestChunkerDeterminism(t *testing.T) {
 	config, _ := NewConfig(4096)
 	data := make([]byte, 50<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	chunker1 := NewChunker(bytes.NewReader(data), config)
 	var sizes1 []int
@@ -134,7 +134,7 @@ func TestChunkerDeterminism(t *testing.T) {
 func TestChunkerSizeBounds(t *testing.T) {
 	config, _ := NewConfig(4096)
 	data := make([]byte, 200<<10)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	chunker := NewChunker(bytes.NewReader(data), config)
 	for i := 0; ; i++ {
@@ -159,8 +159,8 @@ func TestChunkerReset(t *testing.T) {
 	config, _ := NewConfig(4096)
 	data1 := make([]byte, 10<<10)
 	data2 := make([]byte, 10<<10)
-	rand.Read(data1)
-	rand.Read(data2)
+	_, _ = rand.Read(data1)
+	_, _ = rand.Read(data2)
 
 	chunker := NewChunker(bytes.NewReader(data1), config)
 	var total1 int
@@ -199,7 +199,7 @@ func TestChunkerReset(t *testing.T) {
 func TestChunkerMaxSize(t *testing.T) {
 	config, _ := NewConfig(64)
 	data := make([]byte, 1<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	chunker := NewChunker(bytes.NewReader(data), config)
 	for i := 0; ; i++ {
@@ -219,7 +219,7 @@ func TestChunkerMaxSize(t *testing.T) {
 func TestChunkerZeroAllocs(t *testing.T) {
 	config, _ := NewConfig(4 << 20)
 	data := make([]byte, 1<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	r := bytes.NewReader(data)
 	chunker := NewChunker(r, config)
@@ -266,7 +266,7 @@ func BenchmarkInitWindowScalar(b *testing.B) {
 func BenchmarkChunkerThroughput(b *testing.B) {
 	config, _ := NewConfig(4 << 20)
 	data := make([]byte, 1<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	r := bytes.NewReader(data)
 	chunker := NewChunker(r, config)
@@ -292,7 +292,7 @@ func BenchmarkChunkerThroughput(b *testing.B) {
 func BenchmarkChunkerLargeData(b *testing.B) {
 	config, _ := NewConfig(4 << 20)
 	data := make([]byte, 10<<20)
-	rand.Read(data)
+	_, _ = rand.Read(data)
 
 	r := bytes.NewReader(data)
 	chunker := NewChunker(r, config)

@@ -39,7 +39,6 @@ jobs:
         with:
           go-version: "1.26"
       - run: go vet ./...
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: --timeout=5m
+      - name: Install golangci-lint from source (Go 1.26 compatible)
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - run: golangci-lint run --timeout=5m

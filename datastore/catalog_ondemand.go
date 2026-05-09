@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/format"
 )
 
@@ -327,7 +328,7 @@ func BuildDirIndex(
 			continue
 		}
 		if err := scanTree(sr, h, &treeVisitor{
-			Child: func(parentPath, name string, kind EntryKind, size int64) {
+			Child: func(parentPath, name string, kind pxar.EntryKind, size int64) {
 				if parentPath == "/" {
 					result.RootChildren = append(result.RootChildren, CatalogChild{
 						Name: name,
@@ -454,7 +455,7 @@ func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
 					return nil, err
 				}
 				if depth == 0 {
-					children = append(children, CatalogChild{Name: name, Kind: KindHardlink})
+					children = append(children, CatalogChild{Name: name, Kind: pxar.KindHardlink})
 				}
 
 			case format.PXAREntry:
@@ -472,7 +473,7 @@ func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
 				if depth == 0 {
 					children = append(children, CatalogChild{Size: size, Name: name, Kind: kind})
 				}
-				if kind == KindDirectory {
+				if kind == pxar.KindDirectory {
 					if depth == 0 {
 						// Try to skip the entire subtree using end offsets.
 						childPath := buildChildPathStr(path, name)
@@ -750,7 +751,7 @@ func (r *lazyChunkReader) pushbackHeader(h format.Header) error {
 // scanAttributes reads attribute headers after an ENTRY+Stat and returns
 // the entry kind, file size, and a peeked header if the scan terminated at
 // a structural header (FILENAME or GOODBYE) without consuming it.
-func (r *lazyChunkReader) scanAttributes(stat format.Stat) (EntryKind, int64, *format.Header, error) {
+func (r *lazyChunkReader) scanAttributes(stat format.Stat) (pxar.EntryKind, int64, *format.Header, error) {
 	fileType := stat.Mode & format.ModeIFMT
 
 	for {
@@ -765,19 +766,19 @@ func (r *lazyChunkReader) scanAttributes(stat format.Stat) (EntryKind, int64, *f
 			if err := r.skip(contentSize); err != nil {
 				return 0, 0, nil, err
 			}
-			return KindSymlink, 0, nil, nil
+			return pxar.KindSymlink, 0, nil, nil
 
 		case format.PXARDevice:
 			if err := r.skip(contentSize); err != nil {
 				return 0, 0, nil, err
 			}
-			return KindDevice, 0, nil, nil
+			return pxar.KindDevice, 0, nil, nil
 
 		case format.PXARPayload:
 			if err := r.skip(contentSize); err != nil {
 				return 0, 0, nil, err
 			}
-			return KindFile, int64(contentSize), nil, nil
+			return pxar.KindFile, int64(contentSize), nil, nil
 
 		case format.PXARPayloadRef:
 			data, err := r.read(contentSize)
@@ -788,16 +789,16 @@ func (r *lazyChunkReader) scanAttributes(stat format.Stat) (EntryKind, int64, *f
 			if len(data) >= 16 {
 				sz = int64(binary.LittleEndian.Uint64(data[8:16]))
 			}
-			return KindFile, sz, nil, nil
+			return pxar.KindFile, sz, nil, nil
 
 		case format.PXARFilename, format.PXARGoodbye:
 			switch fileType {
 			case format.ModeIFIFO:
-				return KindFifo, 0, &h, nil
+				return pxar.KindFifo, 0, &h, nil
 			case format.ModeIFSOCK:
-				return KindSocket, 0, &h, nil
+				return pxar.KindSocket, 0, &h, nil
 			default:
-				return KindDirectory, 0, &h, nil
+				return pxar.KindDirectory, 0, &h, nil
 			}
 
 		default:

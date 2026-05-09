@@ -29,14 +29,31 @@
 //	if !pxar.CheckPathComponent(name) {
 //	    return fmt.Errorf("invalid filename: %s", name)
 //	}
+//
+// # Errors
+//
+// The package exports sentinel errors for common error conditions:
+//
+//	if errors.Is(err, pxar.ErrNotFound) { ... }
+//	if errors.Is(err, pxar.ErrInvalidFilename) { ... }
 package pxar
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"unsafe"
 
 	"github.com/pbs-plus/pxar/format"
+)
+
+// Sentinel errors for common error conditions.
+var (
+	ErrNotFound        = errors.New("pxar: entry not found")
+	ErrInvalidFilename = errors.New("pxar: invalid filename")
+	ErrInvalidHeader   = errors.New("pxar: invalid header")
+	ErrNotDirectory    = errors.New("pxar: not a directory")
+	ErrNotRegularFile  = errors.New("pxar: not a regular file")
 )
 
 // EntryKind identifies the type of a pxar archive entry.
@@ -146,12 +163,12 @@ func (m Metadata) IsFIFO() bool { return m.Stat.IsFIFO() }
 // IsSocket reports whether this metadata describes a socket.
 func (m Metadata) IsSocket() bool { return m.Stat.IsSocket() }
 
-// MetadataEqual reports whether two Metadata entries are equivalent for
+// ExtendedMetadataEqual reports whether two Metadata entries are equivalent for
 // metadata change detection. This compares stat fields, xattrs, ACLs,
 // FCaps, and QuotaProjectID. File size is compared separately since
 // it's not part of the pxar Stat format.
-func (m Metadata) MetadataEqual(other Metadata) bool {
-	if !m.Stat.MetadataEqual(other.Stat) {
+func (m Metadata) ExtendedMetadataEqual(other Metadata) bool {
+	if !m.Stat.StatEqual(other.Stat) {
 		return false
 	}
 	if len(m.XAttrs) != len(other.XAttrs) {

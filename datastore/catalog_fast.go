@@ -5,29 +5,17 @@ import (
 	"fmt"
 	"sync"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/format"
 )
 
-// EntryKind identifies the type of a pxar archive entry in the catalog.
-type EntryKind byte
-
-const (
-	KindSymlink   EntryKind = 2
-	KindHardlink  EntryKind = 3
-	KindDevice    EntryKind = 4
-	KindSocket    EntryKind = 5
-	KindFifo      EntryKind = 6
-	KindFile      EntryKind = 7
-	KindDirectory EntryKind = 8
-)
-
 // CatalogChild is a lightweight directory entry.
-// Field order: largest first to minimize padding (Size int64, Name string, Kind byte).
-// Total: 8 + 16 + 1 + 7pad = 32 bytes.
+// Field order: largest first to minimize padding (Size int64, Name string, Kind pxar.EntryKind).
+// Total: 8 + 16 + 8 = 32 bytes.
 type CatalogChild struct {
 	Size int64
 	Name string
-	Kind EntryKind
+	Kind pxar.EntryKind
 }
 
 // Catalog is a lightweight directory tree: parentPath → children.
@@ -76,7 +64,7 @@ func resolveMaxWorkers(maxWorkers, count int) int {
 // you need; nil callbacks are skipped.
 type treeVisitor struct {
 	// Child is called for every entry (file, dir, symlink, hardlink, etc.).
-	Child func(parentPath, name string, kind EntryKind, size int64)
+	Child func(parentPath, name string, kind pxar.EntryKind, size int64)
 
 	// EnterDir is called when a directory's first child is about to be
 	// scanned. chunkIdx/offset point to where the children start.
@@ -153,7 +141,7 @@ func scanTree(r streamReader, first format.Header, visit *treeVisitor) error {
 					return fmt.Errorf("reading hardlink content of %q: %w", name, err)
 				}
 				if visit.Child != nil {
-					visit.Child(parentPath, name, KindHardlink, 0)
+					visit.Child(parentPath, name, pxar.KindHardlink, 0)
 				}
 
 			case format.PXAREntry:
@@ -172,7 +160,7 @@ func scanTree(r streamReader, first format.Header, visit *treeVisitor) error {
 					visit.Child(parentPath, name, kind, size)
 				}
 
-				if kind == KindDirectory {
+				if kind == pxar.KindDirectory {
 					pathBuf = buildChildPath(pathBuf[:0], parentPath, name)
 					childPath := string(append([]byte(nil), pathBuf...))
 					ci, pos := r.chunkPosition()
@@ -372,7 +360,7 @@ func BuildCatalogFast(
 // parseRootAndChildren handles the root ENTRY and all subsequent children.
 func parseRootAndChildren(r *chunkReader, first format.Header, catalog *Catalog) error {
 	return scanTree(r, first, &treeVisitor{
-		Child: func(parentPath, name string, kind EntryKind, size int64) {
+		Child: func(parentPath, name string, kind pxar.EntryKind, size int64) {
 			catalog.addChild(parentPath, name, kind, size)
 		},
 	})
@@ -382,14 +370,14 @@ func parseRootAndChildren(r *chunkReader, first format.Header, catalog *Catalog)
 // the entry kind and size. Returns the kind, file size, and any error.
 // After this function returns, the reader is positioned right after the
 // terminal attribute, ready for the next structural header.
-func scanEntryAttributes(r streamReader, stat format.Stat) (EntryKind, int64, error) {
+func scanEntryAttributes(r streamReader, stat format.Stat) (pxar.EntryKind, int64, error) {
 	fileType := stat.Mode & format.ModeIFMT
 
 	for {
 		h, err := r.readHeader()
 		if err != nil {
 			// EOF during attribute scan — treat as directory.
-			return KindDirectory, 0, nil
+			return pxar.KindDirectory, 0, nil
 		}
 		contentSize := int(h.ContentSize())
 
@@ -398,19 +386,19 @@ func scanEntryAttributes(r streamReader, stat format.Stat) (EntryKind, int64, er
 			if err := r.skip(contentSize); err != nil {
 				return 0, 0, fmt.Errorf("skipping symlink content: %w", err)
 			}
-			return KindSymlink, 0, nil
+			return pxar.KindSymlink, 0, nil
 
 		case format.PXARDevice:
 			if err := r.skip(contentSize); err != nil {
 				return 0, 0, fmt.Errorf("skipping device content: %w", err)
 			}
-			return KindDevice, 0, nil
+			return pxar.KindDevice, 0, nil
 
 		case format.PXARPayload:
 			if err := r.skip(contentSize); err != nil {
 				return 0, 0, fmt.Errorf("skipping payload content: %w", err)
 			}
-			return KindFile, int64(contentSize), nil
+			return pxar.KindFile, int64(contentSize), nil
 
 		case format.PXARPayloadRef:
 			refBytes, err := r.read(contentSize)
@@ -418,9 +406,9 @@ func scanEntryAttributes(r streamReader, stat format.Stat) (EntryKind, int64, er
 				return 0, 0, fmt.Errorf("reading PAYLOAD_REF: %w", err)
 			}
 			if len(refBytes) >= 16 {
-				return KindFile, int64(binary.LittleEndian.Uint64(refBytes[8:16])), nil
+				return pxar.KindFile, int64(binary.LittleEndian.Uint64(refBytes[8:16])), nil
 			}
-			return KindFile, 0, nil
+			return pxar.KindFile, 0, nil
 
 		case format.PXARFilename, format.PXARGoodbye:
 			// Non-terminal entries (directories, FIFOs, sockets) have no
@@ -431,11 +419,11 @@ func scanEntryAttributes(r streamReader, stat format.Stat) (EntryKind, int64, er
 			}
 			switch fileType {
 			case format.ModeIFIFO:
-				return KindFifo, 0, nil
+				return pxar.KindFifo, 0, nil
 			case format.ModeIFSOCK:
-				return KindSocket, 0, nil
+				return pxar.KindSocket, 0, nil
 			default:
-				return KindDirectory, 0, nil
+				return pxar.KindDirectory, 0, nil
 			}
 
 		default:
@@ -482,7 +470,7 @@ func readFilename(r streamReader, h format.Header) (string, error) {
 }
 
 // addChild appends a child to the catalog under the given parent path.
-func (c *Catalog) addChild(parentPath, name string, kind EntryKind, size int64) {
+func (c *Catalog) addChild(parentPath, name string, kind pxar.EntryKind, size int64) {
 	children := c.Dirs[parentPath]
 	if children == nil {
 		// First child for this directory — preallocate a small slice

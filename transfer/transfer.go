@@ -88,8 +88,8 @@ func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, srcPath, dst
 		// Remap path for the target
 		if dstPath != "" && dstPath != srcPath {
 			childPath := child.Path
-			if strings.HasPrefix(childPath, srcPath) {
-				child.Path = dstPath + strings.TrimPrefix(childPath, srcPath)
+			if after, ok := strings.CutPrefix(childPath, srcPath); ok {
+				child.Path = dstPath + after
 			}
 		}
 
@@ -122,8 +122,8 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 			child := &entries[i]
 			if dstPath != "" && dstPath != "/" {
 				childPath := child.Path
-				if strings.HasPrefix(childPath, srcPath) {
-					child.Path = dstPath + strings.TrimPrefix(childPath, srcPath)
+				if after, ok := strings.CutPrefix(childPath, srcPath); ok {
+					child.Path = dstPath + after
 				}
 			}
 
@@ -149,13 +149,10 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 	// Extra ancestors = dstParts[0:len(dstParts)-len(srcParts)] = ["backup"]
 	srcParts := splitPath(srcPath)
 	dstParts := splitPath(dstPath)
-	extraAncestors := len(dstParts) - len(srcParts)
-	if extraAncestors < 0 {
-		extraAncestors = 0
-	}
+	extraAncestors := max(len(dstParts)-len(srcParts), 0)
 
 	// Create ancestor directories that exist in dstPath but not in srcPath
-	for i := 0; i < extraAncestors; i++ {
+	for i := range extraAncestors {
 		if err := dst.BeginDirectory(dstParts[i], &pxar.Metadata{
 			Stat: format.Stat{Mode: format.ModeIFDIR | 0o755},
 		}); err != nil {
@@ -176,8 +173,8 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 		child := &entries[i]
 		if dstPath != "" && dstPath != srcPath {
 			childPath := child.Path
-			if strings.HasPrefix(childPath, srcPath) {
-				child.Path = dstPath + strings.TrimPrefix(childPath, srcPath)
+			if after, ok := strings.CutPrefix(childPath, srcPath); ok {
+				child.Path = dstPath + after
 			}
 		}
 
@@ -197,7 +194,7 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 	}
 
 	// Close ancestor directories
-	for i := 0; i < extraAncestors; i++ {
+	for range extraAncestors {
 		if err := dst.EndDirectory(); err != nil {
 			return fmt.Errorf("end directory: %w", err)
 		}

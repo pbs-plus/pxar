@@ -193,10 +193,11 @@ func (h Header) String() string {
 }
 
 // StatxTimestamp represents a high-precision timestamp. 16 bytes.
+// The _pad field ensures binary layout matches the wire format.
 type StatxTimestamp struct {
 	Secs  int64
 	Nanos uint32
-	_pad  uint32
+	_pad  uint32 //nolint:unused // required for wire format alignment
 }
 
 // StatxTimestampNew creates a timestamp from seconds and nanoseconds.
@@ -277,11 +278,11 @@ func (s Stat) IsSocket() bool {
 	return s.Mode&ModeIFMT == ModeIFSOCK
 }
 
-// MetadataEqual reports whether two Stat entries are equivalent for
+// StatEqual reports whether two Stat entries are equivalent for
 // metadata change detection. Two entries are considered equal if
 // their file type, permissions, uid, gid, and mtime match.
 // File size comparison is done separately since Stat doesn't carry size.
-func (s Stat) MetadataEqual(other Stat) bool {
+func (s Stat) StatEqual(other Stat) bool {
 	return s.Mode == other.Mode &&
 		s.Flags == other.Flags &&
 		s.UID == other.UID &&

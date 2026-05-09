@@ -91,7 +91,11 @@ func TestHeaderSize(t *testing.T) {
 		{MagicEncrComprBlob, EncryptedBlobHeaderSize},
 	}
 	for _, tt := range tests {
-		got := BlobHeaderSizeFor(tt.magic)
+		got, err := BlobHeaderSizeFor(tt.magic)
+		if err != nil {
+			t.Errorf("BlobHeaderSizeFor(%x): %v", tt.magic, err)
+			continue
+		}
 		if got != tt.want {
 			t.Errorf("BlobHeaderSizeFor(%x) = %d, want %d", tt.magic, got, tt.want)
 		}
@@ -99,12 +103,10 @@ func TestHeaderSize(t *testing.T) {
 }
 
 func TestHeaderSizeUnknown(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for unknown magic")
-		}
-	}()
-	BlobHeaderSizeFor([8]byte{1, 2, 3, 4, 5, 6, 7, 8})
+	_, err := BlobHeaderSizeFor([8]byte{1, 2, 3, 4, 5, 6, 7, 8})
+	if err == nil {
+		t.Error("expected error for unknown magic")
+	}
 }
 
 func TestDynamicIndexHeaderRoundTrip(t *testing.T) {

@@ -44,11 +44,17 @@ func (sc *StoreChunker) ChunkStream(r io.Reader) ([]ChunkResult, *DynamicIndexWr
 	return sc.ChunkStreamCallback(r, nil)
 }
 
-var blobBufPool = sync.Pool{
+var BlobBufPool = sync.Pool{
 	New: func() any {
 		buf := make([]byte, 0, 4<<20)
 		return &buf
 	},
+}
+
+// PutBlobBuf resets buf and returns it to the shared pool.
+func PutBlobBuf(bp *[]byte) {
+	*bp = (*bp)[:0]
+	BlobBufPool.Put(bp)
 }
 
 // ChunkStreamCallback is like ChunkStream but calls fn for each chunk after it
@@ -76,11 +82,11 @@ func (sc *StoreChunker) ChunkStreamCallback(r io.Reader, fn func(ChunkResult) er
 		var storeData []byte
 		if sc.compress {
 			if blobBuf == nil {
-				blobBuf = blobBufPool.Get().(*[]byte)
+				blobBuf = BlobBufPool.Get().(*[]byte)
 			}
 			encoded, err := EncodeCompressedBlobTo((*blobBuf)[:0], chunk)
 			if err != nil {
-				putBlobBuf(blobBuf)
+				PutBlobBuf(blobBuf)
 				return nil, nil, fmt.Errorf("compress chunk at offset %d: %w", offset, err)
 			}
 			// Copy out since blobBuf will be reused
@@ -88,11 +94,11 @@ func (sc *StoreChunker) ChunkStreamCallback(r io.Reader, fn func(ChunkResult) er
 			copy(storeData, encoded)
 		} else {
 			if blobBuf == nil {
-				blobBuf = blobBufPool.Get().(*[]byte)
+				blobBuf = BlobBufPool.Get().(*[]byte)
 			}
 			encoded, err := EncodeBlobTo((*blobBuf)[:0], chunk)
 			if err != nil {
-				putBlobBuf(blobBuf)
+				PutBlobBuf(blobBuf)
 				return nil, nil, fmt.Errorf("encode chunk at offset %d: %w", offset, err)
 			}
 			storeData = make([]byte, len(encoded))
@@ -101,7 +107,7 @@ func (sc *StoreChunker) ChunkStreamCallback(r io.Reader, fn func(ChunkResult) er
 
 		exists, _, err := sc.store.InsertChunk(digest, storeData)
 		if err != nil {
-			putBlobBuf(blobBuf)
+			PutBlobBuf(blobBuf)
 			return nil, nil, fmt.Errorf("store chunk at offset %d: %w", offset, err)
 		}
 
@@ -119,20 +125,15 @@ func (sc *StoreChunker) ChunkStreamCallback(r io.Reader, fn func(ChunkResult) er
 
 		if fn != nil {
 			if err := fn(result); err != nil {
-				putBlobBuf(blobBuf)
+				PutBlobBuf(blobBuf)
 				return results, index, err
 			}
 		}
 	}
 
 	if blobBuf != nil {
-		putBlobBuf(blobBuf)
+		PutBlobBuf(blobBuf)
 	}
 
 	return results, index, nil
-}
-
-func putBlobBuf(bp *[]byte) {
-	*bp = (*bp)[:0]
-	blobBufPool.Put(bp)
 }

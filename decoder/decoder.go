@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/pbs-plus/pxar/format"
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/format"
 )
 
 // Decoder reads pxar archives sequentially.
@@ -314,7 +314,7 @@ func (d *Decoder) readEntry() (*pxar.Entry, error) {
 		return nil, fmt.Errorf("invalid stat size: %d", len(statData))
 	}
 
-	stat := unmarshalStat(statData)
+	stat := format.UnmarshalStatBytes(statData)
 	entry := &pxar.Entry{
 		Path:     d.path,
 		Metadata: pxar.Metadata{Stat: stat},
@@ -363,7 +363,7 @@ func (d *Decoder) readEntryV1() (*pxar.Entry, error) {
 		return nil, fmt.Errorf("invalid stat_v1 size: %d", len(data))
 	}
 
-	v1 := unmarshalStatV1(data)
+	v1 := format.UnmarshalStatV1Bytes(data)
 	stat := v1.ToStat()
 	entry := &pxar.Entry{
 		Path:     d.path,
@@ -451,7 +451,7 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		entry.Metadata.ACL.Default = unmarshalACLDefault(data)
+		entry.Metadata.ACL.Default = format.UnmarshalACLDefaultBytes(data)
 		return false, nil
 
 	case format.PXARACLDefaultUser:
@@ -533,7 +533,7 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		pr := unmarshalPayloadRef(data)
+		pr := format.UnmarshalPayloadRefBytes(data)
 		entry.Kind = pxar.KindFile
 		entry.FileSize = pr.Size
 		entry.PayloadOffset = pr.Offset
@@ -607,8 +607,3 @@ func (d *Decoder) resetPath() {
 		}
 	}
 }
-
-func unmarshalStat(data []byte) format.Stat        { return format.UnmarshalStatBytes(data) }
-func unmarshalStatV1(data []byte) format.StatV1     { return format.UnmarshalStatV1Bytes(data) }
-func unmarshalACLDefault(data []byte) *format.ACLDefault { return format.UnmarshalACLDefaultBytes(data) }
-func unmarshalPayloadRef(data []byte) format.PayloadRef { return format.UnmarshalPayloadRefBytes(data) }

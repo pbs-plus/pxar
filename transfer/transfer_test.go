@@ -2,6 +2,7 @@ package transfer_test
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -212,13 +213,7 @@ func TestWalkTree(t *testing.T) {
 	// Should have root dir, hello.txt, link, subdir, nested.txt
 	expectedPaths := []string{"/", "/hello.txt", "/link", "/subdir", "/subdir/nested.txt"}
 	for _, p := range expectedPaths {
-		found := false
-		for _, walked := range paths {
-			if walked == p {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(paths, p)
 		if !found {
 			t.Errorf("expected path %q in walk, got %v", p, paths)
 		}
@@ -701,13 +696,7 @@ func TestWalkTreeMetaOnly(t *testing.T) {
 
 	expectedPaths := []string{"/", "/hello.txt", "/link", "/subdir", "/subdir/nested.txt"}
 	for _, p := range expectedPaths {
-		found := false
-		for _, walked := range paths {
-			if walked == p {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(paths, p)
 		if !found {
 			t.Errorf("expected path %q in walk, got %v", p, paths)
 		}

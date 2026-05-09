@@ -434,7 +434,7 @@ func TestDetectionModeString(t *testing.T) {
 	}
 }
 
-func TestStatMetadataEqual(t *testing.T) {
+func TestStatStatEqual(t *testing.T) {
 	base := format.Stat{
 		Mode:  format.ModeIFREG | 0o644,
 		Flags: 0,
@@ -458,15 +458,15 @@ func TestStatMetadataEqual(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := base.MetadataEqual(tt.other); got != tt.equal {
-				t.Errorf("MetadataEqual() = %v, want %v", got, tt.equal)
+			if got := base.StatEqual(tt.other); got != tt.equal {
+				t.Errorf("StatEqual() = %v, want %v", got, tt.equal)
 			}
 		})
 	}
 }
 
 func TestEntryMatches(t *testing.T) {
-	prevEntry := &CatalogEntry{
+	prevEntry := &SnapshotEntry{
 		Path:          "/root/file.txt",
 		Stat:          format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}},
 		Metadata:      pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
@@ -478,7 +478,7 @@ func TestEntryMatches(t *testing.T) {
 		name        string
 		current     DirEntry
 		currentMeta pxar.Metadata
-		prev        *CatalogEntry
+		prev        *SnapshotEntry
 		want        bool
 	}{
 		{

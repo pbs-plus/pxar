@@ -8,56 +8,39 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
 )
 
-var blobBufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 0, 4<<20)
-		return &buf
-	},
-}
-
-func getBlobBuf() *[]byte {
-	return blobBufPool.Get().(*[]byte)
-}
-
-func putBlobBuf(bp *[]byte) {
-	*bp = (*bp)[:0]
-	blobBufPool.Put(bp)
-}
-
 // encodeChunkBlob encodes a chunk as a PBS blob, optionally compressing with zstd.
 // When cc is non-nil, the chunk is encrypted with AES-256-GCM.
 // Returns the encoded bytes. Callers who need zero-alloc should use encodeChunkBlobTo.
 func encodeChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) ([]byte, error) {
 	if cc != nil {
-		bp := getBlobBuf()
+		bp := datastore.BlobBufPool.Get().(*[]byte)
 		dst := *bp
 		encoded, err := datastore.EncodeEncryptedBlobTo(dst, chunk, cc, compress)
 		if err != nil {
-			putBlobBuf(bp)
+			datastore.PutBlobBuf(bp)
 			return nil, err
 		}
 		result := make([]byte, len(encoded))
 		copy(result, encoded)
-		putBlobBuf(bp)
+		datastore.PutBlobBuf(bp)
 		return result, nil
 	}
-	bp := getBlobBuf()
+	bp := datastore.BlobBufPool.Get().(*[]byte)
 	dst := *bp
 	encoded, err := encodeChunkBlobTo(dst, chunk, compress)
 	if err != nil {
-		putBlobBuf(bp)
+		datastore.PutBlobBuf(bp)
 		return nil, err
 	}
 	result := make([]byte, len(encoded))
 	copy(result, encoded)
-	putBlobBuf(bp)
+	datastore.PutBlobBuf(bp)
 	return result, nil
 }
 

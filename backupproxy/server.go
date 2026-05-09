@@ -357,7 +357,7 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 // from the previous backup or read fresh content from the client.
 type metadataWalker struct {
 	server     *Server
-	catalog    Catalog
+	catalog    SnapshotCatalog
 	payloadIdx *datastore.DynamicIndexReader
 	restorer   *datastore.Restorer
 	ctx        context.Context

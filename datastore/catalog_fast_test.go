@@ -125,16 +125,16 @@ func TestBuildCatalogFastSimpleTree(t *testing.T) {
 		switch c.Name {
 		case "hello.txt":
 			foundFile = true
-			if c.Kind != KindFile {
-				t.Errorf("hello.txt kind = %d, want KindFile(%d)", c.Kind, KindFile)
+			if c.Kind != pxar.KindFile {
+				t.Errorf("hello.txt kind = %d, want pxar.KindFile(%d)", c.Kind, pxar.KindFile)
 			}
 			if c.Size != 11 {
 				t.Errorf("hello.txt size = %d, want 11", c.Size)
 			}
 		case "subdir":
 			foundDir = true
-			if c.Kind != KindDirectory {
-				t.Errorf("subdir kind = %d, want KindDirectory(%d)", c.Kind, KindDirectory)
+			if c.Kind != pxar.KindDirectory {
+				t.Errorf("subdir kind = %d, want pxar.KindDirectory(%d)", c.Kind, pxar.KindDirectory)
 			}
 		}
 	}
@@ -153,8 +153,8 @@ func TestBuildCatalogFastSimpleTree(t *testing.T) {
 	if subChildren[0].Name != "nested.txt" {
 		t.Errorf("subdir child name = %q, want %q", subChildren[0].Name, "nested.txt")
 	}
-	if subChildren[0].Kind != KindFile {
-		t.Errorf("nested.txt kind = %d, want KindFile(%d)", subChildren[0].Kind, KindFile)
+	if subChildren[0].Kind != pxar.KindFile {
+		t.Errorf("nested.txt kind = %d, want pxar.KindFile(%d)", subChildren[0].Kind, pxar.KindFile)
 	}
 	if subChildren[0].Size != 14 {
 		t.Errorf("nested.txt size = %d, want 14", subChildren[0].Size)
@@ -202,7 +202,7 @@ func TestBuildCatalogFastDeepTree(t *testing.T) {
 	if len(aChildren) != 1 {
 		t.Fatalf("expected 1 child in /a, got %d: %+v", len(aChildren), aChildren)
 	}
-	if aChildren[0].Name != "b" || aChildren[0].Kind != KindDirectory {
+	if aChildren[0].Name != "b" || aChildren[0].Kind != pxar.KindDirectory {
 		t.Errorf("/a child = %+v, want dir 'b'", aChildren[0])
 	}
 
@@ -211,7 +211,7 @@ func TestBuildCatalogFastDeepTree(t *testing.T) {
 	if len(abChildren) != 1 {
 		t.Fatalf("expected 1 child in /a/b, got %d: %+v", len(abChildren), abChildren)
 	}
-	if abChildren[0].Name != "deep.txt" || abChildren[0].Kind != KindFile {
+	if abChildren[0].Name != "deep.txt" || abChildren[0].Kind != pxar.KindFile {
 		t.Errorf("/a/b child = %+v, want file 'deep.txt'", abChildren[0])
 	}
 }
@@ -234,7 +234,7 @@ func TestBuildCatalogFastSymlink(t *testing.T) {
 	if len(children) != 1 {
 		t.Fatalf("expected 1 child, got %d: %+v", len(children), children)
 	}
-	if children[0].Name != "link" || children[0].Kind != KindSymlink {
+	if children[0].Name != "link" || children[0].Kind != pxar.KindSymlink {
 		t.Errorf("child = %+v, want symlink 'link'", children[0])
 	}
 }
@@ -258,7 +258,7 @@ func TestBuildCatalogFastDevice(t *testing.T) {
 	if len(children) != 1 {
 		t.Fatalf("expected 1 child, got %d: %+v", len(children), children)
 	}
-	if children[0].Name != "null" || children[0].Kind != KindDevice {
+	if children[0].Name != "null" || children[0].Kind != pxar.KindDevice {
 		t.Errorf("child = %+v, want device 'null'", children[0])
 	}
 }
@@ -281,7 +281,7 @@ func TestBuildCatalogFastFIFO(t *testing.T) {
 	if len(children) != 1 {
 		t.Fatalf("expected 1 child, got %d: %+v", len(children), children)
 	}
-	if children[0].Name != "myfifo" || children[0].Kind != KindFifo {
+	if children[0].Name != "myfifo" || children[0].Kind != pxar.KindFifo {
 		t.Errorf("child = %+v, want FIFO 'myfifo'", children[0])
 	}
 }
@@ -304,7 +304,7 @@ func TestBuildCatalogFastSocket(t *testing.T) {
 	if len(children) != 1 {
 		t.Fatalf("expected 1 child, got %d: %+v", len(children), children)
 	}
-	if children[0].Name != "mysock" || children[0].Kind != KindSocket {
+	if children[0].Name != "mysock" || children[0].Kind != pxar.KindSocket {
 		t.Errorf("child = %+v, want socket 'mysock'", children[0])
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/binarytree"
@@ -259,7 +260,7 @@ func (a *Accessor) readStat() (format.Stat, error) {
 	if _, err := io.ReadFull(a.reader, data[:]); err != nil {
 		return format.Stat{}, err
 	}
-	return unmarshalStat(data[:]), nil
+	return format.UnmarshalStatBytes(data[:]), nil
 }
 
 func (a *Accessor) findGoodbyeOffset(dirOffset int64) (int64, error) {
@@ -768,29 +769,14 @@ func (a *Accessor) findDirContentOffset(entryOffset int64) (int64, error) {
 	}
 }
 
-func splitPath(path string) []string {
-	// Remove leading slashes
-	for len(path) > 0 && path[0] == '/' {
-		path = path[1:]
-	}
-	if path == "" {
+// splitPath splits a path like "/backup/etc" into ["backup", "etc"].
+func splitPath(p string) []string {
+	p = strings.TrimLeft(p, "/")
+	if p == "" {
 		return nil
 	}
-
-	var parts []string
-	start := 0
-	for i := 0; i <= len(path); i++ {
-		if i == len(path) || path[i] == '/' {
-			if i > start {
-				parts = append(parts, path[start:i])
-			}
-			start = i + 1
-		}
-	}
-	return parts
+	return strings.Split(p, "/")
 }
-
-func unmarshalStat(data []byte) format.Stat { return format.UnmarshalStatBytes(data) }
 
 // ReadFileContent reads the content of a file entry from the archive.
 func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
@@ -805,17 +791,6 @@ func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 	defer r.Close()
 	return io.ReadAll(r)
 }
-
-// fileContentReader wraps an io.Reader with a Close method.
-// For payload readers that are SectionReaders, Close is a no-op.
-// For v1 inline readers, Close is also a no-op since the underlying
-// reader is shared and must not be closed.
-type fileContentReader struct {
-	reader io.Reader
-}
-
-func (f *fileContentReader) Read(p []byte) (int, error) { return f.reader.Read(p) }
-func (f *fileContentReader) Close() error               { return nil }
 
 // LookupBatch looks up multiple paths in a single pass. It is more efficient
 // than N separate Lookup calls because it shares directory traversals for
@@ -842,7 +817,7 @@ func (a *Accessor) LookupBatch(paths []string) ([]*pxar.Entry, error) {
 		indices []int
 		rests   []string
 	}
-	groups := make(map[string]*group)
+	groups := make(map[string]*group, len(paths))
 
 	for i, path := range paths {
 		if path == "/" || path == "" {

@@ -160,16 +160,16 @@ func TestOnDemandListDirRoot(t *testing.T) {
 		switch c.Name {
 		case "hello.txt":
 			foundFile = true
-			if c.Kind != KindFile {
-				t.Errorf("hello.txt kind = %d, want KindFile", c.Kind)
+			if c.Kind != pxar.KindFile {
+				t.Errorf("hello.txt kind = %d, want pxar.KindFile", c.Kind)
 			}
 			if c.Size != 11 {
 				t.Errorf("hello.txt size = %d, want 11", c.Size)
 			}
 		case "subdir":
 			foundDir = true
-			if c.Kind != KindDirectory {
-				t.Errorf("subdir kind = %d, want KindDirectory", c.Kind)
+			if c.Kind != pxar.KindDirectory {
+				t.Errorf("subdir kind = %d, want pxar.KindDirectory", c.Kind)
 			}
 		}
 	}
@@ -207,8 +207,8 @@ func TestOnDemandListDirSubdir(t *testing.T) {
 	if children[0].Name != "nested.txt" {
 		t.Errorf("child name = %q, want %q", children[0].Name, "nested.txt")
 	}
-	if children[0].Kind != KindFile {
-		t.Errorf("child kind = %d, want KindFile", children[0].Kind)
+	if children[0].Kind != pxar.KindFile {
+		t.Errorf("child kind = %d, want pxar.KindFile", children[0].Kind)
 	}
 	if children[0].Size != 14 {
 		t.Errorf("child size = %d, want 14", children[0].Size)
@@ -336,12 +336,12 @@ func TestOnDemandListDirEntryTypes(t *testing.T) {
 		t.Fatalf("expected 5 children, got %d: %+v", len(children), children)
 	}
 
-	expected := map[string]EntryKind{
-		"file.txt": KindFile,
-		"link":     KindSymlink,
-		"null":     KindDevice,
-		"myfifo":   KindFifo,
-		"mysock":   KindSocket,
+	expected := map[string]pxar.EntryKind{
+		"file.txt": pxar.KindFile,
+		"link":     pxar.KindSymlink,
+		"null":     pxar.KindDevice,
+		"myfifo":   pxar.KindFifo,
+		"mysock":   pxar.KindSocket,
 	}
 	for _, c := range children {
 		want, ok := expected[c.Name]
@@ -524,16 +524,16 @@ func TestBuildDirIndexRootChildren(t *testing.T) {
 		switch c.Name {
 		case "hello.txt":
 			foundFile = true
-			if c.Kind != KindFile {
-				t.Errorf("hello.txt kind = %d, want KindFile", c.Kind)
+			if c.Kind != pxar.KindFile {
+				t.Errorf("hello.txt kind = %d, want pxar.KindFile", c.Kind)
 			}
 			if c.Size != 11 {
 				t.Errorf("hello.txt size = %d, want 11", c.Size)
 			}
 		case "subdir":
 			foundDir = true
-			if c.Kind != KindDirectory {
-				t.Errorf("subdir kind = %d, want KindDirectory", c.Kind)
+			if c.Kind != pxar.KindDirectory {
+				t.Errorf("subdir kind = %d, want pxar.KindDirectory", c.Kind)
 			}
 		}
 	}

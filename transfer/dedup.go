@@ -27,20 +27,19 @@ import (
 // For files not present in the source (new content), it falls back to normal
 // encoding and chunking.
 type DedupSplitArchiveWriter struct {
-	store         *datastore.ChunkStore
-	source        datastore.ChunkSource
-	config        buzhash.Config
-	compress      bool
-	chunkConfig   *datastore.CryptConfig
+	store    *datastore.ChunkStore
+	source   datastore.ChunkSource
+	config   buzhash.Config
+	compress bool
 
 	// Encoder for the metadata stream
-	metaBuf       bytes.Buffer
-	enc           *encoder.Encoder
-	dirDepth      int
+	metaBuf  bytes.Buffer
+	enc      *encoder.Encoder
+	dirDepth int
 
 	// New payload stream being built
-	payloadBuf     bytes.Buffer
-	payloadOffset  uint64
+	payloadBuf    bytes.Buffer
+	payloadOffset uint64
 
 	// Source payload index for chunk lookup
 	sourcePayloadIdx *datastore.DynamicIndexReader
@@ -72,7 +71,7 @@ func NewDedupSplitArchiveWriter(
 		config:           config,
 		compress:         compress,
 		sourcePayloadIdx: sourcePayloadIdx,
-		referencedChunks:  make(map[[32]byte]bool),
+		referencedChunks: make(map[[32]byte]bool),
 	}
 }
 
@@ -280,23 +279,17 @@ func MapFileToPayloadChunks(payloadIdx *datastore.DynamicIndexReader, payloadOff
 		}
 
 		// Calculate overlap
-		overlapStart := info.Start
-		if contentStart > overlapStart {
-			overlapStart = contentStart
-		}
-		overlapEnd := info.End
-		if contentEnd < overlapEnd {
-			overlapEnd = contentEnd
-		}
+		overlapStart := max(contentStart, info.Start)
+		overlapEnd := min(contentEnd, info.End)
 
 		ranges = append(ranges, ChunkRange{
-			ChunkIndex:    i,
-			Digest:        info.Digest,
-			ChunkStart:    info.Start,
-			ChunkEnd:      info.End,
-			ContentStart:  overlapStart,
-			ContentEnd:    overlapEnd,
-			IsFullChunk:   overlapStart == info.Start && overlapEnd == info.End,
+			ChunkIndex:   i,
+			Digest:       info.Digest,
+			ChunkStart:   info.Start,
+			ChunkEnd:     info.End,
+			ContentStart: overlapStart,
+			ContentEnd:   overlapEnd,
+			IsFullChunk:  overlapStart == info.Start && overlapEnd == info.End,
 		})
 	}
 
@@ -349,4 +342,3 @@ func ComputeContentDigest(source datastore.ChunkSource, payloadIdx *datastore.Dy
 	}
 	return sha256.Sum256(content), nil
 }
-

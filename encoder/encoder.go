@@ -34,9 +34,7 @@ type encoderState struct {
 	entryOffset     uint64
 	writePosition   uint64
 	payloadWritePos uint64
-	finished        bool
-	// For tracking parent's goodbye item when this is a subdirectory
-	parentItemIdx int // index in parent's items slice, -1 for root
+	parentItemIdx   int // index in parent's items slice, -1 for root
 }
 
 // NewEncoder creates a new pxar encoder writing to the given writers.
@@ -134,7 +132,7 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		return e.err
 	}
 
-	statBytes := marshalStat(metadata.Stat)
+	statBytes := format.MarshalStatBytes(metadata.Stat)
 	if e.err = e.writeHeader(format.PXAREntry, uint64(len(statBytes))); e.err != nil {
 		return e.err
 	}
@@ -152,7 +150,7 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 	}
 
 	for _, acl := range metadata.ACL.Users {
-		data := marshalACLUser(acl)
+		data := format.MarshalACLUserBytes(acl)
 		if e.err = e.writeHeader(format.PXARACLUser, uint64(len(data))); e.err != nil {
 			return e.err
 		}
@@ -161,7 +159,7 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		}
 	}
 	for _, acl := range metadata.ACL.Groups {
-		data := marshalACLGroup(acl)
+		data := format.MarshalACLGroupBytes(acl)
 		if e.err = e.writeHeader(format.PXARACLGroup, uint64(len(data))); e.err != nil {
 			return e.err
 		}
@@ -170,7 +168,7 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		}
 	}
 	if metadata.ACL.GroupObj != nil {
-		data := marshalACLGroupObject(*metadata.ACL.GroupObj)
+		data := format.MarshalACLGroupObjectBytes(*metadata.ACL.GroupObj)
 		if e.err = e.writeHeader(format.PXARACLGroupObj, uint64(len(data))); e.err != nil {
 			return e.err
 		}
@@ -179,7 +177,7 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		}
 	}
 	if metadata.ACL.Default != nil {
-		data := marshalACLDefault(*metadata.ACL.Default)
+		data := format.MarshalACLDefaultBytes(*metadata.ACL.Default)
 		if e.err = e.writeHeader(format.PXARACLDefault, uint64(len(data))); e.err != nil {
 			return e.err
 		}
@@ -188,7 +186,7 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		}
 	}
 	for _, acl := range metadata.ACL.DefaultUsers {
-		data := marshalACLUser(acl)
+		data := format.MarshalACLUserBytes(acl)
 		if e.err = e.writeHeader(format.PXARACLDefaultUser, uint64(len(data))); e.err != nil {
 			return e.err
 		}
@@ -197,7 +195,7 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		}
 	}
 	for _, acl := range metadata.ACL.DefaultGroups {
-		data := marshalACLGroup(acl)
+		data := format.MarshalACLGroupBytes(acl)
 		if e.err = e.writeHeader(format.PXARACLDefaultGroup, uint64(len(data))); e.err != nil {
 			return e.err
 		}
@@ -216,11 +214,12 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 	}
 
 	if metadata.QuotaProjectID != nil {
-		data := marshalQuotaProjectID(*metadata.QuotaProjectID)
-		if e.err = e.writeHeader(format.PXARQuotaProjID, uint64(len(data))); e.err != nil {
+		var qbuf [8]byte
+		binary.LittleEndian.PutUint64(qbuf[:], *metadata.QuotaProjectID)
+		if e.err = e.writeHeader(format.PXARQuotaProjID, uint64(len(qbuf))); e.err != nil {
 			return e.err
 		}
-		if e.err = e.writeAll(data); e.err != nil {
+		if e.err = e.writeAll(qbuf[:]); e.err != nil {
 			return e.err
 		}
 	}
@@ -502,7 +501,7 @@ func (e *Encoder) AddDevice(metadata *pxar.Metadata, name string, device format.
 		return err
 	}
 
-	data := marshalDevice(device)
+	data := format.MarshalDeviceBytes(device)
 	if e.err = e.writeHeader(format.PXARDevice, uint64(len(data))); e.err != nil {
 		return e.err
 	}
@@ -716,21 +715,4 @@ func (e *Encoder) Close() error {
 	e.finished = true
 
 	return nil
-}
-
-// Marshal helpers
-
-func marshalStat(s format.Stat) []byte         { return format.MarshalStatBytes(s) }
-func marshalDevice(d format.Device) []byte     { return format.MarshalDeviceBytes(d) }
-func marshalACLUser(u format.ACLUser) []byte   { return format.MarshalACLUserBytes(u) }
-func marshalACLGroup(g format.ACLGroup) []byte { return format.MarshalACLGroupBytes(g) }
-func marshalACLGroupObject(o format.ACLGroupObject) []byte {
-	return format.MarshalACLGroupObjectBytes(o)
-}
-func marshalACLDefault(d format.ACLDefault) []byte { return format.MarshalACLDefaultBytes(d) }
-
-func marshalQuotaProjectID(id uint64) []byte {
-	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf[0:], id)
-	return buf
 }

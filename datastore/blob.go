@@ -149,7 +149,10 @@ func DecodeBlob(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("encrypted blob requires CryptConfig, use DecodeEncryptedBlob")
 	}
 
-	hdrSize := BlobHeaderSizeFor(magic)
+	hdrSize, err := BlobHeaderSizeFor(magic)
+	if err != nil {
+		return nil, err
+	}
 	if len(raw) < hdrSize {
 		return nil, fmt.Errorf("blob too short for header: %d < %d", len(raw), hdrSize)
 	}
@@ -192,7 +195,10 @@ func DecodeBlobInto(dst []byte, raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("encrypted blob requires CryptConfig, use DecodeEncryptedBlob")
 	}
 
-	hdrSize := BlobHeaderSizeFor(magic)
+	hdrSize, err := BlobHeaderSizeFor(magic)
+	if err != nil {
+		return nil, err
+	}
 	if len(raw) < hdrSize {
 		return nil, fmt.Errorf("blob too short for header: %d < %d", len(raw), hdrSize)
 	}

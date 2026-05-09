@@ -141,16 +141,19 @@ func UnmarshalFixedIndexHeader(data []byte) (FixedIndexHeader, error) {
 	return h, nil
 }
 
+// ErrUnknownBlobMagic is returned when blob data has an unrecognized magic number.
+var ErrUnknownBlobMagic = fmt.Errorf("unknown blob magic")
+
 // BlobHeaderSizeFor returns the header size for the given blob magic.
-// Panics for unknown magic values.
-func BlobHeaderSizeFor(magic [8]byte) int {
+// Returns ErrUnknownBlobMagic for unknown magic values.
+func BlobHeaderSizeFor(magic [8]byte) (int, error) {
 	switch magic {
 	case MagicUncompressedBlob, MagicCompressedBlob:
-		return BlobHeaderSize
+		return BlobHeaderSize, nil
 	case MagicEncryptedBlob, MagicEncrComprBlob:
-		return EncryptedBlobHeaderSize
+		return EncryptedBlobHeaderSize, nil
 	default:
-		panic(fmt.Sprintf("unknown blob magic: %x", magic))
+		return 0, fmt.Errorf("%w: %x", ErrUnknownBlobMagic, magic)
 	}
 }
 

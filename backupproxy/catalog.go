@@ -10,9 +10,9 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
-// CatalogEntry holds metadata from a previous backup's .mpxar archive,
+// SnapshotEntry holds metadata from a previous backup's .mpxar archive,
 // used for metadata change detection.
-type CatalogEntry struct {
+type SnapshotEntry struct {
 	Path          string
 	Stat          format.Stat
 	Metadata      pxar.Metadata
@@ -21,13 +21,13 @@ type CatalogEntry struct {
 	IsRegularFile bool
 }
 
-// Catalog is a map from normalized file path to CatalogEntry.
-type Catalog map[string]*CatalogEntry
+// SnapshotCatalog is a map from normalized file path to SnapshotEntry.
+type SnapshotCatalog map[string]*SnapshotEntry
 
 // BuildCatalog constructs a metadata catalog from a previous backup's
 // .mpxar.didx and .ppxar.didx indexes. It restores the metadata stream
 // from chunks and walks it with the accessor to extract file entries.
-func BuildCatalog(metaIdx *datastore.DynamicIndexReader, chunkSource datastore.ChunkSource) (Catalog, error) {
+func BuildCatalog(metaIdx *datastore.DynamicIndexReader, chunkSource datastore.ChunkSource) (SnapshotCatalog, error) {
 	var metaBuf bytes.Buffer
 	restorer := datastore.NewRestorer(chunkSource)
 	if err := restorer.RestoreFile(metaIdx, &metaBuf); err != nil {
@@ -40,8 +40,8 @@ func BuildCatalog(metaIdx *datastore.DynamicIndexReader, chunkSource datastore.C
 		return nil, fmt.Errorf("read root entry: %w", err)
 	}
 
-	catalog := make(Catalog)
-	catalog["/"] = &CatalogEntry{
+	catalog := make(SnapshotCatalog)
+	catalog["/"] = &SnapshotEntry{
 		Path:          "/",
 		Stat:          root.Metadata.Stat,
 		Metadata:      root.Metadata,
@@ -56,7 +56,7 @@ func BuildCatalog(metaIdx *datastore.DynamicIndexReader, chunkSource datastore.C
 	return catalog, nil
 }
 
-func walkCatalogDir(acc *accessor.Accessor, dirPath string, dirOffset int64, catalog Catalog) error {
+func walkCatalogDir(acc *accessor.Accessor, dirPath string, dirOffset int64, catalog SnapshotCatalog) error {
 	entries, err := acc.ListDirectory(dirOffset)
 	if err != nil {
 		return fmt.Errorf("list directory %q: %w", dirPath, err)
@@ -71,7 +71,7 @@ func walkCatalogDir(acc *accessor.Accessor, dirPath string, dirOffset int64, cat
 			entryPath = "/" + entry.Path
 		}
 
-		catEntry := &CatalogEntry{
+		catEntry := &SnapshotEntry{
 			Path:          entryPath,
 			Stat:          entry.Metadata.Stat,
 			Metadata:      entry.Metadata,
@@ -95,7 +95,7 @@ func walkCatalogDir(acc *accessor.Accessor, dirPath string, dirOffset int64, cat
 // EntryMatches checks if a current directory entry matches a catalog entry
 // for metadata change detection. Returns true if the file metadata hasn't changed.
 // Compares stat fields, file type, size, xattrs, ACLs, FCaps, and QuotaProjectID.
-func EntryMatches(current DirEntry, catalogMetadata pxar.Metadata, prev *CatalogEntry) bool {
+func EntryMatches(current DirEntry, catalogMetadata pxar.Metadata, prev *SnapshotEntry) bool {
 	if prev == nil {
 		return false
 	}
@@ -108,11 +108,11 @@ func EntryMatches(current DirEntry, catalogMetadata pxar.Metadata, prev *Catalog
 		return false
 	}
 
-	if !current.Stat.MetadataEqual(prev.Stat) {
+	if !current.Stat.StatEqual(prev.Stat) {
 		return false
 	}
 
-	if !catalogMetadata.MetadataEqual(prev.Metadata) {
+	if !catalogMetadata.ExtendedMetadataEqual(prev.Metadata) {
 		return false
 	}
 

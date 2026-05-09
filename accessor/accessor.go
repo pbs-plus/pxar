@@ -15,6 +15,7 @@ import (
 type Accessor struct {
 	reader        io.ReadSeeker
 	payloadReader io.ReadSeeker // optional, for split archives (v2 format)
+	readBuf       []byte        // reusable buffer for variable-size reads
 }
 
 // ListOption controls which metadata is decoded during ListDirectory.
@@ -28,11 +29,21 @@ type ListOption struct {
 // NewAccessor creates an accessor for random access to a pxar archive.
 // For split archives (v2 format), provide the payload reader as the second argument.
 func NewAccessor(reader io.ReadSeeker, payloadReader ...io.ReadSeeker) *Accessor {
-	a := &Accessor{reader: reader}
+	a := &Accessor{reader: reader, readBuf: make([]byte, 0, 4096)}
 	if len(payloadReader) > 0 {
 		a.payloadReader = payloadReader[0]
 	}
 	return a
+}
+
+// growBuf returns a byte slice of at least n bytes backed by the internal
+// reusable buffer. The returned slice aliases the internal buffer and is
+// invalidated by subsequent growBuf calls.
+func (a *Accessor) growBuf(n int) []byte {
+	if cap(a.readBuf) < n {
+		a.readBuf = make([]byte, n*2)
+	}
+	return a.readBuf[:n]
 }
 
 // ReadRoot reads the root entry of the archive.
@@ -404,6 +415,9 @@ func (a *Accessor) readGoodbyeTable(offset int64) ([]format.GoodbyeItem, error) 
 	}
 
 	nItems := contentSize / 24
+	if nItems == 0 {
+		return nil, nil
+	}
 	items := make([]format.GoodbyeItem, nItems)
 	for i := range items {
 		var data [24]byte
@@ -438,7 +452,7 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 		return nil, fmt.Errorf("expected FILENAME at %d, got %s", offset, h.String())
 	}
 
-	nameData := make([]byte, h.ContentSize())
+	nameData := a.growBuf(int(h.ContentSize()))
 	if _, err := io.ReadFull(a.reader, nameData); err != nil {
 		return nil, err
 	}
@@ -454,7 +468,7 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 	}
 
 	if h.Type == format.PXARHardlink {
-		data := make([]byte, h.ContentSize())
+		data := a.growBuf(int(h.ContentSize()))
 		if _, err := io.ReadFull(a.reader, data); err != nil {
 			return nil, err
 		}
@@ -494,7 +508,7 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 
 		switch h2.Type {
 		case format.PXARSymlink:
-			data := make([]byte, h2.ContentSize())
+			data := a.growBuf(int(h2.ContentSize()))
 			if _, err := io.ReadFull(a.reader, data); err != nil {
 				return nil, err
 			}
@@ -506,7 +520,7 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 			return entry, nil
 
 		case format.PXARDevice:
-			data := make([]byte, h2.ContentSize())
+			data := a.growBuf(int(h2.ContentSize()))
 			if _, err := io.ReadFull(a.reader, data); err != nil {
 				return nil, err
 			}
@@ -525,7 +539,7 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 			return entry, nil
 
 		case format.PXARPayloadRef:
-			data := make([]byte, h2.ContentSize())
+			data := a.growBuf(int(h2.ContentSize()))
 			if _, err := io.ReadFull(a.reader, data); err != nil {
 				return nil, err
 			}
@@ -569,7 +583,7 @@ func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 		return nil, fmt.Errorf("expected FILENAME at %d, got %s", offset, h.String())
 	}
 
-	nameData := make([]byte, h.ContentSize())
+	nameData := a.growBuf(int(h.ContentSize()))
 	if _, err := io.ReadFull(a.reader, nameData); err != nil {
 		return nil, err
 	}
@@ -586,7 +600,7 @@ func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	}
 
 	if h.Type == format.PXARHardlink {
-		data := make([]byte, h.ContentSize())
+		data := a.growBuf(int(h.ContentSize()))
 		if _, err := io.ReadFull(a.reader, data); err != nil {
 			return nil, err
 		}
@@ -626,7 +640,7 @@ func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 
 		switch h2.Type {
 		case format.PXARSymlink:
-			data := make([]byte, h2.ContentSize())
+			data := a.growBuf(int(h2.ContentSize()))
 			if _, err := io.ReadFull(a.reader, data); err != nil {
 				return nil, err
 			}
@@ -638,7 +652,7 @@ func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 			return entry, nil
 
 		case format.PXARDevice:
-			data := make([]byte, h2.ContentSize())
+			data := a.growBuf(int(h2.ContentSize()))
 			if _, err := io.ReadFull(a.reader, data); err != nil {
 				return nil, err
 			}
@@ -657,7 +671,7 @@ func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 			return entry, nil
 
 		case format.PXARPayloadRef:
-			data := make([]byte, h2.ContentSize())
+			data := a.growBuf(int(h2.ContentSize()))
 			if _, err := io.ReadFull(a.reader, data); err != nil {
 				return nil, err
 			}

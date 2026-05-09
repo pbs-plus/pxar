@@ -26,6 +26,7 @@ type Encoder struct {
 	state      []encoderState
 	version    format.FormatVersion
 	finished   bool
+	gbBuf      []byte // reusable buffer for goodbye table serialization
 }
 
 type encoderState struct {
@@ -662,8 +663,12 @@ func (e *Encoder) buildGoodbyeTable() []byte {
 		Size:   uint64(format.HeaderSize + (len(tail)+1)*binary.Size(format.GoodbyeItem{})),
 	})
 
-	// Serialize to bytes
-	buf := make([]byte, len(bst)*binary.Size(format.GoodbyeItem{}))
+	// Serialize to bytes using reusable buffer
+	bufSize := len(bst) * binary.Size(format.GoodbyeItem{})
+	if cap(e.gbBuf) < bufSize {
+		e.gbBuf = make([]byte, bufSize*2)
+	}
+	buf := e.gbBuf[:bufSize]
 	for i, item := range bst {
 		offset := i * binary.Size(format.GoodbyeItem{})
 		binary.LittleEndian.PutUint64(buf[offset:], item.Hash)

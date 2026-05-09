@@ -16,16 +16,15 @@ import (
 // ChunkedArchiveWriter writes an archive by encoding it to a buffer,
 // then chunking and storing via a local ChunkStore, producing a .didx index.
 type ChunkedArchiveWriter struct {
-	store    *datastore.ChunkStore
-	config   buzhash.Config
-	compress bool
-	buf      bytes.Buffer
-	inner    *StreamArchiveWriter
-	dirDepth int
-	closers  []io.Closer
-	// Result after Finish
-	IndexData []byte
+	store        *datastore.ChunkStore
+	inner        *StreamArchiveWriter
+	closers      []io.Closer
+	IndexData    []byte
 	ChunkResults []datastore.ChunkResult
+	buf          bytes.Buffer
+	config       buzhash.Config
+	dirDepth     int
+	compress     bool
 }
 
 // NewChunkedArchiveWriter creates a chunked writer backed by a local chunk store.
@@ -131,15 +130,14 @@ func (w *ChunkedArchiveWriter) Close() error {
 // SessionArchiveWriter writes an archive by uploading it through a BackupSession.
 // This works with both local stores and PBS remote stores.
 type SessionArchiveWriter struct {
-	session  backupproxy.BackupSession
-	ctx      context.Context
-	name     string
-	buf      bytes.Buffer
-	inner    *StreamArchiveWriter
-	dirDepth int
-	closers  []io.Closer
-	// Result after Finish
+	session      backupproxy.BackupSession
+	ctx          context.Context
+	inner        *StreamArchiveWriter
 	UploadResult *backupproxy.UploadResult
+	name         string
+	closers      []io.Closer
+	buf          bytes.Buffer
+	dirDepth     int
 }
 
 // NewSessionArchiveWriter creates a writer that uploads via a BackupSession.
@@ -212,15 +210,14 @@ func (w *SessionArchiveWriter) Close() error {
 type SplitSessionArchiveWriter struct {
 	session     backupproxy.BackupSession
 	ctx         context.Context
+	inner       *StreamArchiveWriter
+	SplitResult *backupproxy.SplitArchiveResult
 	metaName    string
 	payloadName string
+	closers     []io.Closer
 	metaBuf     bytes.Buffer
 	payloadBuf  bytes.Buffer
-	inner       *StreamArchiveWriter
 	dirDepth    int
-	closers     []io.Closer
-	// Result after Finish
-	SplitResult *backupproxy.SplitArchiveResult
 }
 
 // NewSplitSessionArchiveWriter creates a split writer that uploads via a BackupSession.
@@ -296,4 +293,3 @@ func (w *SplitSessionArchiveWriter) Close() error {
 	}
 	return err
 }
-

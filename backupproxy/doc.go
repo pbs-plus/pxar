@@ -66,16 +66,13 @@ import (
 
 // DirEntry represents a single entry from a directory listing on the client.
 type DirEntry struct {
-	Name string
-	Stat format.Stat
-	Size uint64 // file size in bytes (0 for non-regular files)
-
-	// Extended metadata for accurate change detection and full archive fidelity.
-	// Populated from FileSystemAccessor when available.
-	XAttrs         []format.XAttr
-	ACL            pxar.ACL
-	FCaps          []byte
 	QuotaProjectID *uint64
+	Name           string
+	ACL            pxar.ACL
+	XAttrs         []format.XAttr
+	FCaps          []byte
+	Stat           format.Stat
+	Size           uint64
 }
 
 // DetectionMode controls how file changes are detected between backup runs.
@@ -113,42 +110,25 @@ func (d DetectionMode) String() string {
 
 // BackupConfig holds parameters for a single backup operation.
 type BackupConfig struct {
-	BackupType  datastore.BackupType // vm, ct, or host
-	BackupID    string               // backup identifier
-	BackupTime  int64                // Unix timestamp for this snapshot
-	Namespace   string               // optional namespace
-	Compress    bool                 // compress chunks with zstd
-	ChunkConfig buzhash.Config       // buzhash chunking parameters
-
-	// DetectionMode controls the backup format and change detection strategy.
-	// DetectionLegacy (default) creates a single v1 archive with all data.
-	// DetectionData creates split v2 archives with all data re-encoded.
-	// DetectionMetadata creates split v2 archives, reusing payload chunks
-	// for files whose metadata hasn't changed since PreviousBackup.
-	DetectionMode DetectionMode
-
-	// PreviousBackup identifies the snapshot to compare against when
-	// DetectionMode is DetectionMetadata. Required for metadata mode.
 	PreviousBackup *PreviousBackupRef
-
-	// CryptMode controls encryption of backup data.
-	// CryptModeNone (default) stores data in cleartext.
-	// CryptModeEncrypt encrypts all data with AEAD.
-	// CryptModeSign signs the manifest without encrypting data.
-	CryptMode datastore.CryptMode
-
-	// CryptConfig provides the encryption keys for CryptModeEncrypt or CryptModeSign.
-	// Must be set when CryptMode is not CryptModeNone.
-	CryptConfig *datastore.CryptConfig
+	CryptConfig    *datastore.CryptConfig
+	BackupID       string
+	Namespace      string
+	CryptMode      datastore.CryptMode
+	ChunkConfig    buzhash.Config
+	BackupType     datastore.BackupType
+	BackupTime     int64
+	DetectionMode  DetectionMode
+	Compress       bool
 }
 
 // PreviousBackupRef identifies a previous backup snapshot for metadata comparison.
 type PreviousBackupRef struct {
-	BackupType datastore.BackupType
 	BackupID   string
-	BackupTime int64
 	Namespace  string
-	Dir        string // local directory containing previous snapshot files (for LocalStore)
+	Dir        string
+	BackupType datastore.BackupType
+	BackupTime int64
 }
 
 // UploadResult describes the outcome of an archive upload.

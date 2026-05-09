@@ -117,11 +117,11 @@ func (r *FileArchiveReader) Close() error {
 // full-stream-in-memory reconstruction. For small archives where full
 // reconstruction is acceptable, use NewChunkedArchiveReaderEager.
 type ChunkedArchiveReader struct {
+	source  datastore.ChunkSource
 	inner   *FileArchiveReader
 	idx     *datastore.DynamicIndexReader
-	source  datastore.ChunkSource
+	lazy    *ChunkedReadSeeker
 	closers []io.Closer
-	lazy    *ChunkedReadSeeker // track for cleanup
 }
 
 // NewChunkedArchiveReader creates a reader for a chunked .pxar.didx archive
@@ -223,13 +223,13 @@ func (r *ChunkedArchiveReader) Close() error {
 // avoiding full-stream-in-memory reconstruction. For small archives, use
 // NewSplitArchiveReaderEager.
 type SplitArchiveReader struct {
+	source      datastore.ChunkSource
 	inner       *FileArchiveReader
 	metaIdx     *datastore.DynamicIndexReader
 	payloadIdx  *datastore.DynamicIndexReader
-	source      datastore.ChunkSource
-	closers     []io.Closer
 	metaLazy    *ChunkedReadSeeker
 	payloadLazy *ChunkedReadSeeker
+	closers     []io.Closer
 }
 
 // NewSplitArchiveReader creates a reader for a split chunked archive using

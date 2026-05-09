@@ -67,9 +67,9 @@ func (m *mockClient) GetFCaps(ctx context.Context, path string) ([]byte, error) 
 type memFS map[string]*memFile
 
 type memFile struct {
-	stat    format.Stat
-	data    []byte // file content, or symlink target
+	data    []byte
 	entries []DirEntry
+	stat    format.Stat
 }
 
 func newMemFS() memFS { return make(memFS) }
@@ -422,10 +422,10 @@ func TestDetectionModeString(t *testing.T) {
 		mode DetectionMode
 		want string
 	}{
-		{DetectionLegacy, "legacy"},
-		{DetectionData, "data"},
-		{DetectionMetadata, "metadata"},
-		{DetectionMode(99), "unknown"},
+		{mode: DetectionLegacy, want: "legacy"},
+		{mode: DetectionData, want: "data"},
+		{mode: DetectionMetadata, want: "metadata"},
+		{mode: DetectionMode(99), want: "unknown"},
 	}
 	for _, tt := range tests {
 		if got := tt.mode.String(); got != tt.want {
@@ -475,53 +475,53 @@ func TestEntryMatches(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
 		current     DirEntry
-		currentMeta pxar.Metadata
 		prev        *SnapshotEntry
+		name        string
+		currentMeta pxar.Metadata
 		want        bool
 	}{
 		{
-			"matching_file",
-			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 100},
-			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
-			prevEntry,
-			true,
+			name:        "matching_file",
+			current:     DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 100},
+			currentMeta: pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
+			prev:        prevEntry,
+			want:        true,
 		},
 		{
-			"diff_size",
-			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 200},
-			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
-			prevEntry,
-			false,
+			name:        "diff_size",
+			current:     DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 200},
+			currentMeta: pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
+			prev:        prevEntry,
+			want:        false,
 		},
 		{
-			"diff_mtime",
-			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1800000000}}, Size: 100},
-			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1800000000}}},
-			prevEntry,
-			false,
+			name:        "diff_mtime",
+			current:     DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1800000000}}, Size: 100},
+			currentMeta: pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1800000000}}},
+			prev:        prevEntry,
+			want:        false,
 		},
 		{
-			"diff_type",
-			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFDIR | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 0},
-			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
-			prevEntry,
-			false,
+			name:        "diff_type",
+			current:     DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFDIR | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 0},
+			currentMeta: pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
+			prev:        prevEntry,
+			want:        false,
 		},
 		{
-			"nil_prev",
-			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644}, Size: 100},
-			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
-			nil,
-			false,
+			name:        "nil_prev",
+			current:     DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644}, Size: 100},
+			currentMeta: pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}},
+			prev:        nil,
+			want:        false,
 		},
 		{
-			"diff_xattr",
-			DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 100, XAttrs: []format.XAttr{format.NewXAttr([]byte("user.test"), []byte("changed"))}},
-			pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, XAttrs: []format.XAttr{format.NewXAttr([]byte("user.test"), []byte("changed"))}},
-			prevEntry,
-			false,
+			name:        "diff_xattr",
+			current:     DirEntry{Name: "file.txt", Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, Size: 100, XAttrs: []format.XAttr{format.NewXAttr([]byte("user.test"), []byte("changed"))}},
+			currentMeta: pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: format.StatxTimestamp{Secs: 1700000000}}, XAttrs: []format.XAttr{format.NewXAttr([]byte("user.test"), []byte("changed"))}},
+			prev:        prevEntry,
+			want:        false,
 		},
 	}
 

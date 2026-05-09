@@ -19,29 +19,14 @@ type PBSArchiveReader struct {
 
 // PBSArchiveConfig holds the configuration for opening a PBS archive.
 type PBSArchiveConfig struct {
-	// Config is the PBS connection configuration.
-	Config backupproxy.PBSConfig
-	// BackupType is the backup type (e.g., "host", "vm").
-	BackupType string
-	// BackupID is the backup ID.
-	BackupID string
-	// BackupTime is the backup timestamp.
-	BackupTime int64
-	// ArchiveName is the filename of the archive in the backup snapshot.
-	// For v1: "root.pxar.didx"
-	// For v2: use MetaName + PayloadName
+	BackupType  string
+	BackupID    string
 	ArchiveName string
-	// MetaName is the metadata stream filename for split archives (v2).
-	MetaName string
-	// PayloadName is the payload stream filename for split archives (v2).
+	MetaName    string
 	PayloadName string
-
-	// MetaOnly skips downloading the payload stream entirely for v2 split
-	// archives. When true, only the metadata index (.mpxar.didx) is
-	// downloaded. This halves data transfer for browsing/indexing operations
-	// that never touch file content. ReadFileContent and ReadFileContentReader
-	// will return errors for files with PayloadOffset > 0.
-	MetaOnly bool
+	Config      backupproxy.PBSConfig
+	BackupTime  int64
+	MetaOnly    bool
 }
 
 // NewPBSArchiveReader creates a reader for a PBS remote archive.

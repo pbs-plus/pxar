@@ -24,9 +24,9 @@ var idKeySalt = []byte("_id_key")
 
 // CryptConfig holds the derived keys needed for encryption, signing, and fingerprinting.
 type CryptConfig struct {
-	encKey [32]byte    // raw AES-256 encryption key
-	idKey  [32]byte    // derived key for signing and digest computation
-	cipher cipher.AEAD // AES-256-GCM cipher
+	cipher cipher.AEAD
+	encKey [32]byte
+	idKey  [32]byte
 }
 
 // NewCryptConfig derives signing and fingerprint keys from a raw 32-byte encryption key.
@@ -105,11 +105,11 @@ func (c *CryptConfig) Fingerprint() [32]byte {
 
 // KeyConfig represents an encryption key file that can be stored on disk.
 type KeyConfig struct {
-	Kdf         KeyDerivationConfig `json:"kdf"`
 	Created     string              `json:"created,omitempty"`
 	Modified    string              `json:"modified,omitempty"`
-	Data        []byte              `json:"data"`
 	Fingerprint string              `json:"fingerprint,omitempty"`
+	Data        []byte              `json:"data"`
+	Kdf         KeyDerivationConfig `json:"kdf"`
 }
 
 // KeyDerivationConfig specifies the key derivation function parameters.

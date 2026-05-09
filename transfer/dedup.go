@@ -27,32 +27,21 @@ import (
 // For files not present in the source (new content), it falls back to normal
 // encoding and chunking.
 type DedupSplitArchiveWriter struct {
-	store    *datastore.ChunkStore
-	source   datastore.ChunkSource
-	config   buzhash.Config
-	compress bool
-
-	// Encoder for the metadata stream
-	metaBuf  bytes.Buffer
-	enc      *encoder.Encoder
-	dirDepth int
-
-	// New payload stream being built
-	payloadBuf    bytes.Buffer
-	payloadOffset uint64
-
-	// Source payload index for chunk lookup
-	sourcePayloadIdx *datastore.DynamicIndexReader
-
-	// Track which source payload chunks have been referenced
-	// so we can skip uploading them
+	source           datastore.ChunkSource
 	referencedChunks map[[32]byte]bool
-
-	// Results after Finish
-	metaIdxData    []byte
-	payloadIdxData []byte
-	dedupHits      int
-	dedupTotal     int
+	enc              *encoder.Encoder
+	store            *datastore.ChunkStore
+	sourcePayloadIdx *datastore.DynamicIndexReader
+	payloadIdxData   []byte
+	metaIdxData      []byte
+	metaBuf          bytes.Buffer
+	payloadBuf       bytes.Buffer
+	config           buzhash.Config
+	dirDepth         int
+	payloadOffset    uint64
+	dedupHits        int
+	dedupTotal       int
+	compress         bool
 }
 
 // NewDedupSplitArchiveWriter creates a writer that reuses source payload chunks.

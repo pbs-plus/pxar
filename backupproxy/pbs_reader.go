@@ -94,8 +94,8 @@ func (r *PBSReader) AsChunkSource() datastore.ChunkSource {
 
 // mutexChunkSource wraps pbsChunkSource with a mutex for goroutine safety.
 type mutexChunkSource struct {
-	mu    sync.Mutex
 	inner *pbsChunkSource
+	mu    sync.Mutex
 }
 
 func (m *mutexChunkSource) GetChunk(digest [32]byte) ([]byte, error) {
@@ -133,21 +133,17 @@ func (s *pbsChunkSource) GetChunk(digest [32]byte) ([]byte, error) {
 
 // pbsReaderConn is a raw HTTP/2 client for the PBS reader protocol.
 type pbsReaderConn struct {
-	conn         net.Conn
-	framer       *http2.Framer
-	enc          *hpack.Encoder
-	dec          *hpack.Decoder
-	hdrBuf       *bytes.Buffer
-	nextID       uint32
-	maxFrameSize uint32
-	authority    string
-
-	// Flow-control: tracks how many bytes the server is allowed to send us.
-	// connWindow is the connection-level window; per-stream windows are
-	// tracked via streamWindow when readBinaryResponse is active.
+	conn              net.Conn
+	framer            *http2.Framer
+	enc               *hpack.Encoder
+	dec               *hpack.Decoder
+	hdrBuf            *bytes.Buffer
+	authority         string
+	nextID            uint32
+	maxFrameSize      uint32
 	connWindow        uint32
-	connInitialWindow uint32 // initial connection-level window (65535, H2 default)
-	streamWindow      uint32 // initial per-stream window (from server SETTINGS)
+	connInitialWindow uint32
+	streamWindow      uint32
 }
 
 // dialPBSReaderH2 establishes an H2 reader connection to PBS.

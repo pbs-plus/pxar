@@ -113,11 +113,11 @@ func (p *h2Protocol) close() {
 
 // PBSConfig holds configuration for connecting to a Proxmox Backup Server.
 type PBSConfig struct {
-	BaseURL       string // PBS API base URL (e.g. "https://pbs:8007/api2/json")
-	Datastore     string // target datastore name
-	AuthToken     string // PBS API token ("TOKENID:SECRET")
-	SkipTLSVerify bool   // disable TLS certificate verification
-	Namespace     string // optional namespace for the backup
+	BaseURL       string
+	Datastore     string
+	AuthToken     string
+	Namespace     string
+	SkipTLSVerify bool
 }
 
 // PBSRemoteStore implements RemoteStore via the PBS H2 backup protocol.
@@ -155,13 +155,13 @@ func (ps *PBSRemoteStore) StartSession(ctx context.Context, config BackupConfig)
 
 // pbsSession implements BackupSession for PBS.
 type pbsSession struct {
-	store       *PBSRemoteStore
-	proto       pbsBackupProtocol
 	config      BackupConfig
-	compress    bool
-	chunkCfg    buzhash.Config
+	proto       pbsBackupProtocol
+	store       *PBSRemoteStore
+	knownChunks map[[32]byte]bool
 	files       []datastore.FileInfo
-	knownChunks map[[32]byte]bool // client-side deduplication cache
+	chunkCfg    buzhash.Config
+	compress    bool
 }
 
 func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error) {

@@ -19,11 +19,11 @@ const (
 )
 
 type catalogDirEntry struct {
-	entryType byte
 	name      string
 	size      uint64
 	mtime     int64
 	offset    int64
+	entryType byte
 }
 
 type catalogDirInfo struct {
@@ -43,9 +43,9 @@ type catalogDirInfo struct {
 // Dir extra:    [offset(u64)] (offset from dir start in the stream)
 type CatalogWriter struct {
 	w        io.Writer
+	err      error
 	dirstack []catalogDirInfo
 	pos      int64
-	err      error
 }
 
 // NewCatalogWriter creates a catalog writer and writes the pcat1 magic header.

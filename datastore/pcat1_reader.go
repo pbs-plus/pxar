@@ -21,11 +21,11 @@ const (
 )
 
 type CatalogTreeEntry struct {
-	EntryType CatalogEntryType
 	Name      string
+	Children  []CatalogTreeEntry
+	EntryType CatalogEntryType
 	Size      uint64
 	Mtime     int64
-	Children  []CatalogTreeEntry
 }
 
 type CatalogReader struct {

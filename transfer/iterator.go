@@ -30,10 +30,10 @@ type walkFrame struct {
 //	if err := walker.Err(); err != nil { ... }
 type TreeWalker struct {
 	reader ArchiveReader
-	opts   WalkOption
+	err    error
 	stack  []walkFrame
 	entry  pxar.Entry
-	err    error
+	opts   WalkOption
 }
 
 // NewTreeWalker creates a pull-based walker for the archive.

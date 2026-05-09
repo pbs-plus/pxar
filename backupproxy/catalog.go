@@ -14,8 +14,8 @@ import (
 // used for metadata change detection.
 type SnapshotEntry struct {
 	Path          string
-	Stat          format.Stat
 	Metadata      pxar.Metadata
+	Stat          format.Stat
 	FileSize      uint64
 	PayloadOffset uint64
 	IsRegularFile bool

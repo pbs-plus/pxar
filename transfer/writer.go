@@ -11,10 +11,8 @@ import (
 
 // WriterOptions configures how an ArchiveWriter creates archives.
 type WriterOptions struct {
-	// Format is the output format version (v1 or v2).
-	Format format.FormatVersion
-	// Prelude is optional prelude data for v2 archives.
 	Prelude []byte
+	Format  format.FormatVersion
 }
 
 // ArchiveWriter provides unified write access to any pxar archive format.
@@ -46,9 +44,9 @@ type StreamArchiveWriter struct {
 	output     io.Writer
 	payloadOut io.Writer
 	enc        *encoder.Encoder
-	dirDepth   int
 	opts       WriterOptions
 	closers    []io.Closer
+	dirDepth   int
 }
 
 // NewStreamArchiveWriter creates a writer for v1 (unified) format.

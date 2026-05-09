@@ -14,8 +14,8 @@ type DynamicEntry struct {
 
 // DynamicIndexReader reads a dynamic chunk index.
 type DynamicIndexReader struct {
-	header  DynamicIndexHeader
 	entries []DynamicEntry
+	header  DynamicIndexHeader
 }
 
 // ReadDynamicIndex parses a dynamic index from raw bytes.
@@ -126,10 +126,10 @@ func (r *DynamicIndexReader) ComputeCsum() ([32]byte, uint64) {
 
 // DynamicIndexWriter builds a dynamic chunk index.
 type DynamicIndexWriter struct {
-	header  DynamicIndexHeader
 	entries []DynamicEntry
-	cached  bool
+	header  DynamicIndexHeader
 	csum    [32]byte
+	cached  bool
 }
 
 // NewDynamicIndexWriter creates a new writer with the given creation time.

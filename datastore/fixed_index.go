@@ -9,8 +9,8 @@ import (
 
 // FixedIndexReader reads a fixed-size chunk index.
 type FixedIndexReader struct {
-	header    FixedIndexHeader
 	digests   [][32]byte
+	header    FixedIndexHeader
 	size      uint64
 	chunkSize uint64
 }
@@ -100,8 +100,8 @@ func (r *FixedIndexReader) ComputeCsum() ([32]byte, uint64) {
 
 // FixedIndexWriter builds a fixed-size chunk index.
 type FixedIndexWriter struct {
-	header    FixedIndexHeader
 	digests   [][32]byte
+	header    FixedIndexHeader
 	size      uint64
 	chunkSize uint64
 	count     int

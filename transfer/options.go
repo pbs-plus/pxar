@@ -8,22 +8,11 @@ import (
 
 // TransferOption configures a file transfer operation.
 type TransferOption struct {
-	// SourceCryptConfig provides decryption configuration for the source archive.
-	// Required when the source archive is encrypted.
 	SourceCryptConfig *datastore.CryptConfig
-
-	// TargetCryptConfig provides encryption configuration for the target archive.
-	// Required when the target archive should be encrypted.
 	TargetCryptConfig *datastore.CryptConfig
-
-	// TargetFormat specifies the output format (v1 or v2).
-	TargetFormat format.FormatVersion
-
-	// Overwrite allows overwriting existing entries in the target archive.
-	Overwrite bool
-
-	// ProgressCallback is called during transfer to report progress.
-	ProgressCallback func(path string, bytes uint64)
+	ProgressCallback  func(path string, bytes uint64)
+	TargetFormat      format.FormatVersion
+	Overwrite         bool
 }
 
 // PathMapping maps a source path to a destination path inside the archives.
@@ -93,9 +82,9 @@ type ListOption struct {
 // only the fields needed for cataloging: path, kind, size, and parent.
 type CatalogEntry struct {
 	Path       string
+	ParentPath string
 	Kind       pxar.EntryKind
 	FileSize   uint64
-	ParentPath string // filled in by the library
 }
 
 // WalkOption configures walk behavior. The zero value walks all entry types

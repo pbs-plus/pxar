@@ -13,11 +13,11 @@ import (
 // Session implements FileSystem over a pxar archive, providing FUSE-compatible
 // operations without importing go-fuse directly.
 type Session struct {
-	mu     sync.Mutex
-	acc    *accessor.Accessor
 	reader io.ReadSeeker
-	size   int64
+	acc    *accessor.Accessor
 	nodes  map[uint64]*Node
+	size   int64
+	mu     sync.Mutex
 }
 
 // NewSession creates a new FUSE filesystem session over a pxar archive.

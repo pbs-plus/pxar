@@ -45,9 +45,9 @@ func ParseBackupType(s string) (BackupType, error) {
 
 // BackupGroup represents a collection of backup snapshots (e.g., vm/100).
 type BackupGroup struct {
-	Type BackupType
 	ID   string
-	Base string // base directory (datastore root)
+	Base string
+	Type BackupType
 }
 
 // Path returns the relative path for this group (e.g., "vm/100").
@@ -94,8 +94,8 @@ func (g BackupGroup) Destroy() error {
 
 // BackupDir represents a single backup snapshot.
 type BackupDir struct {
-	Group     BackupGroup
 	Timestamp time.Time
+	Group     BackupGroup
 }
 
 // Path returns the relative path (e.g., "vm/100/2023-11-14T22:13:20Z").

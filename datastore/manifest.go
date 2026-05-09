@@ -18,19 +18,19 @@ const (
 type FileInfo struct {
 	Filename  string `json:"filename"`
 	CryptMode string `json:"crypt-mode,omitempty"`
-	Size      uint64 `json:"size"`
 	CSum      string `json:"csum"`
+	Size      uint64 `json:"size"`
 }
 
 // Manifest represents a backup manifest (index.json).
 type Manifest struct {
 	BackupType  string          `json:"backup-type"`
 	BackupID    string          `json:"backup-id"`
-	BackupTime  int64           `json:"backup-time"`
-	Files       []FileInfo      `json:"files"`
 	CryptMode   string          `json:"crypt-mode,omitempty"`
 	Signature   string          `json:"signature,omitempty"`
+	Files       []FileInfo      `json:"files"`
 	Unprotected json.RawMessage `json:"unprotected,omitempty"`
+	BackupTime  int64           `json:"backup-time"`
 }
 
 // Marshal serializes the manifest to JSON.

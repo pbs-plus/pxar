@@ -74,21 +74,15 @@ const (
 
 // Entry represents an item in a pxar archive.
 type Entry struct {
-	Path     string
-	Metadata Metadata
-	Kind     EntryKind
-
-	// File-specific fields
-	FileSize      uint64 // valid when Kind == KindFile
-	FileOffset    uint64 // byte offset in archive (start of FILENAME header)
-	PayloadOffset uint64 // byte offset in payload stream (0 if not split)
-	ContentOffset uint64 // absolute byte offset where content begins (after PAYLOAD header for files, start of child entries for dirs)
-
-	// Symlink/Hardlink target
-	LinkTarget string
-
-	// Device info
-	DeviceInfo format.Device
+	Metadata      Metadata
+	Path          string
+	LinkTarget    string
+	DeviceInfo    format.Device
+	Kind          EntryKind
+	FileSize      uint64
+	FileOffset    uint64
+	PayloadOffset uint64
+	ContentOffset uint64
 }
 
 // IsDir reports whether the entry is a directory.
@@ -132,11 +126,11 @@ func (e *Entry) FileNameBytes() []byte {
 
 // Metadata holds file metadata found in pxar archives.
 type Metadata struct {
-	Stat           format.Stat
-	XAttrs         []format.XAttr
-	ACL            ACL
-	FCaps          []byte // file capability data
 	QuotaProjectID *uint64
+	ACL            ACL
+	XAttrs         []format.XAttr
+	FCaps          []byte
+	Stat           format.Stat
 }
 
 // FileType returns the file type portion of the mode.

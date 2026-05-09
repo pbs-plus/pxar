@@ -12,9 +12,9 @@ func TestBackupTypeString(t *testing.T) {
 		bt   BackupType
 		want string
 	}{
-		{BackupVM, "vm"},
-		{BackupCT, "ct"},
-		{BackupHost, "host"},
+		{bt: BackupVM, want: "vm"},
+		{bt: BackupCT, want: "ct"},
+		{bt: BackupHost, want: "host"},
 	}
 	for _, tt := range tests {
 		if tt.bt.String() != tt.want {

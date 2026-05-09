@@ -13,13 +13,11 @@ import (
 // This is critical for same-datastore transfers where only a subset of files
 // are needed — it avoids downloading the entire payload stream from PBS.
 type ChunkedReadSeeker struct {
-	idx    *datastore.DynamicIndexReader
-	source datastore.ChunkSource
-	offset int64
-	size   int64
-	// LRU cache of decoded chunks: chunk index → decoded data
-	cache map[int][]byte
-	// Maximum number of cached chunks (0 = unlimited)
+	source   datastore.ChunkSource
+	idx      *datastore.DynamicIndexReader
+	cache    map[int][]byte
+	offset   int64
+	size     int64
 	maxCache int
 }
 

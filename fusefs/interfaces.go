@@ -32,9 +32,9 @@ type Attr struct {
 
 // DirEntry is a directory entry, compatible with go-fuse's fuse.DirEntry.
 type DirEntry struct {
-	Ino uint64
-	Mode uint32
 	Name string
+	Ino  uint64
+	Mode uint32
 }
 
 // DirEntryIndex adds an offset to DirEntry for readdir pagination.

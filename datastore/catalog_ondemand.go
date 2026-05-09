@@ -59,8 +59,8 @@ type BuildResult struct {
 // --- Streaming chunk reader ---
 
 type prefetchedChunk struct {
-	data []byte
 	err  error
+	data []byte
 }
 
 // streamChunkReader implements streamReader by fetching chunks from the
@@ -70,16 +70,16 @@ type prefetchedChunk struct {
 //
 // Peak memory: ~8 MB (2 × 4 MB chunks) regardless of total metadata size.
 type streamChunkReader struct {
-	metaIdx   *DynamicIndexReader
 	source    ChunkSource
-	chunks    [][]byte // at most 2 decoded chunks
-	baseIdx   int      // chunks[0] corresponds to this metaIdx index
-	nextFetch int      // next metaIdx index to fetch
-	ci        int      // current position in chunks
-	pos       int
-	ch        chan prefetchedChunk
-	closed    bool
 	err       error
+	metaIdx   *DynamicIndexReader
+	ch        chan prefetchedChunk
+	chunks    [][]byte
+	baseIdx   int
+	nextFetch int
+	ci        int
+	pos       int
+	closed    bool
 }
 
 func newStreamChunkReader(metaIdx *DynamicIndexReader, source ChunkSource) *streamChunkReader {
@@ -368,12 +368,11 @@ func BuildDirIndex(
 //
 // Safe for concurrent use. Internal LRU cache is mutex-protected.
 type OnDemandCatalog struct {
-	index   *DirIndex
+	cache   lruChunkCache
 	source  ChunkSource
+	index   *DirIndex
 	metaIdx *DynamicIndexReader
-
-	mu    sync.Mutex
-	cache lruChunkCache
+	mu      sync.Mutex
 }
 
 // NewOnDemandCatalog creates a lazy catalog backed by the given index and source.
@@ -552,14 +551,14 @@ func buildChildPathStr(parentPath, name string) string {
 // lruChunkCache is a simple LRU cache for decoded chunk data.
 // Not goroutine-safe — callers must hold external locks.
 type lruChunkCache struct {
-	capacity int
 	items    map[int]*list.Element
-	order    *list.List // front = most recent
+	order    *list.List
+	capacity int
 }
 
 type cacheEntry struct {
-	idx  int
 	data []byte
+	idx  int
 }
 
 func newLRUChunkCache(capacity int) lruChunkCache {
@@ -601,10 +600,10 @@ func (c *lruChunkCache) Put(idx int, data []byte) {
 // the OnDemandCatalog's chunk source. Supports seeking for subtree skip.
 type lazyChunkReader struct {
 	cat       *OnDemandCatalog
-	baseChunk int      // chunks[0] corresponds to this metaIdx index
-	chunks    [][]byte // fetched chunks, lazily grown
-	ci        int      // current index in chunks slice
-	pos       int      // offset in chunks[ci]
+	chunks    [][]byte
+	baseChunk int
+	ci        int
+	pos       int
 }
 
 func (r *lazyChunkReader) ensureChunk() error {

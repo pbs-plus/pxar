@@ -155,12 +155,12 @@ func (ls *LocalStore) StartSession(_ context.Context, config BackupConfig) (Back
 
 // localSession implements BackupSession for local filesystem storage.
 type localSession struct {
-	store       *datastore.ChunkStore
 	config      BackupConfig
-	chunkConfig buzhash.Config
-	compress    bool
+	store       *datastore.ChunkStore
 	baseDir     string
 	files       []datastore.FileInfo
+	chunkConfig buzhash.Config
+	compress    bool
 }
 
 func (s *localSession) UploadArchive(_ context.Context, name string, data io.Reader) (*UploadResult, error) {
@@ -298,8 +298,8 @@ func (ls *LocalStore) ReadPreviousArchive(_ context.Context, _ datastore.BackupT
 
 // localSnapshotSource implements PreviousSnapshotSource for local filesystem storage.
 type localSnapshotSource struct {
-	dir      string
 	chunkSrc *datastore.ChunkStoreSource
+	dir      string
 }
 
 func (ls *localSnapshotSource) ReadArchive(filename string) ([]byte, error) {

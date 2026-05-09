@@ -22,18 +22,18 @@ func IsDirInode(inode uint64) bool {
 
 // Node holds cached metadata for a filesystem entry.
 type Node struct {
-	mu           sync.Mutex
-	inode        uint64
-	parent       uint64
-	refs         uint64
-	entryStart   uint64
-	entryEnd     uint64
-	contentOff   uint64
-	contentSize  uint64
-	hasContent   bool
-	cachedStat   format.Stat
-	cachedSize   uint64
-	hasCache     bool
+	cachedStat  format.Stat
+	inode       uint64
+	parent      uint64
+	refs        uint64
+	entryStart  uint64
+	entryEnd    uint64
+	contentOff  uint64
+	contentSize uint64
+	cachedSize  uint64
+	mu          sync.Mutex
+	hasContent  bool
+	hasCache    bool
 }
 
 // newNode creates a node with an initial reference count of 1.

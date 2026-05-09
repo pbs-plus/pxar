@@ -13,8 +13,8 @@ import (
 // Field order: largest first to minimize padding (Size int64, Name string, Kind pxar.EntryKind).
 // Total: 8 + 16 + 8 = 32 bytes.
 type CatalogChild struct {
-	Size int64
 	Name string
+	Size int64
 	Kind pxar.EntryKind
 }
 

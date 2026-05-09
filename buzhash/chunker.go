@@ -13,12 +13,12 @@ const readBufSize = 256 << 10 // 256KB read buffer
 // until the next call to Next. Callers must copy the data if they need to
 // retain it.
 type Chunker struct {
-	config Config
 	reader io.Reader
+	buf    []byte
+	out    []byte
 	hasher Hasher
-	buf    []byte // read buffer
-	out    []byte // pre-allocated spill buffer (size = MaxChunkSize)
-	outLen int    // bytes in spill buffer
+	config Config
+	outLen int
 	bufPos int
 	bufLen int
 	eof    bool

@@ -148,12 +148,12 @@ func TestRestorerRestoreRange(t *testing.T) {
 		length uint64
 		want   string
 	}{
-		{"first chunk only", 0, 5, "01234"},
-		{"cross chunk boundary", 8, 4, "89ab"},
-		{"middle of second chunk", 12, 3, "cde"},
-		{"cross two boundaries", 8, 8, "89abcdef"},
-		{"last part of file", 25, 5, "FGHIJ"},
-		{"entire file", 0, 30, "0123456789abcdefghijABCDEFGHIJ"},
+		{name: "first chunk only", offset: 0, length: 5, want: "01234"},
+		{name: "cross chunk boundary", offset: 8, length: 4, want: "89ab"},
+		{name: "middle of second chunk", offset: 12, length: 3, want: "cde"},
+		{name: "cross two boundaries", offset: 8, length: 8, want: "89abcdef"},
+		{name: "last part of file", offset: 25, length: 5, want: "FGHIJ"},
+		{name: "entire file", offset: 0, length: 30, want: "0123456789abcdefghijABCDEFGHIJ"},
 	}
 
 	for _, tc := range tests {

@@ -22,11 +22,10 @@ func (o LinkOffset) Raw() uint64 { return uint64(o) }
 type Encoder struct {
 	output     io.Writer
 	payloadOut io.Writer
-	state      []encoderState
-	finished   bool
-	version    format.FormatVersion
-	copyBuf    []byte
 	err        error
+	state      []encoderState
+	version    format.FormatVersion
+	finished   bool
 }
 
 type encoderState struct {
@@ -42,8 +41,7 @@ type encoderState struct {
 // metadata describes the root directory. prelude is optional v2 prelude data.
 func NewEncoder(output, payloadOut io.Writer, metadata *pxar.Metadata, prelude []byte) *Encoder {
 	enc := &Encoder{
-		output:  output,
-		copyBuf: make([]byte, 1024*1024),
+		output: output,
 	}
 
 	if payloadOut != nil {

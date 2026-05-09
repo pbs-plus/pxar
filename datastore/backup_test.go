@@ -63,7 +63,11 @@ func TestBackupGroupRoundTrip(t *testing.T) {
 		}
 	}
 
-	snapshots, err := bg.ListSnapshots()
+	var snapshots []BackupDir
+	err := bg.ListSnapshots(func(snap BackupDir) error {
+		snapshots = append(snapshots, snap)
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

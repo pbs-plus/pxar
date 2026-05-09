@@ -24,6 +24,12 @@ type ArchiveWriter interface {
 	// For regular files, content is the file data. For other types, content may be nil.
 	WriteEntry(entry *pxar.Entry, content []byte) error
 
+	// WriteEntryReader writes a file entry with content streamed from r.
+	// size is the total byte count. For non-file entries (symlink, device,
+	// fifo, socket), r and size are ignored and content is nil.
+	// The caller must ensure r provides exactly size bytes.
+	WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error
+
 	// BeginDirectory pushes a directory context.
 	BeginDirectory(name string, meta *pxar.Metadata) error
 
@@ -105,6 +111,35 @@ func (w *StreamArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) erro
 	case pxar.KindSocket:
 		return w.enc.AddSocket(&entry.Metadata, name)
 
+	default:
+		return fmt.Errorf("unsupported entry kind: %v", entry.Kind)
+	}
+}
+
+func (w *StreamArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+	if w.enc == nil {
+		return fmt.Errorf("writer not initialized, call Begin first")
+	}
+	name := entry.FileName()
+	switch entry.Kind {
+	case pxar.KindFile:
+		fw, err := w.enc.CreateFile(&entry.Metadata, name, size)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(fw, r); err != nil {
+			fw.Close()
+			return err
+		}
+		return fw.Close()
+	case pxar.KindSymlink:
+		return w.enc.AddSymlink(&entry.Metadata, name, entry.LinkTarget)
+	case pxar.KindDevice:
+		return w.enc.AddDevice(&entry.Metadata, name, entry.DeviceInfo)
+	case pxar.KindFifo:
+		return w.enc.AddFIFO(&entry.Metadata, name)
+	case pxar.KindSocket:
+		return w.enc.AddSocket(&entry.Metadata, name)
 	default:
 		return fmt.Errorf("unsupported entry kind: %v", entry.Kind)
 	}

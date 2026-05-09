@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"io"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/buzhash"
@@ -113,6 +114,32 @@ func (w *DedupSplitArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) 
 	}
 }
 
+func (w *DedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+	name := entry.FileName()
+	switch entry.Kind {
+	case pxar.KindFile:
+		fw, err := w.enc.CreateFile(&entry.Metadata, name, size)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(fw, r); err != nil {
+			fw.Close()
+			return err
+		}
+		return fw.Close()
+	case pxar.KindSymlink:
+		return w.enc.AddSymlink(&entry.Metadata, name, entry.LinkTarget)
+	case pxar.KindDevice:
+		return w.enc.AddDevice(&entry.Metadata, name, entry.DeviceInfo)
+	case pxar.KindFifo:
+		return w.enc.AddFIFO(&entry.Metadata, name)
+	case pxar.KindSocket:
+		return w.enc.AddSocket(&entry.Metadata, name)
+	default:
+		return fmt.Errorf("unsupported entry kind: %v", entry.Kind)
+	}
+}
+
 func (w *DedupSplitArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
@@ -152,7 +179,7 @@ func (w *DedupSplitArchiveWriter) Finish() error {
 
 	// Now chunk and store the metadata stream (small)
 	chunker := datastore.NewStoreChunker(w.store, w.config, w.compress)
-	metaResults, metaIdx, err := chunker.ChunkStream(bytes.NewReader(w.metaBuf.Bytes()))
+	metaResults, metaIdx, err := chunker.ChunkStream(bytes.NewReader(w.metaBuf.Bytes()), nil)
 	if err != nil {
 		return fmt.Errorf("chunk metadata: %w", err)
 	}
@@ -167,7 +194,7 @@ func (w *DedupSplitArchiveWriter) Finish() error {
 	// InsertChunk already skips existing chunks for local stores.
 	// Track which chunks already existed vs are new.
 	payloadChunker := datastore.NewStoreChunker(w.store, w.config, w.compress)
-	payloadResults, payloadIdx, err := payloadChunker.ChunkStream(bytes.NewReader(w.payloadBuf.Bytes()))
+	payloadResults, payloadIdx, err := payloadChunker.ChunkStream(bytes.NewReader(w.payloadBuf.Bytes()), nil)
 	if err != nil {
 		return fmt.Errorf("chunk payload: %w", err)
 	}

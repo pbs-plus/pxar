@@ -50,6 +50,10 @@ func (w *ChunkedArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) err
 	return w.inner.WriteEntry(entry, content)
 }
 
+func (w *ChunkedArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+	return w.inner.WriteEntryReader(entry, r, size)
+}
+
 func (w *ChunkedArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
 	w.dirDepth++
 	return w.inner.BeginDirectory(name, meta)
@@ -77,7 +81,7 @@ func (w *ChunkedArchiveWriter) Finish() error {
 
 	// Now chunk and store the encoded archive
 	chunker := datastore.NewStoreChunker(w.store, w.config, w.compress)
-	results, idx, err := chunker.ChunkStream(bytes.NewReader(w.buf.Bytes()))
+	results, idx, err := chunker.ChunkStream(bytes.NewReader(w.buf.Bytes()), nil)
 	if err != nil {
 		return fmt.Errorf("chunk archive: %w", err)
 	}
@@ -85,7 +89,7 @@ func (w *ChunkedArchiveWriter) Finish() error {
 	// Handle split archive payload
 	if w.inner.payloadOut != nil {
 		payloadBuf := w.inner.payloadOut.(*bytes.Buffer)
-		_, payloadIdx, err := chunker.ChunkStream(bytes.NewReader(payloadBuf.Bytes()))
+		_, payloadIdx, err := chunker.ChunkStream(bytes.NewReader(payloadBuf.Bytes()), nil)
 		if err != nil {
 			return fmt.Errorf("chunk payload: %w", err)
 		}
@@ -110,7 +114,7 @@ func (w *ChunkedArchiveWriter) PayloadIndexData() ([]byte, error) {
 	}
 	payloadBuf := w.inner.payloadOut.(*bytes.Buffer)
 	chunker := datastore.NewStoreChunker(w.store, w.config, w.compress)
-	_, idx, err := chunker.ChunkStream(bytes.NewReader(payloadBuf.Bytes()))
+	_, idx, err := chunker.ChunkStream(bytes.NewReader(payloadBuf.Bytes()), nil)
 	if err != nil {
 		return nil, fmt.Errorf("chunk payload: %w", err)
 	}
@@ -158,6 +162,10 @@ func (w *SessionArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOptions
 
 func (w *SessionArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
 	return w.inner.WriteEntry(entry, content)
+}
+
+func (w *SessionArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+	return w.inner.WriteEntryReader(entry, r, size)
 }
 
 func (w *SessionArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
@@ -241,6 +249,10 @@ func (w *SplitSessionArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOp
 
 func (w *SplitSessionArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
 	return w.inner.WriteEntry(entry, content)
+}
+
+func (w *SplitSessionArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+	return w.inner.WriteEntryReader(entry, r, size)
 }
 
 func (w *SplitSessionArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {

@@ -60,17 +60,16 @@ func (g BackupGroup) FullPath() string {
 	return filepath.Join(g.Base, g.Path())
 }
 
-// ListSnapshots returns all backup snapshots in this group.
-func (g BackupGroup) ListSnapshots() ([]BackupDir, error) {
+// ListSnapshots invokes fn for each backup snapshot in this group.
+func (g BackupGroup) ListSnapshots(fn func(BackupDir) error) error {
 	entries, err := os.ReadDir(g.FullPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil
 		}
-		return nil, err
+		return err
 	}
 
-	var snapshots []BackupDir
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -79,12 +78,14 @@ func (g BackupGroup) ListSnapshots() ([]BackupDir, error) {
 		if err != nil {
 			continue // skip non-timestamp dirs
 		}
-		snapshots = append(snapshots, BackupDir{
+		if err := fn(BackupDir{
 			Group:     g,
 			Timestamp: ts,
-		})
+		}); err != nil {
+			return err
+		}
 	}
-	return snapshots, nil
+	return nil
 }
 
 // Destroy removes the backup group directory.

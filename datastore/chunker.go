@@ -37,13 +37,6 @@ func NewStoreChunker(store *ChunkStore, config buzhash.Config, compress bool) *S
 	}
 }
 
-// ChunkStream reads all data from r, splits it into chunks, stores each chunk,
-// and builds a dynamic index. Returns the chunk results and the completed index
-// writer (Finish has NOT been called on it yet).
-func (sc *StoreChunker) ChunkStream(r io.Reader) ([]ChunkResult, *DynamicIndexWriter, error) {
-	return sc.ChunkStreamCallback(r, nil)
-}
-
 var BlobBufPool = sync.Pool{
 	New: func() any {
 		buf := make([]byte, 0, 4<<20)
@@ -57,10 +50,11 @@ func PutBlobBuf(bp *[]byte) {
 	BlobBufPool.Put(bp)
 }
 
-// ChunkStreamCallback is like ChunkStream but calls fn for each chunk after it
-// is stored. If fn returns a non-nil error, chunking stops and the error is
-// returned. If fn is nil, no callback is made.
-func (sc *StoreChunker) ChunkStreamCallback(r io.Reader, fn func(ChunkResult) error) ([]ChunkResult, *DynamicIndexWriter, error) {
+// ChunkStream reads all data from r, stores each chunk, and builds an index.
+// fn is called for each chunk after it is stored; if fn returns a non-nil
+// error, chunking stops and the error is returned. If fn is nil, no callback
+// is made.
+func (sc *StoreChunker) ChunkStream(r io.Reader, fn func(ChunkResult) error) ([]ChunkResult, *DynamicIndexWriter, error) {
 	index := NewDynamicIndexWriter(time.Now().Unix())
 	chunker := buzhash.NewChunker(r, sc.config)
 

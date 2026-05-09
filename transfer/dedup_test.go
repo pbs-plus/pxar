@@ -44,7 +44,7 @@ func createChunkedArchive(t *testing.T, files map[string]string) (*datastore.Chu
 
 	// Chunk and store
 	chunker := datastore.NewStoreChunker(store, config, false)
-	results, idx, err := chunker.ChunkStream(bytes.NewReader(buf.Bytes()))
+	results, idx, err := chunker.ChunkStream(bytes.NewReader(buf.Bytes()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func createSplitChunkedArchive(t *testing.T, files map[string]string) (*datastor
 
 	// Chunk metadata stream
 	metaChunker := datastore.NewStoreChunker(store, config, false)
-	_, metaIdx, err := metaChunker.ChunkStream(bytes.NewReader(metaBuf.Bytes()))
+	_, metaIdx, err := metaChunker.ChunkStream(bytes.NewReader(metaBuf.Bytes()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func createSplitChunkedArchive(t *testing.T, files map[string]string) (*datastor
 
 	// Chunk payload stream
 	payloadChunker := datastore.NewStoreChunker(store, config, false)
-	_, payloadIdx, err := payloadChunker.ChunkStream(bytes.NewReader(payloadBuf.Bytes()))
+	_, payloadIdx, err := payloadChunker.ChunkStream(bytes.NewReader(payloadBuf.Bytes()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,8 +324,8 @@ func TestDedupSplitArchiveWriterRoundTrip(t *testing.T) {
 	}
 
 	entry := &pxar.Entry{
-		Path: "file.txt",
-		Kind: pxar.KindFile,
+		Path:     "file.txt",
+		Kind:     pxar.KindFile,
 		Metadata: pxar.FileMetadata(0o644).Owner(0, 0).Build(),
 		FileSize: uint64(len("original content")),
 	}
@@ -542,7 +542,7 @@ func createSplitChunkedArchiveMeta(t *testing.T, store *datastore.ChunkStore, fi
 	}
 
 	metaChunker := datastore.NewStoreChunker(store, config, false)
-	_, metaIdx, err := metaChunker.ChunkStream(bytes.NewReader(metaBuf.Bytes()))
+	_, metaIdx, err := metaChunker.ChunkStream(bytes.NewReader(metaBuf.Bytes()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,4 +621,3 @@ func TestDynamicIndexRoundTrip(t *testing.T) {
 		t.Errorf("offset 3000: chunk = %d, ok = %v", chunk, ok)
 	}
 }
-

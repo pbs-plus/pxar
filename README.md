@@ -118,7 +118,11 @@ The accessor package provides seek-based random access to archives, enabling O(l
 package main
 
 import (
+    "fmt"
+    "io"
     "os"
+
+    pxar "github.com/pbs-plus/pxar"
     "github.com/pbs-plus/pxar/accessor"
 )
 
@@ -131,14 +135,19 @@ func main() {
     // Get root entry
     root, _ := acc.ReadRoot()
 
-    // List directory entries
-    entries, _ := acc.ListDirectory(int64(root.ContentOffset))
+    // Stream directory entries with zero-allocation callback
+    acc.ListDirectory(int64(root.ContentOffset), accessor.ListOption{}, func(entry *pxar.Entry) error {
+        fmt.Println(entry.FileName())
+        return nil
+    })
 
     // Look up a file by path
     entry, _ := acc.Lookup("subdir/secret.txt")
 
-    // Read file content
-    content, _ := acc.ReadFileContent(entry)
+    // Stream file content (zero-copy)
+    rc, _ := acc.ReadFileContentReader(entry)
+    defer rc.Close()
+    content, _ := io.ReadAll(rc)
 }
 ```
 
@@ -663,15 +672,14 @@ func main() {
 
 - `NewAccessor(reader, ...payloadReader)` — Create from an `io.ReadSeeker`
 - `ReadRoot()` — Get the root directory entry
-- `ListDirectory(offset)` / `ListDirectoryWithOptions(offset, opts)` — List entries with optional minimal decoding
+- `ListDirectory(offset, opts, fn)` — Zero-allocation callback-based directory streaming
 - `Lookup(path)` — O(log n) path lookup via goodbye tables
-- `LookupBatch(paths)` — Batch lookup sharing directory traversals
-- `ReadFileContent(entry)` / `ReadFileContentReader(entry)` — Streaming or buffered content reads
+- `ReadFileContent(entry)` / `ReadFileContentReader(entry)` — Buffered or streaming content reads
 
 ### `transfer` — File Transfer Between Archives
 
-- `ArchiveReader` — Unified read interface (ReadRoot, Lookup, ListDirectory, ReadFileContent)
-- `ArchiveWriter` — Unified write interface (Begin, WriteEntry, BeginDirectory, EndDirectory, Finish)
+- `ArchiveReader` — Unified read interface (ReadRoot, Lookup, ListDirectory, ReadFileContent, ReadCatalog)
+- `ArchiveWriter` — Unified write interface (Begin, WriteEntry, WriteEntryReader, BeginDirectory, EndDirectory, Finish)
 - `FileArchiveReader` — Reads from standalone .pxar files
 - `ChunkedArchiveReader` — Reads from chunked .pxar.didx archives
 - `SplitArchiveReader` — Reads from split .mpxar.didx + .ppxar.didx archives
@@ -681,8 +689,9 @@ func main() {
 - `SessionArchiveWriter` / `SplitSessionArchiveWriter` — Uploads via BackupSession
 - `DecryptingChunkSource` — Decrypts encrypted chunks on the fly
 - `Copy` / `CopyTree` / `Merge` — Transfer functions connecting readers to writers
-- `WalkTree` — Recursive directory walker with ErrSkipDir support
-- `TransferOption` — Configuration for encryption, format, overwrite, progress
+- `WalkTree` / `WalkTreeMeta` / `TreeWalker` — Recursive directory walkers with ErrSkipDir support and filter masks
+- `ListOption` — Minimal metadata decoding for index/browse workloads
+- `TransferOption` — Configuration for encryption, format, overwrite, OnProgress callback
 
 ### `buzhash` — Content-Defined Chunking
 

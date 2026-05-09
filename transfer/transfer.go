@@ -36,8 +36,8 @@ func Copy(src ArchiveReader, dst ArchiveWriter, mappings []PathMapping, opts Tra
 			}
 		}
 
-		if opts.ProgressCallback != nil {
-			opts.ProgressCallback(m.Src, 0)
+		if opts.OnProgress != nil {
+			opts.OnProgress(m.Src, 0)
 		}
 	}
 	return nil

@@ -146,9 +146,12 @@ func TestOnDemandListDirRoot(t *testing.T) {
 	}
 
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
-	children, err := cat.ListDir("/")
-	if err != nil {
-		t.Fatalf("ListDir /: %v", err)
+	var children []CatalogChild
+	if listErr := cat.ListDir("/", func(ch CatalogChild) error {
+		children = append(children, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /: %v", listErr)
 	}
 
 	if len(children) != 2 {
@@ -196,9 +199,12 @@ func TestOnDemandListDirSubdir(t *testing.T) {
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
-	children, err := cat.ListDir("/subdir")
-	if err != nil {
-		t.Fatalf("ListDir /subdir: %v", err)
+	var children []CatalogChild
+	if listErr := cat.ListDir("/subdir", func(ch CatalogChild) error {
+		children = append(children, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /subdir: %v", listErr)
 	}
 
 	if len(children) != 1 {
@@ -234,27 +240,36 @@ func TestOnDemandListDirDeepNested(t *testing.T) {
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	// Root should have: a (dir), root.txt (file)
-	root, err := cat.ListDir("/")
-	if err != nil {
-		t.Fatalf("ListDir /: %v", err)
+	var root []CatalogChild
+	if listErr := cat.ListDir("/", func(ch CatalogChild) error {
+		root = append(root, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /: %v", listErr)
 	}
 	if len(root) != 2 {
 		t.Fatalf("expected 2 root children, got %d", len(root))
 	}
 
 	// /a should have: b (dir), a_file.txt (file)
-	a, err := cat.ListDir("/a")
-	if err != nil {
-		t.Fatalf("ListDir /a: %v", err)
+	var a []CatalogChild
+	if listErr := cat.ListDir("/a", func(ch CatalogChild) error {
+		a = append(a, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /a: %v", listErr)
 	}
 	if len(a) != 2 {
 		t.Fatalf("expected 2 children in /a, got %d: %+v", len(a), a)
 	}
 
 	// /a/b should have: deep.txt (file)
-	ab, err := cat.ListDir("/a/b")
-	if err != nil {
-		t.Fatalf("ListDir /a/b: %v", err)
+	var ab []CatalogChild
+	if listErr := cat.ListDir("/a/b", func(ch CatalogChild) error {
+		ab = append(ab, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /a/b: %v", listErr)
 	}
 	if len(ab) != 1 || ab[0].Name != "deep.txt" {
 		t.Errorf("expected deep.txt in /a/b, got %+v", ab)
@@ -288,9 +303,12 @@ func TestOnDemandListDirSkipsSubtrees(t *testing.T) {
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
-	root, err := cat.ListDir("/")
-	if err != nil {
-		t.Fatalf("ListDir /: %v", err)
+	var root []CatalogChild
+	if listErr := cat.ListDir("/", func(ch CatalogChild) error {
+		root = append(root, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /: %v", listErr)
 	}
 
 	// Root should have: before.txt, bigdir (dir), after.txt
@@ -328,9 +346,12 @@ func TestOnDemandListDirEntryTypes(t *testing.T) {
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
-	children, err := cat.ListDir("/")
-	if err != nil {
-		t.Fatalf("ListDir /: %v", err)
+	var children []CatalogChild
+	if listErr := cat.ListDir("/", func(ch CatalogChild) error {
+		children = append(children, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /: %v", listErr)
 	}
 	if len(children) != 5 {
 		t.Fatalf("expected 5 children, got %d: %+v", len(children), children)
@@ -361,8 +382,7 @@ func TestOnDemandListDirNotFound(t *testing.T) {
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
-	_, err := cat.ListDir("/nonexistent")
-	if err == nil {
+	if listErr := cat.ListDir("/nonexistent", func(ch CatalogChild) error { return nil }); listErr == nil {
 		t.Error("expected error for nonexistent directory")
 	}
 }
@@ -383,18 +403,24 @@ func TestOnDemandListDirEmptyDir(t *testing.T) {
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	// Root should still list all 3 children.
-	root, err := cat.ListDir("/")
-	if err != nil {
-		t.Fatalf("ListDir /: %v", err)
+	var root []CatalogChild
+	if listErr := cat.ListDir("/", func(ch CatalogChild) error {
+		root = append(root, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /: %v", listErr)
 	}
 	if len(root) != 3 {
 		t.Fatalf("expected 3 root children, got %d: %+v", len(root), root)
 	}
 
 	// Empty dir should return empty children.
-	empty, err := cat.ListDir("/empty")
-	if err != nil {
-		t.Fatalf("ListDir /empty: %v", err)
+	var empty []CatalogChild
+	if listErr := cat.ListDir("/empty", func(ch CatalogChild) error {
+		empty = append(empty, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /empty: %v", listErr)
 	}
 	if len(empty) != 0 {
 		t.Errorf("expected 0 children in empty dir, got %d", len(empty))
@@ -427,17 +453,23 @@ func TestOnDemandListDirMultiChunk(t *testing.T) {
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{MaxWorkers: 4})
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
-	root, err := cat.ListDir("/")
-	if err != nil {
-		t.Fatalf("ListDir /: %v", err)
+	var root []CatalogChild
+	if listErr := cat.ListDir("/", func(ch CatalogChild) error {
+		root = append(root, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /: %v", listErr)
 	}
 	if len(root) != 21 { // 20 files + 1 subdir
 		t.Errorf("expected 21 root children, got %d", len(root))
 	}
 
-	sub, err := cat.ListDir("/subdir")
-	if err != nil {
-		t.Fatalf("ListDir /subdir: %v", err)
+	var sub []CatalogChild
+	if listErr := cat.ListDir("/subdir", func(ch CatalogChild) error {
+		sub = append(sub, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir /subdir: %v", listErr)
 	}
 	if len(sub) != 10 {
 		t.Errorf("expected 10 children in /subdir, got %d", len(sub))
@@ -455,15 +487,21 @@ func TestOnDemandCachesChunks(t *testing.T) {
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
 	// First call — fetches and caches.
-	children1, err := cat.ListDir("/")
-	if err != nil {
-		t.Fatalf("ListDir / (1st): %v", err)
+	var children1 []CatalogChild
+	if listErr := cat.ListDir("/", func(ch CatalogChild) error {
+		children1 = append(children1, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir / (1st): %v", listErr)
 	}
 
 	// Second call — should use cache (same result).
-	children2, err := cat.ListDir("/")
-	if err != nil {
-		t.Fatalf("ListDir / (2nd): %v", err)
+	var children2 []CatalogChild
+	if listErr := cat.ListDir("/", func(ch CatalogChild) error {
+		children2 = append(children2, ch)
+		return nil
+	}); listErr != nil {
+		t.Fatalf("ListDir / (2nd): %v", listErr)
 	}
 
 	if len(children1) != len(children2) {
@@ -487,7 +525,14 @@ func TestOnDemandDirPaths(t *testing.T) {
 	dirIndex, _ := BuildDirIndex(reader, source, CatalogOptions{})
 	cat := NewOnDemandCatalog(dirIndex.Index, reader, source)
 
-	paths := cat.DirPaths()
+	var paths []string
+	err := cat.DirPaths(func(p string) error {
+		paths = append(paths, p)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(paths) != 3 { // /, /a, /a/b
 		t.Errorf("expected 3 dir paths, got %d: %v", len(paths), paths)
 	}

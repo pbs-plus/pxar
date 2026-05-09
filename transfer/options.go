@@ -10,7 +10,7 @@ import (
 type TransferOption struct {
 	SourceCryptConfig *datastore.CryptConfig
 	TargetCryptConfig *datastore.CryptConfig
-	ProgressCallback  func(path string, bytes uint64)
+	OnProgress        func(path string, bytes uint64)
 	TargetFormat      format.FormatVersion
 	Overwrite         bool
 }

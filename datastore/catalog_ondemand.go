@@ -34,13 +34,14 @@ func (idx *DirIndex) HasDir(path string) bool {
 	return ok
 }
 
-// DirPaths returns all known directory paths in unspecified order.
-func (idx *DirIndex) DirPaths() []string {
-	paths := make([]string, 0, len(idx.entries))
+// DirPaths invokes fn for each known directory path in unspecified order.
+func (idx *DirIndex) DirPaths(fn func(string) error) error {
 	for p := range idx.entries {
-		paths = append(paths, p)
+		if err := fn(p); err != nil {
+			return err
+		}
 	}
-	return paths
+	return nil
 }
 
 // NumDirs returns the number of directories in the index.
@@ -390,9 +391,9 @@ func (c *OnDemandCatalog) HasDir(path string) bool {
 	return c.index.HasDir(path)
 }
 
-// DirPaths returns all known directory paths.
-func (c *OnDemandCatalog) DirPaths() []string {
-	return c.index.DirPaths()
+// DirPaths invokes fn for each known directory path.
+func (c *OnDemandCatalog) DirPaths(fn func(string) error) error {
+	return c.index.DirPaths(fn)
 }
 
 // NumDirs returns the total number of directories.
@@ -407,11 +408,9 @@ func (c *OnDemandCatalog) NumDirs() int {
 // If the directory has nested subdirectories, their subtrees are skipped
 // using end offsets from the DirIndex (when available) or depth tracking
 // (fallback). Only the direct children of the requested directory are
-// returned.
-// ListDirCallback streams directory children without materializing a full
-// slice. For each child, fn is called with a CatalogChild; if fn returns
+// returned. For each child, fn is called with a CatalogChild; if fn returns
 // a non-nil error, iteration stops and the error is returned.
-func (c *OnDemandCatalog) ListDirCallback(path string, fn func(CatalogChild) error) error {
+func (c *OnDemandCatalog) ListDir(path string, fn func(CatalogChild) error) error {
 	loc, ok := c.index.entries[path]
 	if !ok {
 		return fmt.Errorf("directory %q not found in index", path)
@@ -427,16 +426,6 @@ func (c *OnDemandCatalog) ListDirCallback(path string, fn func(CatalogChild) err
 		pos:       loc.offset,
 	}
 	return listDirFromReader(lr, path, c.index, fn)
-}
-
-// ListDir fetches and parses a single directory's children on demand.
-func (c *OnDemandCatalog) ListDir(path string) ([]CatalogChild, error) {
-	children := make([]CatalogChild, 0, 16)
-	err := c.ListDirCallback(path, func(ch CatalogChild) error {
-		children = append(children, ch)
-		return nil
-	})
-	return children, err
 }
 
 func listDirFromReader(lr *lazyChunkReader, path string, index *DirIndex, fn func(CatalogChild) error) error {

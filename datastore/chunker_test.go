@@ -27,7 +27,7 @@ func TestStoreChunkerBasic(t *testing.T) {
 	data := make([]byte, 100<<10)
 	_, _ = rand.Read(data)
 
-	results, _, err := sc.ChunkStream(bytes.NewReader(data))
+	results, _, err := sc.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestStoreChunkerIndexRoundTrip(t *testing.T) {
 	data := make([]byte, 50<<10)
 	_, _ = rand.Read(data)
 
-	results, idxWriter, err := sc.ChunkStream(bytes.NewReader(data))
+	results, idxWriter, err := sc.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestStoreChunkerChunkStoreIntegration(t *testing.T) {
 	data := make([]byte, 50<<10)
 	_, _ = rand.Read(data)
 
-	results, _, err := sc.ChunkStream(bytes.NewReader(data))
+	results, _, err := sc.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,13 +132,13 @@ func TestStoreChunkerDeduplication(t *testing.T) {
 	_, _ = rand.Read(data)
 
 	// First pass
-	results1, _, err := sc.ChunkStream(bytes.NewReader(data))
+	results1, _, err := sc.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Second pass with same data
-	results2, _, err := sc.ChunkStream(bytes.NewReader(data))
+	results2, _, err := sc.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestStoreChunkerCompressed(t *testing.T) {
 	// Use compressible data
 	data := bytes.Repeat([]byte("abcdefghij"), 5000) // 50KB of repeating pattern
 
-	results, _, err := sc.ChunkStream(bytes.NewReader(data))
+	results, _, err := sc.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestStoreChunkerCompressed(t *testing.T) {
 	}
 }
 
-func TestStoreChunkerCallback(t *testing.T) {
+func TestStoreChunker(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 50<<10)
@@ -207,7 +207,7 @@ func TestStoreChunkerCallback(t *testing.T) {
 	var offsets []uint64
 	var sizes []int
 
-	_, _, err := sc.ChunkStreamCallback(bytes.NewReader(data), func(r ChunkResult) error {
+	_, _, err := sc.ChunkStream(bytes.NewReader(data), func(r ChunkResult) error {
 		offsets = append(offsets, r.Offset)
 		sizes = append(sizes, r.Size)
 		return nil
@@ -239,7 +239,7 @@ func TestStoreChunkerCallback(t *testing.T) {
 	}
 }
 
-func TestStoreChunkerCallbackEarlyStop(t *testing.T) {
+func TestStoreChunkerEarlyStop(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
 	data := make([]byte, 100<<10)
@@ -248,7 +248,7 @@ func TestStoreChunkerCallbackEarlyStop(t *testing.T) {
 	stopErr := fmt.Errorf("stop")
 	count := 0
 
-	results, _, err := sc.ChunkStreamCallback(bytes.NewReader(data), func(r ChunkResult) error {
+	results, _, err := sc.ChunkStream(bytes.NewReader(data), func(r ChunkResult) error {
 		count++
 		if count == 3 {
 			return stopErr
@@ -267,7 +267,7 @@ func TestStoreChunkerCallbackEarlyStop(t *testing.T) {
 func TestStoreChunkerEmptyInput(t *testing.T) {
 	sc, _ := newTestStoreChunker(t, false)
 
-	results, _, err := sc.ChunkStream(bytes.NewReader(nil))
+	results, _, err := sc.ChunkStream(bytes.NewReader(nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestStoreChunkerSmallInput(t *testing.T) {
 
 	data := []byte("hello")
 
-	results, _, err := sc.ChunkStream(bytes.NewReader(data))
+	results, _, err := sc.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,12 +306,12 @@ func TestStoreChunkerDeterminism(t *testing.T) {
 	data := make([]byte, 50<<10)
 	_, _ = rand.Read(data)
 
-	r1, _, err := sc1.ChunkStream(bytes.NewReader(data))
+	r1, _, err := sc1.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	r2, _, err := sc2.ChunkStream(bytes.NewReader(data))
+	r2, _, err := sc2.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestStoreChunkerLoadVerifyChunks(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 
-	results, _, err := sc.ChunkStream(bytes.NewReader(data))
+	results, _, err := sc.ChunkStream(bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func BenchmarkStoreChunker(b *testing.B) {
 		config, _ := buzhash.NewConfig(64 << 10)
 		sc := NewStoreChunker(cs, config, true)
 		r := bytes.NewReader(buf)
-		_, _, _ = sc.ChunkStream(r)
+		_, _, _ = sc.ChunkStream(r, nil)
 	}
 }
 

@@ -8,19 +8,19 @@ The pxar format stores full filesystem trees — files, directories, symlinks, d
 
 This library is organized into focused packages:
 
-| Package | Description |
-|---------|-------------|
-| `pxar` | Core types: Entry, Metadata, MetadataBuilder |
-| `format` | Binary format constants, headers, serialization |
-| `encoder` | Streaming archive writer |
-| `decoder` | Streaming archive reader |
-| `accessor` | Random-access archive reader (seek-based) |
-| `transfer` | Copy/move files between archives across formats |
-| `buzhash` | Content-defined chunking via buzhash rolling hash |
-| `datastore` | Chunk storage, blob encoding, index files, backup catalogs |
-| `binarytree` | Binary search tree permutation for goodbye tables |
-| `fusefs` | Read-only FUSE filesystem over pxar archives |
-| `backupproxy` | Pull-mode backup architecture with pluggable transport |
+| Package       | Description                                                |
+| ------------- | ---------------------------------------------------------- |
+| `pxar`        | Core types: Entry, Metadata, MetadataBuilder               |
+| `format`      | Binary format constants, headers, serialization            |
+| `encoder`     | Streaming archive writer                                   |
+| `decoder`     | Streaming archive reader                                   |
+| `accessor`    | Random-access archive reader (seek-based)                  |
+| `transfer`    | Copy/move files between archives across formats            |
+| `buzhash`     | Content-defined chunking via buzhash rolling hash          |
+| `datastore`   | Chunk storage, blob encoding, index files, backup catalogs |
+| `binarytree`  | Binary search tree permutation for goodbye tables          |
+| `fusefs`      | Read-only FUSE filesystem over pxar archives               |
+| `backupproxy` | Pull-mode backup architecture with pluggable transport     |
 
 ## Installation
 
@@ -28,7 +28,7 @@ This library is organized into focused packages:
 go get github.com/pbs-plus/pxar
 ```
 
-Requires Go 1.21 or later.
+Requires Go 1.26 or later.
 
 ## Quick Start
 
@@ -434,10 +434,10 @@ The backupproxy package converts Proxmox's push-based backup protocol into a pul
 
 The server supports three detection modes controlling how archives are created and whether unchanged files are re-read:
 
-| Mode | Format | Description |
-|------|--------|-------------|
-| `DetectionLegacy` | v1 single `.pxar` | All file data encoded into one stream. No previous backup needed. |
-| `DetectionData` | v2 split `.mpxar` + `.ppxar` | Metadata and payload in separate streams. All file data re-read. |
+| Mode                | Format                       | Description                                                                                                                                                                             |
+| ------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DetectionLegacy`   | v1 single `.pxar`            | All file data encoded into one stream. No previous backup needed.                                                                                                                       |
+| `DetectionData`     | v2 split `.mpxar` + `.ppxar` | Metadata and payload in separate streams. All file data re-read.                                                                                                                        |
 | `DetectionMetadata` | v2 split `.mpxar` + `.ppxar` | Compares current file metadata (mtime, size, uid, gid, mode, xattrs, ACLs, fcaps) against a previous backup's catalog. Unchanged files reuse payload chunks from the previous snapshot. |
 
 ```go
@@ -475,10 +475,10 @@ For local store, set `PreviousBackup.Dir` to the directory containing previous s
 
 The library supports three crypt modes:
 
-| Mode | Description |
-|------|-------------|
-| `CryptModeNone` | No encryption or signing (default) |
-| `CryptModeEncrypt` | AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing |
+| Mode                | Description                                                                |
+| ------------------- | -------------------------------------------------------------------------- |
+| `CryptModeNone`     | No encryption or signing (default)                                         |
+| `CryptModeEncrypt`  | AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing         |
 | `CryptModeSignOnly` | No encryption, but HMAC-SHA256 manifest signing for integrity verification |
 
 Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM (12-byte nonce, empty AAD) for chunk encryption. Manifests are always signed when a `CryptConfig` is provided — they are never encrypted, since PBS must be able to read the manifest. Chunk digests in encrypted mode use `SHA-256(data || id_key)` to prevent cross-key collisions. Key files can be generated with `pxar-cli keygen` and loaded at backup time.
@@ -631,6 +631,8 @@ func main() {
 - `Metadata` — POSIX metadata: stat, xattrs, ACLs, fcaps, quota project ID
 - `MetadataBuilder` — Fluent builder for Metadata with type-specific constructors (`FileMetadata`, `DirMetadata`, `SymlinkMetadata`, etc.)
 - `EntryKind` — Entry type constants (`KindFile`, `KindDirectory`, `KindSymlink`, etc.)
+- `SplitPath(path)` — Split a rooted path into components
+- Sentinel errors: `ErrNotFound`, `ErrInvalidFilename`, `ErrInvalidHeader`, `ErrNotDirectory`, `ErrNotRegularFile`
 
 ### `format` — Binary Format
 
@@ -659,11 +661,12 @@ func main() {
 
 ### `accessor` — Random Access
 
-- `NewAccessor(reader)` — Create from an `io.ReadSeeker`
+- `NewAccessor(reader, ...payloadReader)` — Create from an `io.ReadSeeker`
 - `ReadRoot()` — Get the root directory entry
-- `ListDirectory(offset)` — List entries in a directory
+- `ListDirectory(offset)` / `ListDirectoryWithOptions(offset, opts)` — List entries with optional minimal decoding
 - `Lookup(path)` — O(log n) path lookup via goodbye tables
-- `ReadFileContent(entry)` — Read a file's content
+- `LookupBatch(paths)` — Batch lookup sharing directory traversals
+- `ReadFileContent(entry)` / `ReadFileContentReader(entry)` — Streaming or buffered content reads
 
 ### `transfer` — File Transfer Between Archives
 
@@ -683,10 +686,11 @@ func main() {
 
 ### `buzhash` — Content-Defined Chunking
 
-- `NewConfig(avgSize)` — Create chunking configuration
+- `NewConfig(avgSize)` — Create chunking configuration (must be power of two)
+- `DefaultConfig()` — Standard 4 MiB chunk configuration
 - `NewChunker(reader, config)` — Create a chunker
 - `Next()` — Get the next chunk (variable size)
-- `Hasher` — Low-level rolling hash
+- `Hasher` — Low-level rolling hash with batch initialization
 
 ### `datastore` — Chunk Storage and Indexes
 
@@ -695,8 +699,12 @@ func main() {
 - `DynamicIndexWriter` / `DynamicIndexReader` — Variable-size chunk index (.didx)
 - `FixedIndexWriter` / `FixedIndexReader` — Fixed-size chunk index (.fidx)
 - `StoreChunker` — Pipeline: buzhash → SHA-256 → blob encode → store → index
+- `Restorer` — Reconstruct files from chunks with range support
+- `CatalogWriter` / `CatalogReader` — PBS-compatible pcat1 catalog format
+- `BuildCatalogFast` / `BuildDirIndex` / `OnDemandCatalog` — Metadata catalog indexing
 - `Manifest` / `FileInfo` — Backup snapshot manifest (JSON)
 - `BackupGroup` / `BackupDir` / `BackupInfo` — Backup namespace hierarchy
+- `BlobBufPool` / `PutBlobBuf` — Shared 4 MiB buffer pool for blob encoding
 
 ### `binarytree` — BST Permutation
 
@@ -763,6 +771,17 @@ Backup Data Flow:
                                       ├── LocalStore (testing)
                                       └── PBSRemoteStore (PBS H2 Protocol)
 ```
+
+## Verification
+
+This library has been validated against Proxmox's Rust reference implementation:
+
+- **SipHash-2-4**: All 23 pxar format type constants produce identical hashes
+- **BST permutation**: Binary tree array layout matches PBS for sizes 1–1000
+- **Chunker**: BUZHASH_TABLE (256 entries), config parameters, and chunk boundary logic are bit-identical
+- **Wire format**: All struct sizes, hash keys, POSIX mode constants, and device number conversions verified
+
+Parity tests run in CI on every push and pull request via GitHub Actions.
 
 ## Disclaimer
 

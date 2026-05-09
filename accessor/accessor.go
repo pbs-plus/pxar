@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"strings"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/binarytree"
@@ -180,7 +179,7 @@ func (a *Accessor) Lookup(path string) (*pxar.Entry, error) {
 
 func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error) {
 	// Split path into first component and remainder
-	parts := splitPath(path)
+	parts := pxar.SplitPath(path)
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("empty path")
 	}
@@ -769,15 +768,6 @@ func (a *Accessor) findDirContentOffset(entryOffset int64) (int64, error) {
 	}
 }
 
-// splitPath splits a path like "/backup/etc" into ["backup", "etc"].
-func splitPath(p string) []string {
-	p = strings.TrimLeft(p, "/")
-	if p == "" {
-		return nil
-	}
-	return strings.Split(p, "/")
-}
-
 // ReadFileContent reads the content of a file entry from the archive.
 func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 	if !entry.IsRegularFile() {
@@ -825,7 +815,7 @@ func (a *Accessor) LookupBatch(paths []string) ([]*pxar.Entry, error) {
 			continue
 		}
 
-		parts := splitPath(path)
+		parts := pxar.SplitPath(path)
 		if len(parts) == 0 {
 			continue
 		}

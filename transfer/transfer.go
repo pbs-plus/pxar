@@ -147,8 +147,8 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 	// src="/a"      → srcParts = ["a"]
 	// dst="/backup/a" → dstParts = ["backup", "a"]
 	// Extra ancestors = dstParts[0:len(dstParts)-len(srcParts)] = ["backup"]
-	srcParts := splitPath(srcPath)
-	dstParts := splitPath(dstPath)
+	srcParts := pxar.SplitPath(srcPath)
+	dstParts := pxar.SplitPath(dstPath)
 	extraAncestors := max(len(dstParts)-len(srcParts), 0)
 
 	// Create ancestor directories that exist in dstPath but not in srcPath
@@ -203,12 +203,6 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 	return nil
 }
 
-// splitPath splits a path like "/backup/etc" into ["backup", "etc"].
-func splitPath(p string) []string {
-	p = strings.TrimPrefix(p, "/")
-	p = strings.TrimSuffix(p, "/")
-	if p == "" {
-		return nil
-	}
-	return strings.Split(p, "/")
-}
+// Ensure archive interfaces are used.
+var _ ArchiveReader
+var _ ArchiveWriter

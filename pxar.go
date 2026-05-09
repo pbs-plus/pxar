@@ -386,3 +386,13 @@ func CheckPathComponent(path string) bool {
 	}
 	return true
 }
+
+// SplitPath splits a rooted path like "/backup/etc" into components ["backup", "etc"].
+// The returned slice never contains empty strings.
+func SplitPath(p string) []string {
+	p = strings.TrimLeft(p, "/")
+	if p == "" {
+		return nil
+	}
+	return strings.Split(p, "/")
+}

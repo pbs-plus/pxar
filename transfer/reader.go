@@ -84,6 +84,16 @@ func (r *FileArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadClo
 	return r.accessor.ReadFileContentReader(entry)
 }
 
+// ReadEntryAt reads a full pxar entry at the given archive byte offset.
+func (r *FileArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+	return r.accessor.ReadEntryAt(offset)
+}
+
+// ReadEntryAtMinimal reads a pxar entry with minimal decoding (stat only).
+func (r *FileArchiveReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+	return r.accessor.ReadEntryAtMinimal(offset)
+}
+
 func (r *FileArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return readCatalog(r, fn)
 }
@@ -172,6 +182,14 @@ func (r *ChunkedArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error
 
 func (r *ChunkedArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
+}
+
+func (r *ChunkedArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+	return r.inner.ReadEntryAt(offset)
+}
+
+func (r *ChunkedArchiveReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+	return r.inner.ReadEntryAtMinimal(offset)
 }
 
 func (r *ChunkedArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
@@ -316,6 +334,14 @@ func (r *SplitArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) 
 
 func (r *SplitArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
+}
+
+func (r *SplitArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+	return r.inner.ReadEntryAt(offset)
+}
+
+func (r *SplitArchiveReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+	return r.inner.ReadEntryAtMinimal(offset)
 }
 
 func (r *SplitArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {

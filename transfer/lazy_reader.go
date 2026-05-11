@@ -3,6 +3,7 @@ package transfer
 import (
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/pbs-plus/pxar/datastore"
 )
@@ -13,12 +14,20 @@ import (
 // This is critical for same-datastore transfers where only a subset of files
 // are needed — it avoids downloading the entire payload stream from PBS.
 type ChunkedReadSeeker struct {
-	source       datastore.ChunkSource
-	idx          *datastore.DynamicIndexReader
-	cache        map[int][]byte
-	offset       int64
-	size         int64
-	maxCache     int
+	source   datastore.ChunkSource
+	idx      *datastore.DynamicIndexReader
+	cache    map[int][]byte
+	offset   int64
+	size     int64
+	maxCache int
+	// offsetMu serializes Seek and Read so that concurrent goroutines
+	// do not corrupt each other's seek positions.
+	offsetMu sync.Mutex
+	// mu protects the chunk cache from concurrent access.
+	mu sync.RWMutex
+	// disableCache prevents chunk caching when true. Decoded chunks are
+	// returned and immediately discarded — appropriate for payload streams
+	// during streaming restores to bound memory usage.
 	disableCache bool
 }
 
@@ -35,48 +44,93 @@ func NewChunkedReadSeeker(idx *datastore.DynamicIndexReader, source datastore.Ch
 }
 
 func (r *ChunkedReadSeeker) Read(p []byte) (int, error) {
+	r.offsetMu.Lock()
+	defer r.offsetMu.Unlock()
+
 	if r.offset >= r.size {
 		return 0, io.EOF
 	}
 
 	totalRead := 0
 	for totalRead < len(p) && r.offset < r.size {
-		// Find the chunk containing the current offset
-		chunkIdx, ok := r.idx.ChunkFromOffset(uint64(r.offset))
-		if !ok {
-			return totalRead, io.EOF
+		n, err := r.readAtInternal(p[totalRead:], r.offset)
+		if err != nil && err != io.EOF {
+			return totalRead, err
 		}
-
-		chunkData, err := r.loadChunk(chunkIdx)
-		if err != nil {
-			return totalRead, fmt.Errorf("load chunk %d: %w", chunkIdx, err)
+		totalRead += n
+		r.offset += int64(n)
+		if err == io.EOF {
+			break
 		}
-
-		info, ok := r.idx.ChunkInfo(chunkIdx)
-		if !ok {
-			return totalRead, fmt.Errorf("chunk info %d not found", chunkIdx)
-		}
-
-		// Calculate offset within this chunk
-		chunkStart := info.Start
-		offsetInChunk := r.offset - int64(chunkStart)
-		remaining := len(chunkData) - int(offsetInChunk)
-
-		toCopy := remaining
-		available := len(p) - totalRead
-		if toCopy > available {
-			toCopy = available
-		}
-
-		copy(p[totalRead:], chunkData[offsetInChunk:offsetInChunk+int64(toCopy)])
-		totalRead += toCopy
-		r.offset += int64(toCopy)
 	}
 
+	if totalRead == 0 && len(p) > 0 {
+		return 0, io.EOF
+	}
 	return totalRead, nil
 }
 
+// ReadAt reads len(p) bytes starting at the given offset without mutating
+// the seeker's internal position. It is safe for concurrent use.
+func (r *ChunkedReadSeeker) ReadAt(p []byte, offset int64) (int, error) {
+	if offset >= r.size {
+		return 0, io.EOF
+	}
+
+	totalRead := 0
+	for totalRead < len(p) {
+		n, err := r.readAtInternal(p[totalRead:], offset+int64(totalRead))
+		if err != nil && err != io.EOF {
+			return totalRead, err
+		}
+		totalRead += n
+		if err == io.EOF || n == 0 {
+			break
+		}
+	}
+
+	if totalRead == 0 && len(p) > 0 {
+		return 0, io.EOF
+	}
+	return totalRead, nil
+}
+
+// readAtInternal copies into p from the chunk containing the given absolute
+// offset. It returns the number of bytes copied (0 at stream end).
+func (r *ChunkedReadSeeker) readAtInternal(p []byte, offset int64) (int, error) {
+	if offset >= r.size {
+		return 0, io.EOF
+	}
+
+	chunkIdx, ok := r.idx.ChunkFromOffset(uint64(offset))
+	if !ok {
+		return 0, io.EOF
+	}
+
+	chunkData, err := r.loadChunk(chunkIdx)
+	if err != nil {
+		return 0, fmt.Errorf("load chunk %d: %w", chunkIdx, err)
+	}
+
+	info, ok := r.idx.ChunkInfo(chunkIdx)
+	if !ok {
+		return 0, fmt.Errorf("chunk info %d not found", chunkIdx)
+	}
+
+	chunkStart := info.Start
+	offsetInChunk := offset - int64(chunkStart)
+	remaining := len(chunkData) - int(offsetInChunk)
+
+	toCopy := min(remaining, len(p))
+
+	copy(p, chunkData[offsetInChunk:offsetInChunk+int64(toCopy)])
+	return toCopy, nil
+}
+
 func (r *ChunkedReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	r.offsetMu.Lock()
+	defer r.offsetMu.Unlock()
+
 	switch whence {
 	case io.SeekStart:
 		r.offset = offset
@@ -99,18 +153,26 @@ func (r *ChunkedReadSeeker) Seek(offset int64, whence int) (int64, error) {
 // payload streams where content is streamed sequentially and caching would
 // accumulate unbounded memory.
 func (r *ChunkedReadSeeker) DisableCache() {
+	r.mu.Lock()
 	r.disableCache = true
 	r.cache = nil
+	r.mu.Unlock()
 }
 
 // loadChunk loads and decodes a chunk, using cache if available.
+// It is safe for concurrent use.
 func (r *ChunkedReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
 	if !r.disableCache {
-		if data, ok := r.cache[chunkIdx]; ok {
+		// Fast path: check cache under read lock.
+		r.mu.RLock()
+		data, ok := r.cache[chunkIdx]
+		r.mu.RUnlock()
+		if ok {
 			return data, nil
 		}
 	}
 
+	// Slow path: fetch and decode.
 	digest := r.idx.Entry(chunkIdx).Digest
 	raw, err := r.source.GetChunk(digest)
 	if err != nil {
@@ -126,7 +188,14 @@ func (r *ChunkedReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
 		return decoded, nil
 	}
 
-	// Evict oldest entries if cache is full
+	r.mu.Lock()
+	// Double-check: another goroutine may have loaded it.
+	if data, ok := r.cache[chunkIdx]; ok {
+		r.mu.Unlock()
+		return data, nil
+	}
+
+	// Evict oldest entries if cache is full.
 	if r.maxCache > 0 && len(r.cache) >= r.maxCache {
 		count := 0
 		for k := range r.cache {
@@ -139,6 +208,7 @@ func (r *ChunkedReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
 	}
 
 	r.cache[chunkIdx] = decoded
+	r.mu.Unlock()
 	return decoded, nil
 }
 

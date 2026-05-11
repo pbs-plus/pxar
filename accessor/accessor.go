@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/binarytree"
@@ -12,10 +13,25 @@ import (
 )
 
 // Accessor provides random access to entries in a pxar archive.
+//
+// Thread safety: Accessor methods that read from the metadata stream
+// (ReadRoot, Lookup, ListDirectory, ReadEntryAt, ReadEntryAtMinimal,
+// ReadFileContent, and the v1 path of ReadFileContentReader) are safe
+// for concurrent use. The payload path of ReadFileContentReader
+// (split archives) returns an independent io.SectionReader that can
+// be read concurrently without additional synchronization.
 type Accessor struct {
 	reader        io.ReadSeeker
 	payloadReader io.ReadSeeker // optional, for split archives (v2 format)
 	readBuf       []byte        // reusable buffer for variable-size reads
+
+	// metaMu serializes access to the metadata stream reader.
+	// io.ReadSeeker implementations like bytes.Reader and ChunkedReadSeeker
+	// are not safe for concurrent Seek+Read (only ReadAt is safe).
+	metaMu sync.Mutex
+
+	goodbyeMu    sync.RWMutex
+	goodbyeCache map[int64]int64 // dirOffset → goodbyeOffset
 }
 
 // ListOption controls which metadata is decoded during ListDirectory.
@@ -29,7 +45,11 @@ type ListOption struct {
 // NewAccessor creates an accessor for random access to a pxar archive.
 // For split archives (v2 format), provide the payload reader as the second argument.
 func NewAccessor(reader io.ReadSeeker, payloadReader ...io.ReadSeeker) *Accessor {
-	a := &Accessor{reader: reader, readBuf: make([]byte, 0, 4096)}
+	a := &Accessor{
+		reader:       reader,
+		readBuf:      make([]byte, 0, 4096),
+		goodbyeCache: make(map[int64]int64),
+	}
 	if len(payloadReader) > 0 {
 		a.payloadReader = payloadReader[0]
 	}
@@ -48,6 +68,13 @@ func (a *Accessor) growBuf(n int) []byte {
 
 // ReadRoot reads the root entry of the archive.
 func (a *Accessor) ReadRoot() (*pxar.Entry, error) {
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	return a.readRootLocked()
+}
+
+// readRootLocked reads the root entry without acquiring metaMu.
+func (a *Accessor) readRootLocked() (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -127,18 +154,34 @@ func (a *Accessor) ListDirectory(dirOffset int64, opts ListOption, fn func(*pxar
 }
 
 func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
+	// Lock only the goodbye table scan, then release before iterating
+	// entries to allow reentrant calls from callbacks.
+	a.metaMu.Lock()
 	// Seek to directory content area
 	if _, err := a.reader.Seek(dirOffset, io.SeekStart); err != nil {
+		a.metaMu.Unlock()
 		return err
 	}
 
-	// Read goodbye table first to get all entries
-	goodbyeOffset, err := a.findGoodbyeOffset(dirOffset)
-	if err != nil {
-		return fmt.Errorf("finding goodbye table: %w", err)
+	// Check goodbye table cache
+	a.goodbyeMu.RLock()
+	goodbyeOffset, cached := a.goodbyeCache[dirOffset]
+	a.goodbyeMu.RUnlock()
+
+	if !cached {
+		var err error
+		goodbyeOffset, err = a.findGoodbyeOffset(dirOffset)
+		if err != nil {
+			a.metaMu.Unlock()
+			return fmt.Errorf("finding goodbye table: %w", err)
+		}
+		a.goodbyeMu.Lock()
+		a.goodbyeCache[dirOffset] = goodbyeOffset
+		a.goodbyeMu.Unlock()
 	}
 
 	items, err := a.readGoodbyeTable(goodbyeOffset)
+	a.metaMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -170,7 +213,9 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 
 // Lookup finds an entry by path in the archive.
 func (a *Accessor) Lookup(path string) (*pxar.Entry, error) {
-	root, err := a.ReadRoot()
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	root, err := a.readRootLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +276,7 @@ func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error)
 
 	// Resolve entry
 	entryOffset := goodbyeOffset - int64(items[idx].Offset)
-	entry, err := a.ReadEntryAt(entryOffset)
+	entry, err := a.readEntryAtLocked(entryOffset)
 	if err != nil {
 		return nil, err
 	}
@@ -443,6 +488,14 @@ func (a *Accessor) readGoodbyeTable(offset int64) ([]format.GoodbyeItem, error) 
 // populates stat basics. Use for indexing/browsing where full metadata
 // is unnecessary.
 func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	return a.readEntryAtMinimalLocked(offset)
+}
+
+// readEntryAtMinimalLocked reads a pxar entry with minimal decoding
+// without acquiring metaMu.
+func (a *Accessor) readEntryAtMinimalLocked(offset int64) (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -550,6 +603,7 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 			entry.Kind = pxar.KindFile
 			entry.PayloadOffset = binary.LittleEndian.Uint64(data[0:])
 			entry.FileSize = binary.LittleEndian.Uint64(data[8:])
+			entry.ContentOffset = entry.PayloadOffset
 			return entry, nil
 
 		case format.PXARFilename, format.PXARGoodbye:
@@ -574,6 +628,13 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 
 // ReadEntryAt reads a pxar entry at the given archive offset.
 func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	return a.readEntryAtLocked(offset)
+}
+
+// readEntryAtLocked reads a pxar entry without acquiring metaMu.
+func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -682,6 +743,7 @@ func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 			entry.Kind = pxar.KindFile
 			entry.PayloadOffset = binary.LittleEndian.Uint64(data[0:])
 			entry.FileSize = binary.LittleEndian.Uint64(data[8:])
+			entry.ContentOffset = entry.PayloadOffset
 			return entry, nil
 
 		case format.PXARFilename, format.PXARGoodbye:
@@ -805,23 +867,40 @@ func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 // ReadFileContentReader returns a streaming reader for file content.
 // The caller must close the returned reader when done. This avoids
 // materializing the entire file in memory.
+//
+// When the underlying reader implements io.ReaderAt, the returned reader
+// is backed by an io.SectionReader and is safe for concurrent use across
+// multiple goroutines (each call returns an independent reader).
 func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	if !entry.IsRegularFile() {
 		return nil, fmt.Errorf("entry is not a regular file")
 	}
 
-	// For split archives (v2 format), read from payload stream
+	// For split archives (v2 format), read from payload stream.
+	// No lock needed: payload reader is independent and uses ReadAt.
 	if entry.PayloadOffset > 0 {
 		if a.payloadReader == nil {
 			return nil, fmt.Errorf("split archive requires payload reader")
 		}
-		if _, err := a.payloadReader.Seek(int64(entry.PayloadOffset)+format.HeaderSize, io.SeekStart); err != nil {
+		start := int64(entry.PayloadOffset) + format.HeaderSize
+		size := int64(entry.FileSize)
+
+		// Use ReaderAt path when available — each SectionReader is independent
+		// so concurrent file reads don't race on the shared seek position.
+		if ra, ok := a.payloadReader.(io.ReaderAt); ok {
+			return io.NopCloser(io.NewSectionReader(ra, start, size)), nil
+		}
+
+		if _, err := a.payloadReader.Seek(start, io.SeekStart); err != nil {
 			return nil, err
 		}
-		return io.NopCloser(io.LimitReader(a.payloadReader, int64(entry.FileSize))), nil
+		return io.NopCloser(io.LimitReader(a.payloadReader, size)), nil
 	}
 
-	// For unified archives (v1 format), read inline payload
+	// For unified archives (v1 format), read inline payload.
+	// Lock the metadata stream to scan for the PAYLOAD header.
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
 	if _, err := a.reader.Seek(int64(entry.FileOffset), io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -856,6 +935,10 @@ func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, erro
 
 		switch h.Type {
 		case format.PXARPayload:
+			if ra, ok := a.reader.(io.ReaderAt); ok {
+				pos, _ := a.reader.Seek(0, io.SeekCurrent)
+				return io.NopCloser(io.NewSectionReader(ra, pos, int64(h.ContentSize()))), nil
+			}
 			return io.NopCloser(io.LimitReader(a.reader, int64(h.ContentSize()))), nil
 		case format.PXARFilename, format.PXARGoodbye:
 			return nil, fmt.Errorf("PAYLOAD not found for entry")

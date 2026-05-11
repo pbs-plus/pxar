@@ -9,8 +9,8 @@ import (
 )
 
 // ChunkStore manages chunk storage on the filesystem.
-// Chunks are stored under base/.chunks/XX/XXYY... where XX are the first
-// two hex characters of the SHA-256 digest.
+// Chunks are stored under base/.chunks/XXXX/XXXXYY... where XXXX are the first
+// four hex characters of the SHA-256 digest (PBS-compatible layout).
 type ChunkStore struct {
 	base string
 }
@@ -34,7 +34,7 @@ func (cs *ChunkStore) chunkDir() string {
 func (cs *ChunkStore) ChunkPath(digest [32]byte) string {
 	var buf [64]byte
 	hex.Encode(buf[:], digest[:])
-	return filepath.Join(cs.chunkDir(), string(buf[:2]), string(buf[:]))
+	return filepath.Join(cs.chunkDir(), string(buf[:4]), string(buf[:]))
 }
 
 // InsertChunk stores a chunk. Returns (exists, size, error).

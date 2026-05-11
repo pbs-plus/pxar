@@ -67,7 +67,7 @@ func TestChunkStorePathGeneration(t *testing.T) {
 	hex.Encode(hexBuf[:], digest[:])
 	hex := string(hexBuf[:])
 
-	expected := filepath.Join(cs.chunkDir(), hex[:2], hex)
+	expected := filepath.Join(cs.chunkDir(), hex[:4], hex)
 	if path != expected {
 		t.Errorf("path = %s, want %s", path, expected)
 	}

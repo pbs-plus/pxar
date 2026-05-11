@@ -13,12 +13,13 @@ import (
 // This is critical for same-datastore transfers where only a subset of files
 // are needed — it avoids downloading the entire payload stream from PBS.
 type ChunkedReadSeeker struct {
-	source   datastore.ChunkSource
-	idx      *datastore.DynamicIndexReader
-	cache    map[int][]byte
-	offset   int64
-	size     int64
-	maxCache int
+	source       datastore.ChunkSource
+	idx          *datastore.DynamicIndexReader
+	cache        map[int][]byte
+	offset       int64
+	size         int64
+	maxCache     int
+	disableCache bool
 }
 
 // NewChunkedReadSeeker creates a lazy read-seeker over chunked data.
@@ -93,10 +94,21 @@ func (r *ChunkedReadSeeker) Seek(offset int64, whence int) (int64, error) {
 	return r.offset, nil
 }
 
+// DisableCache disables chunk caching. When disabled, each chunk is decoded
+// on demand and immediately discarded after use. This is appropriate for
+// payload streams where content is streamed sequentially and caching would
+// accumulate unbounded memory.
+func (r *ChunkedReadSeeker) DisableCache() {
+	r.disableCache = true
+	r.cache = nil
+}
+
 // loadChunk loads and decodes a chunk, using cache if available.
 func (r *ChunkedReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
-	if data, ok := r.cache[chunkIdx]; ok {
-		return data, nil
+	if !r.disableCache {
+		if data, ok := r.cache[chunkIdx]; ok {
+			return data, nil
+		}
 	}
 
 	digest := r.idx.Entry(chunkIdx).Digest
@@ -110,9 +122,12 @@ func (r *ChunkedReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
 		return nil, fmt.Errorf("decode chunk: %w", err)
 	}
 
+	if r.disableCache {
+		return decoded, nil
+	}
+
 	// Evict oldest entries if cache is full
 	if r.maxCache > 0 && len(r.cache) >= r.maxCache {
-		// Simple eviction: clear half the cache
 		count := 0
 		for k := range r.cache {
 			delete(r.cache, k)

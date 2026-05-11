@@ -348,6 +348,16 @@ func (r *SplitArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return readCatalog(r.inner, fn)
 }
 
+// DisablePayloadCache disables the payload chunk cache. When disabled,
+// each payload chunk is decoded on demand and immediately discarded.
+// This prevents memory accumulation during streaming restores. The
+// metadata chunk cache remains enabled for fast directory lookups.
+func (r *SplitArchiveReader) DisablePayloadCache() {
+	if r.payloadLazy != nil {
+		r.payloadLazy.DisableCache()
+	}
+}
+
 func (r *SplitArchiveReader) Close() error {
 	var err error
 	if r.metaLazy != nil {

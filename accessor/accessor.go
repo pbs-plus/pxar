@@ -603,6 +603,7 @@ func (a *Accessor) readEntryAtMinimalLocked(offset int64) (*pxar.Entry, error) {
 			entry.Kind = pxar.KindFile
 			entry.PayloadOffset = binary.LittleEndian.Uint64(data[0:])
 			entry.FileSize = binary.LittleEndian.Uint64(data[8:])
+			entry.ContentOffset = entry.PayloadOffset
 			return entry, nil
 
 		case format.PXARFilename, format.PXARGoodbye:
@@ -742,6 +743,7 @@ func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 			entry.Kind = pxar.KindFile
 			entry.PayloadOffset = binary.LittleEndian.Uint64(data[0:])
 			entry.FileSize = binary.LittleEndian.Uint64(data[8:])
+			entry.ContentOffset = entry.PayloadOffset
 			return entry, nil
 
 		case format.PXARFilename, format.PXARGoodbye:

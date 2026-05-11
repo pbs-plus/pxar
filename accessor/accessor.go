@@ -13,10 +13,22 @@ import (
 )
 
 // Accessor provides random access to entries in a pxar archive.
+//
+// Thread safety: Accessor methods that read from the metadata stream
+// (ReadRoot, Lookup, ListDirectory, ReadEntryAt, ReadEntryAtMinimal,
+// ReadFileContent, and the v1 path of ReadFileContentReader) are safe
+// for concurrent use. The payload path of ReadFileContentReader
+// (split archives) returns an independent io.SectionReader that can
+// be read concurrently without additional synchronization.
 type Accessor struct {
 	reader        io.ReadSeeker
 	payloadReader io.ReadSeeker // optional, for split archives (v2 format)
 	readBuf       []byte        // reusable buffer for variable-size reads
+
+	// metaMu serializes access to the metadata stream reader.
+	// io.ReadSeeker implementations like bytes.Reader and ChunkedReadSeeker
+	// are not safe for concurrent Seek+Read (only ReadAt is safe).
+	metaMu sync.Mutex
 
 	goodbyeMu    sync.RWMutex
 	goodbyeCache map[int64]int64 // dirOffset → goodbyeOffset
@@ -56,6 +68,13 @@ func (a *Accessor) growBuf(n int) []byte {
 
 // ReadRoot reads the root entry of the archive.
 func (a *Accessor) ReadRoot() (*pxar.Entry, error) {
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	return a.readRootLocked()
+}
+
+// readRootLocked reads the root entry without acquiring metaMu.
+func (a *Accessor) readRootLocked() (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -135,8 +154,12 @@ func (a *Accessor) ListDirectory(dirOffset int64, opts ListOption, fn func(*pxar
 }
 
 func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func(*pxar.Entry) error) error {
+	// Lock only the goodbye table scan, then release before iterating
+	// entries to allow reentrant calls from callbacks.
+	a.metaMu.Lock()
 	// Seek to directory content area
 	if _, err := a.reader.Seek(dirOffset, io.SeekStart); err != nil {
+		a.metaMu.Unlock()
 		return err
 	}
 
@@ -149,6 +172,7 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 		var err error
 		goodbyeOffset, err = a.findGoodbyeOffset(dirOffset)
 		if err != nil {
+			a.metaMu.Unlock()
 			return fmt.Errorf("finding goodbye table: %w", err)
 		}
 		a.goodbyeMu.Lock()
@@ -157,6 +181,7 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 	}
 
 	items, err := a.readGoodbyeTable(goodbyeOffset)
+	a.metaMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -188,7 +213,9 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 
 // Lookup finds an entry by path in the archive.
 func (a *Accessor) Lookup(path string) (*pxar.Entry, error) {
-	root, err := a.ReadRoot()
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	root, err := a.readRootLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +276,7 @@ func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error)
 
 	// Resolve entry
 	entryOffset := goodbyeOffset - int64(items[idx].Offset)
-	entry, err := a.ReadEntryAt(entryOffset)
+	entry, err := a.readEntryAtLocked(entryOffset)
 	if err != nil {
 		return nil, err
 	}
@@ -461,6 +488,14 @@ func (a *Accessor) readGoodbyeTable(offset int64) ([]format.GoodbyeItem, error) 
 // populates stat basics. Use for indexing/browsing where full metadata
 // is unnecessary.
 func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	return a.readEntryAtMinimalLocked(offset)
+}
+
+// readEntryAtMinimalLocked reads a pxar entry with minimal decoding
+// without acquiring metaMu.
+func (a *Accessor) readEntryAtMinimalLocked(offset int64) (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -592,6 +627,13 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 
 // ReadEntryAt reads a pxar entry at the given archive offset.
 func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	return a.readEntryAtLocked(offset)
+}
+
+// readEntryAtLocked reads a pxar entry without acquiring metaMu.
+func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -832,7 +874,8 @@ func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, erro
 		return nil, fmt.Errorf("entry is not a regular file")
 	}
 
-	// For split archives (v2 format), read from payload stream
+	// For split archives (v2 format), read from payload stream.
+	// No lock needed: payload reader is independent and uses ReadAt.
 	if entry.PayloadOffset > 0 {
 		if a.payloadReader == nil {
 			return nil, fmt.Errorf("split archive requires payload reader")
@@ -852,7 +895,10 @@ func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, erro
 		return io.NopCloser(io.LimitReader(a.payloadReader, size)), nil
 	}
 
-	// For unified archives (v1 format), read inline payload
+	// For unified archives (v1 format), read inline payload.
+	// Lock the metadata stream to scan for the PAYLOAD header.
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
 	if _, err := a.reader.Seek(int64(entry.FileOffset), io.SeekStart); err != nil {
 		return nil, err
 	}

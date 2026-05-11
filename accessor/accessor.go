@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/binarytree"
@@ -16,6 +17,9 @@ type Accessor struct {
 	reader        io.ReadSeeker
 	payloadReader io.ReadSeeker // optional, for split archives (v2 format)
 	readBuf       []byte        // reusable buffer for variable-size reads
+
+	goodbyeMu    sync.RWMutex
+	goodbyeCache map[int64]int64 // dirOffset → goodbyeOffset
 }
 
 // ListOption controls which metadata is decoded during ListDirectory.
@@ -29,7 +33,11 @@ type ListOption struct {
 // NewAccessor creates an accessor for random access to a pxar archive.
 // For split archives (v2 format), provide the payload reader as the second argument.
 func NewAccessor(reader io.ReadSeeker, payloadReader ...io.ReadSeeker) *Accessor {
-	a := &Accessor{reader: reader, readBuf: make([]byte, 0, 4096)}
+	a := &Accessor{
+		reader:       reader,
+		readBuf:      make([]byte, 0, 4096),
+		goodbyeCache: make(map[int64]int64),
+	}
 	if len(payloadReader) > 0 {
 		a.payloadReader = payloadReader[0]
 	}
@@ -132,10 +140,20 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 		return err
 	}
 
-	// Read goodbye table first to get all entries
-	goodbyeOffset, err := a.findGoodbyeOffset(dirOffset)
-	if err != nil {
-		return fmt.Errorf("finding goodbye table: %w", err)
+	// Check goodbye table cache
+	a.goodbyeMu.RLock()
+	goodbyeOffset, cached := a.goodbyeCache[dirOffset]
+	a.goodbyeMu.RUnlock()
+
+	if !cached {
+		var err error
+		goodbyeOffset, err = a.findGoodbyeOffset(dirOffset)
+		if err != nil {
+			return fmt.Errorf("finding goodbye table: %w", err)
+		}
+		a.goodbyeMu.Lock()
+		a.goodbyeCache[dirOffset] = goodbyeOffset
+		a.goodbyeMu.Unlock()
 	}
 
 	items, err := a.readGoodbyeTable(goodbyeOffset)

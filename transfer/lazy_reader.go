@@ -20,10 +20,10 @@ type ChunkedReadSeeker struct {
 	offset   int64
 	size     int64
 	maxCache int
-	// mu protects cache from concurrent access.
-	// offset is NOT protected — callers that share a ChunkedReadSeeker
-	// across goroutines must serialize Seek/Read themselves, or use
-	// ReadAt which is concurrency-safe.
+	// offsetMu serializes Seek and Read so that concurrent goroutines
+	// do not corrupt each other's seek positions.
+	offsetMu sync.Mutex
+	// mu protects the chunk cache from concurrent access.
 	mu sync.RWMutex
 }
 
@@ -40,6 +40,9 @@ func NewChunkedReadSeeker(idx *datastore.DynamicIndexReader, source datastore.Ch
 }
 
 func (r *ChunkedReadSeeker) Read(p []byte) (int, error) {
+	r.offsetMu.Lock()
+	defer r.offsetMu.Unlock()
+
 	if r.offset >= r.size {
 		return 0, io.EOF
 	}
@@ -57,6 +60,9 @@ func (r *ChunkedReadSeeker) Read(p []byte) (int, error) {
 		}
 	}
 
+	if totalRead == 0 && len(p) > 0 {
+		return 0, io.EOF
+	}
 	return totalRead, nil
 }
 
@@ -118,6 +124,9 @@ func (r *ChunkedReadSeeker) readAtInternal(p []byte, offset int64) (int, error) 
 }
 
 func (r *ChunkedReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	r.offsetMu.Lock()
+	defer r.offsetMu.Unlock()
+
 	switch whence {
 	case io.SeekStart:
 		r.offset = offset

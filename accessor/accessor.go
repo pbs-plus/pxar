@@ -805,6 +805,10 @@ func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
 // ReadFileContentReader returns a streaming reader for file content.
 // The caller must close the returned reader when done. This avoids
 // materializing the entire file in memory.
+//
+// When the underlying reader implements io.ReaderAt, the returned reader
+// is backed by an io.SectionReader and is safe for concurrent use across
+// multiple goroutines (each call returns an independent reader).
 func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	if !entry.IsRegularFile() {
 		return nil, fmt.Errorf("entry is not a regular file")
@@ -815,10 +819,19 @@ func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, erro
 		if a.payloadReader == nil {
 			return nil, fmt.Errorf("split archive requires payload reader")
 		}
-		if _, err := a.payloadReader.Seek(int64(entry.PayloadOffset)+format.HeaderSize, io.SeekStart); err != nil {
+		start := int64(entry.PayloadOffset) + format.HeaderSize
+		size := int64(entry.FileSize)
+
+		// Use ReaderAt path when available — each SectionReader is independent
+		// so concurrent file reads don't race on the shared seek position.
+		if ra, ok := a.payloadReader.(io.ReaderAt); ok {
+			return io.NopCloser(io.NewSectionReader(ra, start, size)), nil
+		}
+
+		if _, err := a.payloadReader.Seek(start, io.SeekStart); err != nil {
 			return nil, err
 		}
-		return io.NopCloser(io.LimitReader(a.payloadReader, int64(entry.FileSize))), nil
+		return io.NopCloser(io.LimitReader(a.payloadReader, size)), nil
 	}
 
 	// For unified archives (v1 format), read inline payload
@@ -856,6 +869,10 @@ func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, erro
 
 		switch h.Type {
 		case format.PXARPayload:
+			if ra, ok := a.reader.(io.ReaderAt); ok {
+				pos, _ := a.reader.Seek(0, io.SeekCurrent)
+				return io.NopCloser(io.NewSectionReader(ra, pos, int64(h.ContentSize()))), nil
+			}
 			return io.NopCloser(io.LimitReader(a.reader, int64(h.ContentSize()))), nil
 		case format.PXARFilename, format.PXARGoodbye:
 			return nil, fmt.Errorf("PAYLOAD not found for entry")

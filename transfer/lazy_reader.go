@@ -148,15 +148,34 @@ func (r *ChunkedReadSeeker) Seek(offset int64, whence int) (int64, error) {
 	return r.offset, nil
 }
 
-// DisableCache disables chunk caching. When disabled, each chunk is decoded
-// on demand and immediately discarded after use. This is appropriate for
-// payload streams where content is streamed sequentially and caching would
-// accumulate unbounded memory.
-func (r *ChunkedReadSeeker) DisableCache() {
+// SetCacheSize adjusts the maximum number of decoded chunks kept in memory.
+// Setting to 0 disables caching entirely — each chunk is decoded on demand
+// and immediately discarded. This is appropriate for payload streams where
+// content is streamed sequentially and caching would accumulate unbounded
+// memory. Existing cached entries are evicted if the new size is lower.
+func (r *ChunkedReadSeeker) SetCacheSize(n int) {
 	r.mu.Lock()
-	r.disableCache = true
-	r.cache = nil
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if n <= 0 {
+		r.disableCache = true
+		r.cache = nil
+		r.maxCache = 0
+		return
+	}
+	r.disableCache = false
+	r.maxCache = n
+	if r.cache == nil {
+		r.cache = make(map[int][]byte)
+	} else if len(r.cache) > n {
+		count := 0
+		for k := range r.cache {
+			delete(r.cache, k)
+			count++
+			if count >= len(r.cache)-n {
+				break
+			}
+		}
+	}
 }
 
 // loadChunk loads and decodes a chunk, using cache if available.

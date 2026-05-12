@@ -653,6 +653,101 @@ func TestDynamicIndexRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLookupDynamicEntriesPinsChunkIdentity mirrors Rust's
+// lookup_dynamic_entries_pins_chunk_identity test. Verifies that dedup-collided
+// chunks (same digest, different positions) are NOT treated as the same chunk.
+// This pins that MapFileToPayloadChunks returns position-based ranges, not
+// digest-based — any range-relative substitute would alias dedup-collided entries
+// and resurrect the backwards-PXAR_PAYLOAD_REF bug class.
+func TestLookupDynamicEntriesPinsChunkIdentity(t *testing.T) {
+	idx := datastore.NewDynamicIndexWriter(0)
+
+	var digestA [32]byte
+	for i := range digestA {
+		digestA[i] = 0xAA
+	}
+	var digestB [32]byte
+	for i := range digestB {
+		digestB[i] = 0xBB
+	}
+
+	// chunk 0: ends at 1024, digest A
+	idx.Add(1024, digestA)
+	// chunk 1: ends at 2048, digest B
+	idx.Add(2048, digestB)
+	// chunk 2: ends at 3072, digest A again — dedup collision (same digest, distinct position)
+	idx.Add(3072, digestA)
+
+	data, err := idx.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := datastore.ParseDynamicIndex(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if reader.Count() != 3 {
+		t.Fatalf("count = %d, want 3", reader.Count())
+	}
+
+	// Verify end offsets match Rust expectations
+	c0, _ := reader.ChunkInfo(0)
+	c1, _ := reader.ChunkInfo(1)
+	c2, _ := reader.ChunkInfo(2)
+
+	if c0.End != 1024 {
+		t.Errorf("chunk 0 end = %d, want 1024", c0.End)
+	}
+	if c1.End != 2048 {
+		t.Errorf("chunk 1 end = %d, want 2048", c1.End)
+	}
+	if c2.End != 3072 {
+		t.Errorf("chunk 2 end = %d, want 3072", c2.End)
+	}
+
+	// Dedup collision: same digest but different positions
+	if c0.Digest != c2.Digest {
+		t.Error("chunk 0 and 2 should have same digest (dedup collision)")
+	}
+
+	// They are NOT the same chunk — position-based identity
+	if c0 == c2 {
+		t.Error("chunk 0 and 2 must not be pointer-equivalent")
+	}
+	if c0.Start == c2.Start && c0.End == c2.End {
+		t.Error("chunk 0 and 2 must differ in position")
+	}
+
+	// MapFileToPayloadChunks over the full range returns 3 distinct ranges
+	ranges := transfer.MapFileToPayloadChunks(reader, 0, 3072)
+	if len(ranges) != 3 {
+		t.Fatalf("MapFileToPayloadChunks returned %d ranges, want 3", len(ranges))
+	}
+
+	// Each range must map to a distinct chunk index
+	for i, r := range ranges {
+		ci, ok := reader.ChunkInfo(i)
+		if !ok {
+			t.Errorf("range %d: no chunk info", i)
+			continue
+		}
+		if r.ChunkIndex != i {
+			t.Errorf("range %d: ChunkIdx = %d, want %d", i, r.ChunkIndex, i)
+		}
+		// Verify end offset matches Rust: end_offset = chunk_end
+		if r.ChunkEnd != ci.End {
+			t.Errorf("range %d: ChunkEnd = %d, want %d", i, r.ChunkEnd, ci.End)
+		}
+	}
+
+	// Specifically, range 0 and range 2 must NOT be the same
+	if ranges[0].ChunkIndex == ranges[2].ChunkIndex {
+		t.Error("ranges[0] and ranges[2] must map to different chunk indices")
+	}
+}
+
 func TestTryRecordStrictlyGreaterAcceptsIncreasing(t *testing.T) {
 	var last *uint64
 	if !transfer.TryRecordStrictlyGreater(&last, 100) {

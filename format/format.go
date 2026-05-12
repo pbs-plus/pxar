@@ -429,18 +429,23 @@ func (x XAttr) Value() []byte {
 // CheckFilename validates that a filename is a legal path component.
 func CheckFilename(name []byte) error {
 	if len(name) == 0 {
-		return fmt.Errorf("empty filename")
+		return fmt.Errorf("illegal path found (empty)")
 	}
 	if bytes.Contains(name, slashBytes) {
-		return fmt.Errorf("invalid filename: %q", name)
+		return fmt.Errorf("illegal path found (contains slashes, this is a security concern)")
 	}
-	if name[0] == '.' && (len(name) == 1 || (len(name) == 2 && name[1] == '.')) {
-		return fmt.Errorf("invalid filename: %q", name)
+	if bytes.Equal(name, dotBytes) || bytes.Equal(name, dotDotBytes) {
+		return fmt.Errorf("illegal path found: %q", name)
+	}
+	if uint64(len(name)) > MaxFilenameLen {
+		return fmt.Errorf("filename too long (%d > %d)", len(name), MaxFilenameLen)
 	}
 	return nil
 }
 
 var slashBytes = []byte{'/'}
+var dotBytes = []byte{'.'}
+var dotDotBytes = []byte{'.', '.'}
 
 // MarshalStatBytesInto writes the serialized Stat into buf (must be >= 40 bytes).
 func MarshalStatBytesInto(buf []byte, s Stat) {

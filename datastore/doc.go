@@ -3,38 +3,28 @@
 //
 // The package implements the Proxmox Backup Server data model: backup data is
 // split into chunks, each chunk is stored as a DataBlob (with optional zstd
-// compression and CRC32 verification), and chunk references are tracked in
-// dynamic or fixed index files.
+// compression, AES-256-GCM encryption, and CRC32 verification), and chunk
+// references are tracked in dynamic or fixed index files.
 //
 // # Chunk Store
 //
 // ChunkStore manages chunk storage on the local filesystem. Each chunk is
 // identified by its SHA-256 digest and stored under a .chunks directory:
 //
-//	store, err := datastore.NewChunkStore("/backup/datastore")
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//
-//	// Store a chunk
-//	digest := sha256.Sum256(data)
-//	inserted, size, err := store.InsertChunk(digest, blobData)
-//
-//	// Load a chunk
-//	blobData, err := store.LoadChunk(digest)
+//	store, _ := datastore.NewChunkStore("/backup/datastore")
+//	inserted, size, _ := store.InsertChunk(digest, blobData)
+//	blobData, _ := store.LoadChunk(digest)
 //
 // # Data Blobs
 //
 // All chunk data is wrapped in a DataBlob envelope containing a magic number
 // and CRC32 checksum:
 //
-//	blob, err := datastore.EncodeBlob(rawChunk)
-//	encoded := blob.Bytes()
+//	blob, _ := datastore.EncodeBlob(rawChunk)
+//	decoded, _ := datastore.DecodeBlob(blob.Bytes())
 //
-//	// Decode
-//	decoded, err := datastore.DecodeBlob(encoded)
-//
-// Use EncodeCompressedBlob for zstd compression.
+// Use EncodeCompressedBlob for zstd compression, EncodeEncryptedBlob for
+// AES-256-GCM encryption.
 //
 // # Index Files
 //
@@ -43,34 +33,28 @@
 //
 //	writer := datastore.NewDynamicIndexWriter(time.Now().Unix())
 //	writer.Add(offset, digest)
-//	indexData, err := writer.Finish()
+//	indexData, _ := writer.Finish()
 //
-//	// Read back
-//	reader, err := datastore.ParseDynamicIndex(indexData)
-//	count := reader.Count()
-//	info, ok := reader.ChunkInfo(0)
+//	reader, _ := datastore.ParseDynamicIndex(indexData)
+//	info, _ := reader.ChunkInfo(0) // info.Start, info.End, info.Digest
 //
 // Fixed indexes (.fidx) are used for fixed-size chunks (e.g., raw disk images).
 //
-// # Store Chunker
+// # Restoration
 //
-// StoreChunker wires together buzhash chunking, blob encoding, and chunk
-// storage into a single pipeline:
+// Restorer reconstructs files from chunk indexes using a ChunkSource:
 //
-//	sc := datastore.NewStoreChunker(store, chunkCfg, true) // true = compress
-//	results, idxWriter, err := sc.ChunkStream(archiveReader)
+//	restorer := datastore.NewRestorer(chunkSource)
+//	restorer.RestoreFile(idx, writer)
+//	restorer.RestoreRange(idx, offset, length, writer)
 //
-// # Backup Catalog
+// # Backup Catalogs
+//
+// BuildCatalogFast performs parallel catalog extraction from a DIDX.
+// BuildDirIndex builds a directory index from goodbye table entries.
+// OnDemandCatalog provides lazy catalog loading from chunked data.
 //
 // BackupType, BackupGroup, BackupDir, and BackupInfo model the PBS backup
 // namespace hierarchy (type/id/timestamp). Manifest tracks all files in a
-// backup snapshot:
-//
-//	manifest := &datastore.Manifest{
-//	    BackupType: datastore.BackupHost.String(),
-//	    BackupID:   "myhost",
-//	    BackupTime: time.Now().Unix(),
-//	    Files:      []datastore.FileInfo{...},
-//	}
-//	data, err := manifest.Marshal()
+// backup snapshot.
 package datastore

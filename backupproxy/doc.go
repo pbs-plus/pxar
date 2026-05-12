@@ -7,54 +7,57 @@
 // interfaces and message types. Users provide their own transport implementation
 // (gRPC, HTTP, SSH, etc.).
 //
-// # Features
+// # Detection Modes
+//
+// Three modes control how archives are created and whether unchanged files are
+// re-read:
+//   - DetectionLegacy: v1 single .pxar, all data encoded in one stream
+//   - DetectionData: v2 split .mpxar + .ppxar, all data re-read
+//   - DetectionMetadata: v2 split, compares metadata against previous backup,
+//     reuses unchanged payload chunks
+//
+// # Encryption
+//
+// Three crypt modes are supported:
+//   - CryptModeNone: no encryption or signing (default)
+//   - CryptModeEncrypt: AES-256-GCM encryption + HMAC-SHA256 manifest signing
+//   - CryptModeSignOnly: no encryption, HMAC-SHA256 manifest signing
+//
+// Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM for
+// chunk encryption. Manifests are signed but never encrypted (PBS must read them).
+//
+// # Extended Metadata
+//
+// Extended attributes, POSIX ACLs, and file capabilities are collected via
+// the FileSystemAccessor/ClientProvider interfaces and encoded into archives.
+// Metadata change detection compares all fields (stat, xattrs, ACLs, fcaps)
+// to trigger re-upload when they change.
+//
+// # Backup Catalogs
 //
 // All backup modes automatically generate and upload a catalog.pcat1.didx file,
 // enabling PBS's web UI to browse backup contents without downloading the
 // full archive.
 //
-// The library supports three crypt modes:
-//   - CryptModeNone: no encryption or signing (default)
-//   - CryptModeEncrypt: AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing
-//   - CryptModeSign: no encryption, but HMAC-SHA256 manifest signing for integrity verification
-//
-// Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM for chunk
-// encryption. Manifests are signed but never encrypted (PBS must read them).
-//
-// Extended attributes, POSIX ACLs, and file capabilities are collected from the
-// filesystem via the FileSystemAccessor interface and encoded into archives.
-// Metadata change detection compares all extended metadata fields (stat, xattrs,
-// ACLs, fcaps) to trigger re-upload when they change.
-//
 // # PBS Reader Protocol
 //
-// For restoring backups, the PBSReader type provides access to the Proxmox Backup
-// Server reader protocol (proxmox-backup-reader-protocol-v1) via HTTP/2. This
-// enables efficient downloading of:
-//   - Index files (.didx, .fidx, .blob) via GET /download
-//   - Individual chunks by digest via GET /chunk
-//
-// The reader integrates with the datastore.Restorer to reconstruct files from
-// their chunks, supporting both full file restoration and partial/range reads.
-//
-// Example:
+// PBSReader provides access to the Proxmox Backup Server reader protocol
+// (proxmox-backup-reader-protocol-v1) via HTTP/2. This enables downloading
+// index files and individual chunks, and restoring files:
 //
 //	reader := backupproxy.NewPBSReader(cfg, "host", "mybackup", backupTime)
-//	if err := reader.Connect(ctx); err != nil {
-//	    return err
-//	}
+//	reader.Connect(ctx)
 //	defer reader.Close()
 //
-//	// Download index
 //	didxData, _ := reader.DownloadFile("root.pxar.didx")
 //	idx, _ := datastore.ParseDynamicIndex(didxData)
 //
-//	// Restore entire file
 //	var buf bytes.Buffer
 //	reader.RestoreFile(idx, &buf)
-//
-//	// Or restore just a range (e.g., bytes 1024-2048)
+//	// Or partial range:
 //	reader.RestoreFileRange(idx, 1024, 1024, &buf)
+//
+// Use AsChunkSource() to integrate with Restorer, ChunkedReadSeeker, etc.
 package backupproxy
 
 import (

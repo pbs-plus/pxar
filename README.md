@@ -1,23 +1,23 @@
-# pxar — Proxmox Archive Format for Go
+# pxar — Proxmox Backup Archive Format for Go
 
-A pure Go library implementing the Proxmox Backup Archive (pxar) format for efficient filesystem backup, storage, and restoration. The library provides end-to-end support for encoding, decoding, random access, content-defined chunking, and both local and remote backup storage.
+A pure Go library implementing the Proxmox Backup Archive (pxar) format for efficient filesystem backup, storage, and restoration. Faithfully ported from the Rust reference implementation (`proxmox-pxar` + `proxmox-backup`) with identical wire format, SipHash24 hashing, BST goodbye tables, and content-defined chunking.
 
 ## Overview
 
-The pxar format stores full filesystem trees — files, directories, symlinks, devices, sockets, FIFOs — with POSIX metadata including extended attributes, ACLs, and file capabilities. Archives support random access via goodbye tables (binary search trees over SipHash24 filename hashes).
+The pxar format stores full filesystem trees — files, directories, symlinks, hardlinks, devices, sockets, FIFOs — with POSIX metadata including extended attributes, ACLs, and file capabilities. Archives support random access via goodbye tables (binary search trees over SipHash24 filename hashes).
 
 This library is organized into focused packages:
 
 | Package       | Description                                                |
 | ------------- | ---------------------------------------------------------- |
-| `pxar`        | Core types: Entry, Metadata, MetadataBuilder               |
-| `format`      | Binary format constants, headers, serialization            |
-| `encoder`     | Streaming archive writer                                   |
+| `pxar`        | Core types: Entry, Metadata, MetadataBuilder, ACL          |
+| `format`      | Binary format constants, headers, serialization, SipHash24 |
+| `encoder`     | Streaming archive writer (v1 unified and v2 split)         |
 | `decoder`     | Streaming archive reader                                   |
-| `accessor`    | Random-access archive reader (seek-based)                  |
+| `accessor`    | Random-access archive reader with FollowHardlink           |
 | `transfer`    | Copy/move files between archives across formats            |
 | `buzhash`     | Content-defined chunking via buzhash rolling hash          |
-| `datastore`   | Chunk storage, blob encoding, index files, backup catalogs |
+| `datastore`   | Chunk storage, blob encoding, indexes, backup catalogs     |
 | `binarytree`  | Binary search tree permutation for goodbye tables          |
 | `fusefs`      | Read-only FUSE filesystem over pxar archives               |
 | `backupproxy` | Pull-mode backup architecture with pluggable transport     |
@@ -41,23 +41,28 @@ import (
     "os"
     pxar "github.com/pbs-plus/pxar"
     "github.com/pbs-plus/pxar/encoder"
+    "github.com/pbs-plus/pxar/format"
 )
 
 func main() {
     f, _ := os.Create("backup.pxar")
     defer f.Close()
 
-    rootMeta := pxar.DirMetadata(0o755).Owner(0, 0).Build()
+    ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
+    rootMeta := pxar.DirMetadata(0o755).Owner(0, 0).Mtime(ts).Build()
     enc := encoder.NewEncoder(f, nil, &rootMeta, nil)
 
-    // Add a file
-    fileMeta := pxar.FileMetadata(0o644).Owner(1000, 1000).Build()
-    enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
+    // Add a file (returns LinkOffset for hardlink targets)
+    fileMeta := pxar.FileMetadata(0o644).Owner(1000, 1000).Mtime(ts).Build()
+    offset, _ := enc.AddFile(&fileMeta, "hello.txt", []byte("hello world"))
+
+    // Add a hardlink pointing to the file above
+    enc.AddHardlink("link.txt", "hello.txt", offset)
 
     // Add a directory with a nested file
-    subMeta := pxar.DirMetadata(0o755).Owner(1000, 1000).Build()
+    subMeta := pxar.DirMetadata(0o755).Owner(1000, 1000).Mtime(ts).Build()
     enc.CreateDirectory("subdir", &subMeta)
-    nestedMeta := pxar.FileMetadata(0o600).Owner(1000, 1000).Build()
+    nestedMeta := pxar.FileMetadata(0o600).Owner(1000, 1000).Mtime(ts).Build()
     enc.AddFile(&nestedMeta, "secret.txt", []byte("data"))
     enc.Finish() // close subdir
 
@@ -65,8 +70,49 @@ func main() {
     linkMeta := pxar.SymlinkMetadata(0o777).Build()
     enc.AddSymlink(&linkMeta, "link", "hello.txt")
 
+    // Add a device node
+    devMeta := pxar.DeviceMetadata(0o666).Build()
+    enc.AddDevice(&devMeta, "null", format.Device{Major: 1, Minor: 3})
+
+    // Add special files
+    fifoMeta := pxar.FIFOMetadata(0o666).Build()
+    enc.AddFIFO(&fifoMeta, "myfifo")
+    sockMeta := pxar.SocketMetadata(0o600).Build()
+    enc.AddSocket(&sockMeta, "mysock")
+
     enc.Close()
 }
+```
+
+#### Split Archives (v2)
+
+For v2 split archives, metadata and payload are written to separate streams. This enables payload deduplication and efficient catalog access:
+
+```go
+var metaBuf, payloadBuf bytes.Buffer
+enc := encoder.NewEncoder(&metaBuf, &payloadBuf, &rootMeta, nil)
+
+// Regular files write content to the payload stream
+enc.AddFile(&fileMeta, "data.bin", fileContent)
+
+// PayloadRef references existing payload data without re-reading it
+enc.AddPayloadRef(&fileMeta, "unchanged.dat", fileSize, payloadOffset)
+
+// Track payload position for external chunk injection
+pos := enc.PayloadPosition()
+enc.Advance(virtualSize)
+
+enc.Close()
+```
+
+#### Streaming Large Files
+
+For files too large to buffer in memory, use `CreateFile` to obtain a `FileWriter`:
+
+```go
+fw, _ := enc.CreateFile(&fileMeta, "large.bin", fileSize)
+io.Copy(fw, largeReader)
+fw.Close()
 ```
 
 ### Decoding an Archive
@@ -76,6 +122,7 @@ package main
 
 import (
     "fmt"
+    "io"
     "os"
     pxar "github.com/pbs-plus/pxar"
     "github.com/pbs-plus/pxar/decoder"
@@ -88,8 +135,11 @@ func main() {
     dec := decoder.NewDecoder(f, nil)
     for {
         entry, err := dec.Next()
-        if err != nil { // io.EOF when done
+        if err == io.EOF {
             break
+        }
+        if err != nil {
+            log.Fatal(err)
         }
 
         switch entry.Kind {
@@ -98,11 +148,20 @@ func main() {
         case pxar.KindDirectory:
             fmt.Printf("dir:  %s\n", entry.FileName())
         case pxar.KindSymlink:
-            fmt.Printf("link: %s -> %s\n", entry.FileName(), entry.LinkTarget)
+            fmt.Printf("symlink: %s -> %s\n", entry.FileName(), entry.LinkTarget)
+        case pxar.KindHardlink:
+            fmt.Printf("hardlink: %s -> %s\n", entry.FileName(), entry.LinkTarget)
+        case pxar.KindDevice:
+            fmt.Printf("device: %s (%d:%d)\n", entry.FileName(),
+                entry.DeviceInfo.Major, entry.DeviceInfo.Minor)
+        case pxar.KindFIFO:
+            fmt.Printf("fifo: %s\n", entry.FileName())
+        case pxar.KindSocket:
+            fmt.Printf("socket: %s\n", entry.FileName())
         }
 
-        // Read file content inline
-        if entry.Kind == pxar.KindFile {
+        // Stream file content
+        if entry.Kind == pxar.KindFile && entry.FileSize > 0 {
             content, _ := io.ReadAll(dec.Contents())
             _ = content
         }
@@ -112,7 +171,7 @@ func main() {
 
 ### Random Access
 
-The accessor package provides seek-based random access to archives, enabling O(log n) filename lookups without scanning the entire archive:
+The accessor package provides seek-based random access to archives, enabling O(log n) filename lookups via SipHash24 goodbye tables:
 
 ```go
 package main
@@ -141,14 +200,40 @@ func main() {
         return nil
     })
 
-    // Look up a file by path
+    // Look up a file by path (O(log n) via goodbye table BST)
     entry, _ := acc.Lookup("subdir/secret.txt")
 
-    // Stream file content (zero-copy)
+    // Stream file content (returns io.ReadCloser)
     rc, _ := acc.ReadFileContentReader(entry)
     defer rc.Close()
     content, _ := io.ReadAll(rc)
+
+    // Follow a hardlink to its target entry
+    linkEntry, _ := acc.Lookup("/link.txt")
+    target, _ := acc.FollowHardlink(linkEntry)
+    rc2, _ := acc.ReadFileContentReader(target)
+    defer rc2.Close()
+
+    // Minimal mode — skips xattrs/ACLs/fcaps, faster for index workloads
+    acc.ListDirectory(int64(root.ContentOffset), accessor.ListOption{Minimal: true}, func(entry *pxar.Entry) error {
+        return nil
+    })
+
+    // Read individual entries at known offsets
+    entry, _ = acc.ReadEntryAt(offset)       // full metadata
+    entry, _ = acc.ReadEntryAtMinimal(offset) // stat only
 }
+```
+
+#### FollowHardlink
+
+`FollowHardlink` resolves a hardlink entry to its target file entry by computing `filenameHeaderOffset - linkOffset` from the wire format, then re-reading the full entry at that position. This mirrors Rust's `Accessor::follow_hardlink`:
+
+```go
+link, _ := acc.Lookup("/bin/bunzip2")
+target, _ := acc.FollowHardlink(link)
+rc, _ := acc.ReadFileContentReader(target)
+// target now has FileSize, ContentOffset, and full metadata from the original file
 ```
 
 ### Transferring Files Between Archives
@@ -166,7 +251,7 @@ import (
 )
 
 func main() {
-    // Open source archive (any format: .pxar, .pxar.didx, .mpxar.didx+.ppxar.didx, PBS)
+    // Open source archive (any format)
     src := transfer.NewFileArchiveReader(sourceFile)
     defer src.Close()
 
@@ -182,160 +267,130 @@ func main() {
         {Src: "/var/log/syslog", Dst: "/var/log/syslog"},
     }, transfer.TransferOption{})
 
-    // Copy an entire directory tree (src path → dst path)
+    // Copy an entire directory tree
     transfer.CopyTree(src, dst, "/etc", "/etc", transfer.TransferOption{})
-
-    // Copy entire source into target
-    transfer.CopyTree(src, dst, "/", "/", transfer.TransferOption{})
 
     dst.Finish()
 }
 ```
 
-#### Building a New PBS Snapshot from Multiple Existing Snapshots
+#### ArchiveReader Interface
 
-A common use case is creating a new backup snapshot that assembles files from several previous snapshots on the same datastore. This avoids re-uploading chunks that already exist:
+All source formats implement `ArchiveReader`:
 
 ```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "time"
-
-    pxar "github.com/pbs-plus/pxar"
-    "github.com/pbs-plus/pxar/backupproxy"
-    "github.com/pbs-plus/pxar/buzhash"
-    "github.com/pbs-plus/pxar/datastore"
-    "github.com/pbs-plus/pxar/format"
-    "github.com/pbs-plus/pxar/transfer"
-)
-
-func main() {
-    ctx := context.Background()
-
-    pbsCfg := backupproxy.PBSConfig{
-        BaseURL:       "https://pbs:8007/api2/json",
-        Datastore:     "backup",
-        AuthToken:     "TOKENID:SECRET",
-        SkipTLSVerify: true,
-    }
-
-    // Open PBS remote store
-    pbsStore := backupproxy.NewPBSRemoteStore(pbsCfg, buzhash.DefaultConfig(), true)
-
-    // Start a new backup session — this creates a new snapshot
-    now := time.Now().Unix()
-    session, err := pbsStore.StartSession(ctx, backupproxy.BackupConfig{
-        BackupType: datastore.BackupHost,
-        BackupID:   "myhost",
-        BackupTime: now,
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    // Open existing snapshots as sources (lazy — only needed chunks are downloaded)
-    snap1, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
-        Config:      pbsCfg,
-        BackupType:  "host",
-        BackupID:    "myhost",
-        BackupTime:  1700000000, // previous snapshot 1
-        ArchiveName: "root.pxar.didx",
-    })
-    if err != nil {
-        panic(err)
-    }
-    defer snap1.Close()
-
-    snap2, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
-        Config:      pbsCfg,
-        BackupType:  "host",
-        BackupID:    "myhost",
-        BackupTime:  1700100000, // previous snapshot 2
-        ArchiveName: "root.pxar.didx",
-    })
-    if err != nil {
-        panic(err)
-    }
-    defer snap2.Close()
-
-    // Write a new v2 split archive into the session
-    dst := transfer.NewSplitSessionArchiveWriter(ctx, session, "root.mpxar.didx", "root.ppxar.didx")
-    rootMeta := pxar.DirMetadata(0o755).Build()
-    if err := dst.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
-        panic(err)
-    }
-
-    // Copy /etc from snapshot 1 and /var from snapshot 2
-    if err := transfer.Copy(snap1, dst, []transfer.PathMapping{
-        {Src: "/etc", Dst: "/etc"},
-    }, transfer.TransferOption{}); err != nil {
-        panic(err)
-    }
-    if err := transfer.Copy(snap2, dst, []transfer.PathMapping{
-        {Src: "/var", Dst: "/var"},
-    }, transfer.TransferOption{}); err != nil {
-        panic(err)
-    }
-
-    if err := dst.Finish(); err != nil {
-        panic(err)
-    }
-
-    // Finalize the backup session — this commits the new snapshot to the datastore
-    manifest, err := session.Finish(ctx)
-    if err != nil {
-        panic(err)
-    }
-
-    fmt.Printf("New snapshot created: %s/%s/%d\n",
-        manifest.BackupType, manifest.BackupID, manifest.BackupTime)
-    for _, f := range manifest.Files {
-        fmt.Printf("  %s (%d bytes)\n", f.Filename, f.Size)
-    }
+type ArchiveReader interface {
+    ReadRoot() (*pxar.Entry, error)
+    Lookup(path string) (*pxar.Entry, error)
+    ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error
+    ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error)
+    ReadCatalog(fn func(transfer.CatalogEntry) error) error
+    Close() error
 }
 ```
 
-The new snapshot is now visible in the datastore alongside the existing ones. PBS's server-side deduplication means chunks that already exist in the datastore are not re-uploaded — the `SplitSessionArchiveWriter` uploads the metadata and payload streams, and the PBS server skips chunks with digests it already has.
+Implementations:
 
-For same-datastore transfers, use `DedupSplitArchiveWriter` with a local `ChunkStore` to avoid re-uploading payload chunks that already exist on disk.
+- **`FileArchiveReader`** — standalone .pxar files via `io.ReadSeeker`
+- **`ChunkedArchiveReader`** — lazy on-demand chunk loading from .didx indexes
+- **`SplitArchiveReader`** — v2 split archives (.mpxar.didx + .ppxar.didx)
+- **`PBSArchiveReader`** — PBS remote stores via H2 reader protocol
+- **`DecryptingReader`** — wraps any `ArchiveReader` to decrypt encrypted chunks
 
-For chunked archives, use `ChunkedArchiveReader` or `SplitArchiveReader` (both lazy by default). For encrypted archives, wrap the chunk source with `DecryptingChunkSource`.
+#### ArchiveWriter Interface
+
+All target formats implement `ArchiveWriter`:
+
+```go
+type ArchiveWriter interface {
+    Begin(rootMeta *pxar.Metadata, opts WriterOptions) error
+    WriteEntry(entry *pxar.Entry, content []byte) error
+    WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error
+    WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error
+    BeginDirectory(name string, meta *pxar.Metadata) error
+    EndDirectory() error
+    Finish() error
+    Close() error
+}
+```
+
+Implementations:
+
+- **`StreamArchiveWriter`** — writes to `io.Writer` (v1 or v2)
+- **`DedupSplitArchiveWriter`** — same-datastore dedup with chunk reuse
+- **`RemoteDedupSplitArchiveWriter`** — PBS remote dedup with chunk injection
+- **`SplitSessionArchiveWriter`** — uploads via `BackupSession`
 
 #### Same-Datastore Dedup Transfer
 
-When source and target are in the same chunk store (e.g., same PBS datastore), the `DedupSplitArchiveWriter` avoids re-uploading payload chunks that already exist on disk. This is the primary optimization for same-datastore transfers:
+When source and target are in the same chunk store, `DedupSplitArchiveWriter` reuses payload chunks without re-uploading:
 
 ```go
-// Source is a v2 split archive in the same store
-payloadIdx, _ := datastore.ReadDynamicIndex(sourcePayloadIdxData)
-
 writer := transfer.NewDedupSplitArchiveWriter(store, source, config, false, payloadIdx)
-rootMeta := pxar.DirMetadata(0o755).Build()
 writer.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2})
-
-// Write entries — payload chunks with identical content are deduplicated
-// by ChunkStore.InsertChunk (no-op for existing digests)
 writer.WriteEntry(entry, content)
-
 writer.Finish()
 
-// Check dedup statistics
 hits, total := writer.DedupStats()
 fmt.Printf("%d/%d payload chunks reused\n", hits, total)
 ```
 
-The package also provides utilities for working with source payload chunks without full stream reconstruction:
+For PBS remote stores, `RemoteDedupSplitArchiveWriter` injects original chunks via `UploadPayloadWithInjection`, uploading only new data:
 
-- **`MapFileToPayloadChunks`** — maps a file's payload range to the chunk digests that contain it
-- **`ReadFileContentFromChunks`** — reads a file's content by loading only the necessary payload chunks via `RestoreRange`
-- **`ComputeContentDigest`** — SHA-256 of a file's content without reconstructing the entire payload stream
+```go
+writer, _ := transfer.NewRemoteDedupSplitArchiveWriter(ctx, session, metaName, payloadName, origDidxBytes)
+writer.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2})
+writer.WriteEntryRef(entry, payloadOffset) // monotonic offset validated
+writer.Finish()
+```
+
+The `WriteEntryRef` method enforces strictly monotonic payload offsets via `TryRecordStrictlyGreater`, preventing corrupt previous archives from injecting backwards `PXAR_PAYLOAD_REF` offsets.
 
 #### Lazy Chunk Loading
 
-`ChunkedReadSeeker` implements `io.ReadSeeker` over a chunked archive stream, loading and decoding chunks on demand instead of reconstructing the entire stream into memory. `ChunkedArchiveReader` and `SplitArchiveReader` use this by default — only chunks needed for `Lookup` and `ReadFileContent` calls are loaded. For small archives where full in-memory reconstruction is acceptable, use `NewChunkedArchiveReaderEager` and `NewSplitArchiveReaderEager`.
+`ChunkedReadSeeker` implements `io.ReadSeeker` over a chunked archive stream, loading and decoding chunks on demand:
+
+```go
+cr, _ := transfer.NewChunkedReadSeeker(idx, source, 4) // 4-chunk cache
+_, _ = cr.Seek(offset, io.SeekStart)
+content, _ := io.ReadAll(cr)
+cr.Close()
+```
+
+`ChunkedArchiveReader` and `SplitArchiveReader` use this by default. For eager loading, use `NewChunkedArchiveReaderEager` and `NewSplitArchiveReaderEager`.
+
+#### Payload Chunk Utilities
+
+The transfer package provides utilities for working with source payload chunks without full stream reconstruction:
+
+- **`MapFileToPayloadChunks`** — maps a file's payload range to the chunk digests that contain it
+- **`ReadFileContentFromChunks`** — reads a file's content by loading only necessary chunks
+- **`ComputeContentDigest`** — SHA-256 of a file's content without reconstructing the entire stream
+- **`TryRecordStrictlyGreater`** — monotonic offset guard for dedup writers
+
+#### Walking Archives
+
+```go
+// Walk all entries with content reading
+transfer.WalkTree(reader, "/", func(entry *pxar.Entry, content []byte) error {
+    fmt.Println(entry.Path)
+    return nil
+})
+
+// Walk with options (metadata only, filters, skip count)
+transfer.WalkTreeWith(reader, "/", transfer.WalkOption{
+    MetaOnly: true,
+    Filter:   transfer.WalkFiles,
+}, func(entry *pxar.Entry, content []byte) error {
+    return nil
+})
+
+// Walk metadata only with type filter
+transfer.WalkTreeMetadata(reader, "/", transfer.WalkFiles, func(entry *pxar.Entry) error {
+    fmt.Printf("%s: %v\n", entry.Path, entry.Kind)
+    return nil
+})
+```
 
 #### CLI Commands
 
@@ -354,9 +409,6 @@ pxar-cli cp backup.pxar /hello.txt -o new.pxar
 
 # Copy with destination path remapping
 pxar-cli cp backup.pxar /etc/hosts /backup/hosts -o new.pxar
-
-# Merge an entire archive into a new archive
-pxar-cli merge backup.pxar -o merged.pxar
 ```
 
 ### Content-Defined Chunking
@@ -377,15 +429,19 @@ func main() {
     chunker := buzhash.NewChunker(reader, cfg)
     for {
         chunk, err := chunker.Next()
-        if err != nil { // io.EOF when done
+        if err == io.EOF {
             break
         }
-
+        if err != nil {
+            log.Fatal(err)
+        }
         digest := sha256.Sum256(chunk)
         // store chunk indexed by digest
     }
 }
 ```
+
+Use `buzhash.DefaultConfig()` for the standard 4 MiB chunk size. The chunker uses a 256-entry buzhash table and 64-byte sliding window, matching the Rust implementation bit-for-bit.
 
 ### Chunk Storage and Indexes
 
@@ -405,10 +461,10 @@ func main() {
     // Create a chunk store
     store, _ := datastore.NewChunkStore("/backup/dataset")
 
-    // Encode a chunk as a blob
+    // Encode a chunk as a blob (magic + CRC32 envelope)
     blob, _ := datastore.EncodeBlob(chunkData)
     digest := sha256.Sum256(chunkData)
-    store.InsertChunk(digest, blob.Bytes())
+    inserted, size, _ := store.InsertChunk(digest, blob.Bytes())
 
     // Build a dynamic index
     idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
@@ -416,23 +472,43 @@ func main() {
     indexData, _ := idx.Finish()
 
     // Read an index back
-    reader, _ := datastore.ReadDynamicIndex(indexData)
+    reader, _ := datastore.ParseDynamicIndex(indexData)
     for i := 0; i < reader.Count(); i++ {
         info, _ := reader.ChunkInfo(i)
         // info.Start, info.End, info.Digest
     }
 
-    // Manifest for backup snapshots
-    manifest := &datastore.Manifest{
-        BackupType: datastore.BackupHost.String(),
-        BackupID:   "myhost",
-        BackupTime: time.Now().Unix(),
-        Files:      []datastore.FileInfo{
-            {Filename: "root.pxar.didx", Size: 4096, CSum: "abc123"},
-        },
-    }
-    data, _ := manifest.Marshal()
+    // Restore a file from its chunk index
+    restorer := datastore.NewRestorer(chunkSource)
+    restorer.RestoreFile(idx, writer)
+    // Or restore a range (offset + length)
+    restorer.RestoreRange(idx, offset, length, writer)
 }
+```
+
+#### Backup Catalogs
+
+The datastore package provides fast catalog building from chunked archives:
+
+- **`BuildCatalogFast`** — parallel catalog extraction from a DIDX with configurable workers
+- **`BuildDirIndex`** — builds a `DirIndex` from a directory's goodbye table entries
+- **`OnDemandCatalog`** — lazy catalog that loads directory metadata on demand from chunked data
+- **`CatalogChild`** — lightweight entry with name, type, size, and mtime
+
+Catalogs are uploaded as `catalog.pcat1.didx` alongside the archive, enabling PBS's web UI to browse backup contents without downloading the full archive.
+
+#### Manifests
+
+```go
+manifest := &datastore.Manifest{
+    BackupType: datastore.BackupHost.String(),
+    BackupID:   "myhost",
+    BackupTime: time.Now().Unix(),
+    Files: []datastore.FileInfo{
+        {Filename: "root.pxar.didx", Size: 4096, CSum: "abc123"},
+    },
+}
+data, _ := manifest.Marshal()
 ```
 
 ### Pull-Mode Backup (backupproxy)
@@ -457,15 +533,8 @@ result, err := srv.RunBackupWithMode(ctx, "/root", backupproxy.BackupConfig{
     DetectionMode: backupproxy.DetectionLegacy,
 })
 
-// Data mode (split archive, all data re-read)
-result, err := srv.RunBackupWithMode(ctx, "/root", backupproxy.BackupConfig{
-    BackupType:    datastore.BackupHost,
-    BackupID:      "myhost",
-    DetectionMode: backupproxy.DetectionData,
-})
-
 // Metadata mode (incremental, reuses unchanged payload)
-result, err := srv.RunBackupWithMode(ctx, "/root", backupproxy.BackupConfig{
+result, err := srv.RunMetadataBackup(ctx, "/root", backupproxy.BackupConfig{
     BackupType:    datastore.BackupHost,
     BackupID:      "myhost",
     DetectionMode: backupproxy.DetectionMetadata,
@@ -473,12 +542,9 @@ result, err := srv.RunBackupWithMode(ctx, "/root", backupproxy.BackupConfig{
         BackupType: datastore.BackupHost,
         BackupID:   "myhost",
         BackupTime: 1700000000,
-        Namespace:  "",
     },
 })
 ```
-
-For local store, set `PreviousBackup.Dir` to the directory containing previous snapshot indexes. For PBS, leave `Dir` empty and the store will download them via `PBSRemoteStore`.
 
 #### Encryption and Signing
 
@@ -490,90 +556,21 @@ The library supports three crypt modes:
 | `CryptModeEncrypt`  | AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing         |
 | `CryptModeSignOnly` | No encryption, but HMAC-SHA256 manifest signing for integrity verification |
 
-Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM (12-byte nonce, empty AAD) for chunk encryption. Manifests are always signed when a `CryptConfig` is provided — they are never encrypted, since PBS must be able to read the manifest. Chunk digests in encrypted mode use `SHA-256(data || id_key)` to prevent cross-key collisions. Key files can be generated with `pxar-cli keygen` and loaded at backup time.
-
-#### Backup Catalogs
-
-All backup modes automatically generate and upload a `catalog.pcat1.didx` file alongside the archive. This catalog enables PBS's web UI and `proxmox-backup-client catalog` commands to browse backup contents without downloading the entire archive. The catalog includes file names, types, sizes, and modification times for every entry in the backup.
-
-#### Extended Attributes and ACLs
-
-The `FileSystemAccessor` interface includes `GetXAttrs`, `GetACL`, and `GetFCaps` methods for collecting extended attributes, POSIX ACLs, and file capabilities. The `osFS` implementation in `cmd/pxar-cli` reads real xattrs and ACLs from the filesystem using `unix.Llistxattr`/`unix.Lgetxattr`. Metadata change detection in `DetectionMetadata` mode compares all extended metadata fields, ensuring xattr/ACL changes trigger re-upload.
-
-#### Basic Usage
-
-```go
-package main
-
-import (
-    "context"
-    "github.com/pbs-plus/pxar/backupproxy"
-    "github.com/pbs-plus/pxar/buzhash"
-    "github.com/pbs-plus/pxar/datastore"
-)
-
-func main() {
-    // --- Client side (backed-up machine) ---
-    // Implement FileSystemAccessor for local filesystem access,
-    // then wrap with LocalClient:
-    //
-    //   client := backupproxy.NewLocalClient(myFSAccessor)
-    //
-    // Or implement ClientProvider directly over your transport (gRPC, SSH, etc.)
-
-    // --- Server side (PBS machine) ---
-    // Use LocalStore for testing/offline or PBSRemoteStore for PBS:
-
-    chunkCfg, _ := buzhash.NewConfig(4096)
-
-    // Local storage (testing)
-    store, _ := backupproxy.NewLocalStore("/tmp/backup", chunkCfg, false)
-
-    // Or PBS remote storage (connects via H2 backup protocol)
-    // store := backupproxy.NewPBSRemoteStore(backupproxy.PBSConfig{
-    //     BaseURL:       "https://pbs:8007/api2/json",
-    //     Datastore:     "my-datastore",
-    //     AuthToken:     "TOKENID:SECRET",
-    //     SkipTLSVerify: true,
-    // }, chunkCfg, true)
-
-    srv := backupproxy.NewServer(client, store)
-
-    result, err := srv.RunBackup(context.Background(), "/", backupproxy.BackupConfig{
-        BackupType: datastore.BackupHost,
-        BackupID:   "myhost",
-        BackupTime: 1700000000,
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    fmt.Printf("Backed up %d files, %d dirs, %d bytes in %s\n",
-        result.FileCount, result.DirCount, result.TotalBytes, result.Duration)
-}
-```
+Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM (12-byte nonce, empty AAD) for chunk encryption. Manifests are always signed when a `CryptConfig` is provided — they are never encrypted, since PBS must be able to read the manifest. Chunk digests in encrypted mode use `SHA-256(data || id_key)` to prevent cross-key collisions.
 
 #### Pluggable Transport
 
-The `ClientProvider` interface defines what the server calls to access client data. Implement it over any transport:
+The `ClientProvider` interface defines what the server calls to access client data:
 
 ```go
-type MyTransportClient struct { /* gRPC/SSH/HTTP connection */ }
-
-func (c *MyTransportClient) Stat(ctx context.Context, path string) (format.Stat, error) {
-    // RPC call to client
-}
-
-func (c *MyTransportClient) ReadDir(ctx context.Context, path string) ([]backupproxy.DirEntry, error) {
-    // RPC call to client
-}
-
-func (c *MyTransportClient) ReadFile(ctx context.Context, path string, offset, length int64) ([]byte, error) {
-    // RPC call to client
-}
-
-func (c *MyTransportClient) ReadLink(ctx context.Context, path string) (string, error) {
-    // RPC call to client
+type ClientProvider interface {
+    Stat(ctx context.Context, path string) (format.Stat, error)
+    ReadDir(ctx context.Context, path string) ([]DirEntry, error)
+    OpenFile(ctx context.Context, path string) (io.ReadCloser, uint64, error)
+    ReadLink(ctx context.Context, path string) (string, error)
+    GetXAttrs(ctx context.Context, path string) ([]format.XAttr, error)
+    GetACL(ctx context.Context, path string) (pxar.ACL, error)
+    GetFCaps(ctx context.Context, path string) ([]byte, error)
 }
 ```
 
@@ -584,167 +581,288 @@ On the client side, `FileSystemAccessor` provides the same methods without conte
 Implement `RemoteStore` and `BackupSession` to support custom storage backends:
 
 ```go
-type MyStore struct{}
-
-func (s *MyStore) StartSession(ctx context.Context, cfg backupproxy.BackupConfig) (backupproxy.BackupSession, error) {
-    // Initialize upload session
+type RemoteStore interface {
+    StartSession(ctx context.Context, config BackupConfig) (BackupSession, error)
+    ReadPreviousArchive(ctx context.Context, ...) ([]byte, error)
+    NewPreviousSnapshotSource(ctx context.Context, ...) (PreviousSnapshotSource, error)
 }
 
-type MySession struct{}
+type BackupSession interface {
+    UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error)
+    UploadSplitArchive(ctx context.Context, ...) (*SplitArchiveResult, error)
+    UploadBlob(ctx context.Context, name string, data []byte) error
+    UploadPayloadWithInjection(ctx context.Context, ...) (*UploadResult, error)
+    Finish(ctx context.Context) (*datastore.Manifest, error)
+}
+```
 
-func (s *MySession) UploadArchive(ctx context.Context, name string, data io.Reader) (*backupproxy.UploadResult, error) {
-    // Chunk, store, and index the archive data
+Built-in implementations:
+
+- **`LocalStore`** — local filesystem storage (testing, offline)
+- **`PBSRemoteStore`** — PBS H2 backup protocol with HTTP/2 multiplexing
+
+#### PBS Reader Protocol
+
+For restoring backups, `PBSReader` provides access to the Proxmox Backup Server reader protocol via HTTP/2:
+
+```go
+reader := backupproxy.NewPBSReader(cfg, "host", "mybackup", backupTime)
+reader.Connect(ctx)
+defer reader.Close()
+
+// Download an index file
+didxData, _ := reader.DownloadFile("root.pxar.didx")
+
+// Download a chunk by digest
+chunkData, _ := reader.DownloadChunk(digest)
+
+// Restore entire file or range
+idx, _ := datastore.ParseDynamicIndex(didxData)
+var buf bytes.Buffer
+reader.RestoreFile(idx, &buf)
+reader.RestoreFileRange(idx, 1024, 1024, &buf)
+```
+
+`PBSReader.AsChunkSource()` returns a `datastore.ChunkSource` compatible with `Restorer`, `ChunkedReadSeeker`, and `SplitArchiveReader`.
+
+#### Basic Usage
+
+```go
+// Server side (PBS machine)
+chunkCfg, _ := buzhash.NewConfig(4096)
+store, _ := backupproxy.NewLocalStore("/tmp/backup", chunkCfg, false)
+srv := backupproxy.NewServer(client, store)
+
+result, err := srv.RunBackupWithMode(ctx, "/", backupproxy.BackupConfig{
+    BackupType:    datastore.BackupHost,
+    BackupID:      "myhost",
+    DetectionMode: backupproxy.DetectionData,
+})
+if err != nil {
+    panic(err)
 }
 
-func (s *MySession) UploadBlob(ctx context.Context, name string, data []byte) error {
-    // Store a blob (config, logs)
-}
-
-func (s *MySession) Finish(ctx context.Context) (*datastore.Manifest, error) {
-    // Finalize the backup and return manifest
-}
+fmt.Printf("Backed up %d files, %d dirs, %d bytes in %s\n",
+    result.FileCount, result.DirCount, result.TotalBytes, result.Duration)
 ```
 
 ### FUSE Filesystem
 
-Mount a pxar archive as a read-only filesystem:
+Mount a pxar archive as a read-only filesystem (compatible with hanwen/go-fuse, no dependency):
 
 ```go
-package main
+f, _ := os.Open("backup.pxar")
+fi, _ := f.Stat()
 
-import (
-    "os"
-    "github.com/pbs-plus/pxar/fusefs"
-)
+sess, _ := fusefs.NewSession(f, fi.Size())
+defer sess.Close()
 
-func main() {
-    f, _ := os.Open("backup.pxar")
-    fi, _ := f.Stat()
-
-    sess, _ := fusefs.NewSession(f, fi.Size())
-    defer sess.Close()
-
-    // Use sess as a fusefs.FileSystem:
-    //   sess.Lookup, sess.Getattr, sess.Readdir,
-    //   sess.Read, sess.Readlink, sess.ListXAttr, etc.
-    //
-    // Wrap with a go-fuse bridge to mount with FUSE.
-}
+// Filesystem operations
+inode, attr, _ := sess.Lookup(fusefs.RootInode, "example.txt")
+buf := make([]byte, attr.Size)
+n, _ := sess.Read(inode, buf, 0)
+entries, _ := sess.Readdir(fusefs.RootInode, 0)
+target, _ := sess.Readlink(symlinkInode)
 ```
 
 ## Package Reference
 
 ### `pxar` — Core Types
 
-- `Entry` — A typed archive entry (file, directory, symlink, etc.) with metadata and optional content
-- `Metadata` — POSIX metadata: stat, xattrs, ACLs, fcaps, quota project ID
-- `MetadataBuilder` — Fluent builder for Metadata with type-specific constructors (`FileMetadata`, `DirMetadata`, `SymlinkMetadata`, etc.)
-- `EntryKind` — Entry type constants (`KindFile`, `KindDirectory`, `KindSymlink`, etc.)
+- **`Entry`** — Typed archive entry with metadata, content offsets, and hardlink support
+  - `Kind` — Entry type (`KindFile`, `KindDirectory`, `KindSymlink`, `KindHardlink`, `KindDevice`, `KindFIFO`, `KindSocket`)
+  - `FileOffset` — Position of the entry's FILENAME header in the archive
+  - `FileSize` — Content size for regular files
+  - `ContentOffset` — Position of PAYLOAD/PAYLOAD_REF data
+  - `PayloadOffset` — Offset into the v2 payload stream
+  - `LinkTarget` — Symlink/hardlink target path
+  - `LinkOffset` — Relative offset from hardlink's FILENAME to target's FILENAME (wire format)
+  - `DeviceInfo` — Device major/minor numbers
+  - `Metadata` — Full POSIX metadata
+  - Predicates: `IsDir()`, `IsSymlink()`, `IsRegularFile()`, `IsHardlink()`, `IsDevice()`, `IsFIFO()`, `IsSocket()`
+  - `FileName()`, `PathBytes()`, `FileNameBytes()`
+
+- **`Metadata`** — POSIX metadata: Stat, XAttrs, ACLs, FCaps, QuotaProjectID
+  - `ExtendedMetadataEqual(other)` — compares all extended metadata fields
+  - Predicates: `IsDir()`, `IsSymlink()`, `IsRegularFile()`, `IsDevice()`, `IsFIFO()`, `IsSocket()`
+  - `FileType()`, `FileMode()`
+
+- **`ACL`** — POSIX ACL (users, groups, default, default users, default groups)
+  - `IsEmpty()` — true when no ACL entries present
+
+- **`MetadataBuilder`** — Fluent builder with type-specific constructors
+  - `FileMetadata(mode)`, `DirMetadata(mode)`, `SymlinkMetadata(mode)`, `DeviceMetadata(mode)`, `FIFOMetadata(mode)`, `SocketMetadata(mode)`
+  - Chainable: `.UID(u)`, `.GID(g)`, `.Owner(u,g)`, `.Mtime(ts)`, `.XAttr(name,val)`, `.FCaps(data)`, `.QuotaProjectID(id)`
+  - `.Build()` returns `Metadata`
+
 - `SplitPath(path)` — Split a rooted path into components
+- `CheckPathComponent(path)` — Validate a path component
 - Sentinel errors: `ErrNotFound`, `ErrInvalidFilename`, `ErrInvalidHeader`, `ErrNotDirectory`, `ErrNotRegularFile`
 
 ### `format` — Binary Format
 
-- `Header` — Typed size-prefixed header for each pxar item
-- `Stat` — 40-byte POSIX stat structure (mode, flags, uid, gid, mtime)
-- `Device` — Device major/minor numbers
-- `XAttr` — Extended attribute (name + value)
-- Mode constants (`ModeIFREG`, `ModeIFDIR`, `ModeIFLNK`, etc.)
-- Serialization functions (`MarshalStatBytes`, `ReadHeader`, `WriteHeader`, etc.)
-- `HashFilename` — SipHash24 filename hashing for goodbye tables
+- **`Header`** — 16-byte typed size-prefixed header (little endian)
+  - `NewHeader(htype, fullSize)`, `HeaderWithContentSize(htype, contentSize)`
+  - `ContentSize()`, `MaxContentSize()`, `CheckHeaderSize()`
+  - `MarshalTo(dst []byte)` — zero-copy serialization into caller buffer
+  - `String()` — human-readable type name
+
+- **`Stat`** — 40-byte POSIX stat (mode, flags, uid, gid, mtime as StatxTimestamp)
+  - Includes `_pad` field at bytes 36-39 (always 0, matches Rust `Endian` trait)
+  - `FileType()`, `FileMode()`, `StatEqual(other)`
+  - Predicates: `IsDir()`, `IsSymlink()`, `IsRegularFile()`, `IsDevice()`, `IsBlockDev()`, `IsCharDev()`, `IsFIFO()`, `IsSocket()`
+
+- **`StatV1`** — 32-byte legacy stat (nanosecond mtime), converts via `ToStat()`
+
+- **`StatxTimestamp`** — `{Secs int64, Nanos uint32}` with 4-byte padding
+  - `NewStatxTimestamp(secs, nanos)`, `NewStatxTimestampFromDuration(d)`
+  - `Duration()` — convert back to `time.Duration` (supports pre-epoch)
+
+- **`Device`** — `{Major uint64, Minor uint64}`
+  - `ToDevT()` — encode as `dev_t` (matches Rust `makedev`)
+  - `DeviceFromDevT(dev)` — decode from `dev_t`
+
+- **`PayloadRef`** — 16-byte reference to payload stream offset + file size
+- **`XAttr`** — Extended attribute (name + value), created with `NewXAttr(name, value)`
+- **`FormatVersion`** — Archive format version with `Serialize()` and `DeserializeFormatVersion()`
+
+- Mode constants: `ModeIFREG`, `ModeIFDIR`, `ModeIFLNK`, `ModeIFBLK`, `ModeIFCHR`, `ModeIFIFO`, `ModeIFSOCK`, etc.
+- Type constants: `PXAREntry`, `PXARFilename`, `PXARPayload`, `PXARPayloadRef`, `PXARGoodbye`, `PXARHardlink`, `PXARSymlink`, `PXARDevice`, `PXARACLUser`, `PXARACLGroup`, `PXARACLDefault`, `PXARFCaps`, `PXARXAttr`, `PXARFormatVersion`, `PXARPrelude`, `PXARPayloadTailMarker`
+- `HashFilename(name)` — SipHash24 filename hashing for goodbye tables (matches Rust key)
 
 ### `encoder` — Archive Writer
 
-- `NewEncoder(output, payloadOut, metadata, prelude)` — Create a streaming encoder
-- `AddFile` / `CreateFile` — Write file entries (inline or streaming)
-- `AddSymlink` / `AddHardlink` — Write link entries
-- `AddDevice` / `AddFIFO` / `AddSocket` — Write special entries
-- `CreateDirectory` / `Finish` — Open/close directory scope
-- `Close` — Finalize the archive
+- `NewEncoder(output, payloadOut, metadata, prelude)` — Create encoder; `payloadOut` non-nil enables v2 split
+- `AddFile(metadata, name, content)` → `(LinkOffset, error)` — write file with inline content
+- `CreateFile(metadata, name, size)` → `(*FileWriter, error)` — streaming file writer
+- `AddPayloadRef(metadata, name, fileSize, payloadOffset)` → `(LinkOffset, error)` — reference existing payload
+- `AddSymlink(metadata, name, target)` — write symlink
+- `AddHardlink(name, target, targetOffset)` — write hardlink (uses relative offset)
+- `AddDevice(metadata, name, device)` — write device node
+- `AddFIFO(metadata, name)` — write FIFO
+- `AddSocket(metadata, name)` — write socket
+- `CreateDirectory(name, metadata)` — open directory scope
+- `Finish()` — close current directory, return to parent
+- `Close()` — finalize archive (write goodbye table, close root)
+- `PayloadPosition()` — current payload stream write position
+- `Advance(size)` — advance payload position for virtual content
+
+**`LinkOffset`** — opaque file position token returned by `AddFile`/`AddPayloadRef`, passed to `AddHardlink`
+
+**`FileWriter`** — `io.Writer` for streaming file content, call `Close()` to finalize entry
 
 ### `decoder` — Archive Reader
 
-- `NewDecoder(input, payloadReader)` — Create a streaming decoder
-- `Next()` — Advance to the next entry, returns `*pxar.Entry`
-- `Contents()` — Get an `io.Reader` for the current file's content
+- `NewDecoder(input, payloadReader)` — Create decoder; `payloadReader` for v2 split
+- `Next()` → `(*pxar.Entry, error)` — advance to next entry (`io.EOF` when done)
+- `Contents()` → `io.Reader` — stream current file's content (valid until next `Next()`)
 
 ### `accessor` — Random Access
 
-- `NewAccessor(reader, ...payloadReader)` — Create from an `io.ReadSeeker`
-- `ReadRoot()` — Get the root directory entry
-- `ListDirectory(offset, opts, fn)` — Zero-allocation callback-based directory streaming
-- `Lookup(path)` — O(log n) path lookup via goodbye tables
-- `ReadFileContent(entry)` / `ReadFileContentReader(entry)` — Buffered or streaming content reads
+- `NewAccessor(reader, ...payloadReader)` — create from `io.ReadSeeker`
+- `ReadRoot()` — get root directory entry
+- `ListDirectory(offset, opts, fn)` — zero-allocation callback-based directory streaming
+- `Lookup(path)` — O(log n) path lookup via goodbye table BST
+- `ReadFileContentReader(entry)` → `(io.ReadCloser, error)` — streaming content read
+- `FollowHardlink(entry)` → `(*pxar.Entry, error)` — resolve hardlink to target file entry
+- `ReadEntryAt(offset)` — read full entry at known offset
+- `ReadEntryAtMinimal(offset)` — read entry with stat only (skips xattrs/ACLs/fcaps)
+- `ListOption{Minimal: true}` — skip extended metadata during listing
 
 ### `transfer` — File Transfer Between Archives
 
-- `ArchiveReader` — Unified read interface (ReadRoot, Lookup, ListDirectory, ReadFileContent, ReadCatalog)
-- `ArchiveWriter` — Unified write interface (Begin, WriteEntry, WriteEntryReader, BeginDirectory, EndDirectory, Finish)
-- `FileArchiveReader` — Reads from standalone .pxar files
-- `ChunkedArchiveReader` — Reads from chunked .pxar.didx archives
-- `SplitArchiveReader` — Reads from split .mpxar.didx + .ppxar.didx archives
-- `PBSArchiveReader` — Reads from PBS remote stores via H2 reader protocol
-- `StreamArchiveWriter` — Writes to v1 or v2 io.Writer streams
-- `ChunkedArchiveWriter` — Writes to local ChunkStore producing .didx index
-- `SessionArchiveWriter` / `SplitSessionArchiveWriter` — Uploads via BackupSession
-- `DecryptingChunkSource` — Decrypts encrypted chunks on the fly
-- `Copy` / `CopyTree` / `Merge` — Transfer functions connecting readers to writers
-- `WalkTree` / `WalkTreeMeta` / `TreeWalker` — Recursive directory walkers with ErrSkipDir support and filter masks
-- `ListOption` — Minimal metadata decoding for index/browse workloads
-- `TransferOption` — Configuration for encryption, format, overwrite, OnProgress callback
+- **`ArchiveReader`** — unified read interface (ReadRoot, Lookup, ListDirectory, ReadFileContentReader, ReadCatalog)
+- **`ArchiveWriter`** — unified write interface (Begin, WriteEntry, WriteEntryRef, WriteEntryReader, BeginDirectory, EndDirectory, Finish, Close)
+- **`FileArchiveReader`** — reads from standalone .pxar files
+- **`ChunkedArchiveReader`** — lazy on-demand chunk loading from .didx (eager variant available)
+- **`SplitArchiveReader`** — reads from .mpxar.didx + .ppxar.didx (eager/meta-only variants)
+- **`PBSArchiveReader`** — reads from PBS remote via H2 reader protocol
+- **`DecryptingReader`** — wraps any ArchiveReader for encrypted archives
+- **`StreamArchiveWriter`** — writes to io.Writer (v1 or v2 split)
+- **`DedupSplitArchiveWriter`** — same-datastore dedup with chunk reuse, provides `DedupStats()`
+- **`RemoteDedupSplitArchiveWriter`** — PBS remote dedup with chunk injection
+- **`SplitSessionArchiveWriter`** — uploads via BackupSession
+- **`ChunkedReadSeeker`** — io.ReadSeeker over chunked data with configurable cache
+- **`DecryptingChunkSource`** — wraps ChunkSource for encrypted chunks
+- `Copy(src, dst, mappings, opts)` — copy specific paths between archives
+- `CopyTree(src, dst, srcPath, dstPath, opts)` — copy entire directory tree
+- `WalkTree(reader, path, fn)` — walk all entries with content reading
+- `WalkTreeWith(reader, path, opts, fn)` — walk with options (MetaOnly, Filter, SkipCount)
+- `WalkTreeMetadata(reader, path, filter, fn)` — metadata-only walk with type filter
+- `TryRecordStrictlyGreater(last, offset)` — monotonic offset guard for dedup writers
+- `MapFileToPayloadChunks(idx, offset, size)` — map file to payload chunk ranges
+- `ReadFileContentFromChunks(source, idx, offset, size)` — read from specific chunks
+- `ComputeContentDigest(source, idx, offset, size)` — SHA-256 without full reconstruction
 
 ### `buzhash` — Content-Defined Chunking
 
-- `NewConfig(avgSize)` — Create chunking configuration (must be power of two)
-- `DefaultConfig()` — Standard 4 MiB chunk configuration
-- `NewChunker(reader, config)` — Create a chunker
-- `Next()` — Get the next chunk (variable size)
-- `Hasher` — Low-level rolling hash with batch initialization
+- `NewConfig(avgSize)` — create config (must be power of two)
+- `DefaultConfig()` — standard 4 MiB chunk configuration
+- `NewChunker(reader, config)` — create chunker
+- `Next()` → `([]byte, error)` — get next chunk
+- `Hasher` — low-level rolling hash with 64-byte sliding window
 
 ### `datastore` — Chunk Storage and Indexes
 
-- `ChunkStore` — Local filesystem chunk storage keyed by SHA-256 digest
-- `DataBlob` — Chunk envelope with magic + CRC32 (uncompressed or zstd)
-- `DynamicIndexWriter` / `DynamicIndexReader` — Variable-size chunk index (.didx)
-- `FixedIndexWriter` / `FixedIndexReader` — Fixed-size chunk index (.fidx)
-- `StoreChunker` — Pipeline: buzhash → SHA-256 → blob encode → store → index
-- `Restorer` — Reconstruct files from chunks with range support
-- `CatalogWriter` / `CatalogReader` — PBS-compatible pcat1 catalog format
-- `BuildCatalogFast` / `BuildDirIndex` / `OnDemandCatalog` — Metadata catalog indexing
-- `Manifest` / `FileInfo` — Backup snapshot manifest (JSON)
-- `BackupGroup` / `BackupDir` / `BackupInfo` — Backup namespace hierarchy
-- `BlobBufPool` / `PutBlobBuf` — Shared 4 MiB buffer pool for blob encoding
+- **`ChunkStore`** — local filesystem chunk storage keyed by SHA-256 digest
+  - `InsertChunk(digest, data)` → `(inserted bool, size int, err error)`
+  - `LoadChunk(digest)`, `TouchChunk(digest)`, `ChunkPath(digest)`
+
+- **`DataBlob`** — chunk envelope with magic + CRC32
+  - `EncodeBlob(data)`, `EncodeCompressedBlob(data)` (zstd)
+  - `EncodeEncryptedBlob(data, cryptConfig, compress)`
+  - `DecodeBlob(raw)`, `DecodeEncryptedBlob(raw, cryptConfig)`
+
+- **`DynamicIndexWriter`** / **`DynamicIndexReader`** — variable-size chunk index (.didx)
+  - `Add(offset, digest)`, `Finish()`, `ParseDynamicIndex(data)`
+  - `Count()`, `IndexBytes()`, `ChunkInfo(i)`, `ChunkFromOffset(offset)`
+
+- **`FixedIndexWriter`** / **`FixedIndexReader`** — fixed-size chunk index (.fidx)
+
+- **`Restorer`** — reconstruct files from chunks
+  - `NewRestorer(chunkSource)`, `RestoreFile(idx, writer)`, `RestoreRange(idx, offset, length, writer)`
+
+- **`ChunkSource`** — interface for loading chunks by digest
+  - Implemented by `ChunkStore`, `PBSReader.AsChunkSource()`, `DecryptingChunkSource`
+
+- **`BuildCatalogFast`** — parallel catalog extraction from DIDX
+- **`BuildDirIndex`** — build directory index from goodbye table entries
+- **`OnDemandCatalog`** — lazy catalog with on-demand chunk loading
+- **`Manifest`** / **`FileInfo`** — backup snapshot manifest (JSON)
+- **`BackupType`** (`BackupHost`, `BackupVM`), **`BackupGroup`**, **`BackupDir`**, **`BackupInfo`** — namespace hierarchy
+- **`CryptConfig`** — encryption key configuration (PBKDF2 + AES-256-GCM)
 
 ### `binarytree` — BST Permutation
 
-- `Copy(n, copyFunc)` — Permute a sorted array into BST order
-- `SearchBy(tree, start, skip, compare)` — Binary search on a BST-ordered array
+- `Copy(n, copyFunc)` — permute sorted array into BST order
+- `SearchBy(tree, start, skip, compare)` — binary search on BST-ordered array
 
 ### `fusefs` — FUSE Filesystem
 
-- `Session` — Read-only filesystem session over a pxar archive
-- `FileSystem` — Interface compatible with hanwen/go-fuse
-- `Attr`, `DirEntry`, `DirEntryIndex` — FUSE-compatible types
-- `Node` — Inode tracking with reference counting
+- **`Session`** — read-only filesystem session over a pxar archive
+- `NewSession(reader, size)` → `(*Session, error)`
+- `Lookup(parentInode, name)`, `Getattr(inode)`, `Readdir(inode, offset)`
+- `Read(inode, buf, offset)`, `Readlink(inode)`, `ListXAttr(inode)`
+- `RootInode` constant, `IsDirInode(inode)` helper
 
 ### `backupproxy` — Pull-Mode Backup
 
-- `Server` — Backup orchestrator (walk → encode → chunk → upload)
-- `ClientProvider` — Interface for accessing client filesystem data
-- `FileSystemAccessor` — Client-side local filesystem access
-- `LocalClient` — Adapts FileSystemAccessor to ClientProvider
-- `RemoteStore` / `BackupSession` — Storage backend interfaces
-- `LocalStore` — Local filesystem storage backend
-- `PBSRemoteStore` — PBS H2 backup protocol storage backend
-- `PBSConfig` — PBS connection configuration (URL, datastore, auth)
-- `PBSReader` — PBS backup reader protocol client for restore
-- `BackupConfig` — Backup configuration including DetectionMode and PreviousBackup
-- `BackupResult` — Backup outcome (file count, dir count, bytes, duration)
-- `UploadResult` — Single archive upload result (filename, size, digest)
-- `DetectionMode` — Detection mode constants: `DetectionLegacy`, `DetectionData`, `DetectionMetadata`
-- `PreviousBackupRef` — Reference to a previous snapshot for metadata mode
-- `DirEntry` — Directory entry with Stat and Size for metadata comparison
-- `PreviousSnapshotSource` — Interface for reading previous backup catalogs and chunks
+- **`Server`** — backup orchestrator (walk → encode → chunk → upload)
+- **`ClientProvider`** — interface for accessing client filesystem data
+- **`FileSystemAccessor`** — client-side local filesystem access (no context)
+- **`LocalClient`** — adapts FileSystemAccessor to ClientProvider
+- **`RemoteStore`** — storage backend interface (session + snapshot reader)
+- **`BackupSession`** — upload session interface (archive, split, blob, injection, finish)
+- **`LocalStore`** — local filesystem storage backend
+- **`PBSRemoteStore`** — PBS H2 backup protocol backend
+- **`PBSReader`** — PBS reader protocol client for restore
+- **`PBSConfig`** — PBS connection configuration (URL, datastore, auth, TLS)
+- **`BackupConfig`** — backup configuration (type, id, time, mode, encryption, previous backup)
+- **`BackupResult`** — backup outcome (manifest, file count, dir count, bytes, duration)
+- **`DetectionMode`** — `DetectionLegacy`, `DetectionData`, `DetectionMetadata`
+- **`PreviousBackupRef`** — reference to previous snapshot for metadata mode
+- **`DirEntry`** — directory entry with Stat, Size, XAttrs, ACL, FCaps
+- **`PreviousSnapshotSource`** — interface for reading previous backup data
 
 ## Architecture
 
@@ -758,37 +876,46 @@ Backup Data Flow:
         │                                    │
         │◄──── ClientProvider ───────────────│
         │  Stat, ReadDir,                    │
-        │  ReadFile, ReadLink                │
+        │  OpenFile, ReadLink                │
         │────►                               │
                                      ┌────────▼─────────┐
                                      │ RunBackup()       │
                                      │                   │
-                                     │ bytes.Buffer      │
-                                     │  Writer → Encoder │
-                                     │  Reader → Upload  │
-                                    │                   │
-                                    │ walkDir():        │
-                                    │  dir:  Create → recurse → Finish
-                                    │  file: ReadFile → AddFile
-                                    │  link: AddSymlink │
-                                    │                   │
-                                    │ enc.Close()       │
-                                    │ session.Finish()  │
-                                    └────────┬─────────┘
-                                             │
-                                      RemoteStore
-                                      ├── LocalStore (testing)
-                                      └── PBSRemoteStore (PBS H2 Protocol)
+                                     │ Encoder           │
+                                     │  .AddFile()       │
+                                     │  .AddSymlink()    │
+                                     │  .AddHardlink()   │
+                                     │  .AddDevice()     │
+                                     │  .Close()         │
+                                     │                   │
+                                     │ walkDir():        │
+                                     │  dir:  Create → recurse → Finish
+                                     │  file: OpenFile → AddFile
+                                     │  link: ReadLink → AddSymlink
+                                     │                   │
+                                     │ session.Finish()  │
+                                     └────────┬─────────┘
+                                              │
+                                       RemoteStore
+                                       ├── LocalStore (testing)
+                                       └── PBSRemoteStore (PBS H2 Protocol)
 ```
 
 ## Verification
 
 This library has been validated against Proxmox's Rust reference implementation:
 
+- **Wire format**: All struct sizes, hash keys, mode constants, and device conversions verified (`format/format.go` ↔ `proxmox-pxar/src/format/mod.rs`)
 - **SipHash-2-4**: All 23 pxar format type constants produce identical hashes
 - **BST permutation**: Binary tree array layout matches PBS for sizes 1–1000
+- **Goodbye tables**: BST layout, hash sorting, and tail marker verified against Rust encoder
 - **Chunker**: BUZHASH_TABLE (256 entries), config parameters, and chunk boundary logic are bit-identical
-- **Wire format**: All struct sizes, hash keys, POSIX mode constants, and device number conversions verified
+- **Encoder**: File encoding (v1/v2), hardlinks (relative offset), symlinks, devices, payload refs, prelude validation — all match Rust
+- **Accessor**: Random-access lookup, hardlink following (`FollowHardlink` mirrors `follow_hardlink`), minimal decoding mode
+- **Flow control**: Connection-level and stream-level WINDOW_UPDATE frames in H2 client (half-window threshold)
+- **Dedup**: `TryRecordStrictlyGreater` with `Option<u64>`-equivalent semantics, dedup collision identity tests
+- **ACL wire format**: User/Group object sizes match Rust (`size_of::<acl::User>()` = 16 bytes)
+- **Stat pad field**: `_pad = 0` at bytes 36-39 matches Rust `Endian` trait
 
 Parity tests run in CI on every push and pull request via GitHub Actions.
 

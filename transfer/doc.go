@@ -1,25 +1,46 @@
 // Package transfer provides utilities for transferring files between pxar archives.
 //
 // Transfer implements archive-to-archive copy, directory tree walking, catalog
-// extraction, and streaming read/write adapters for PBS remote stores, local
-// chunk stores, and raw io.Reader/io.Writer streams.
+// extraction, lazy chunk loading, dedup-aware writing, and streaming read/write
+// adapters for PBS remote stores, local chunk stores, and raw io.Writer streams.
 //
 // # Readers
 //
-// FileArchiveReader wraps accessor.Accessor for local .pxar files.
-// ChunkedArchiveReader supports lazy on-demand chunk loading from .didx indexes.
-// SplitArchiveReader handles v2 split archives (.mpxar + .ppxar).
-// PBSArchiveReader connects to Proxmox Backup Server via the reader protocol.
+// All source formats implement ArchiveReader:
+//   - FileArchiveReader: standalone .pxar files via io.ReadSeeker
+//   - ChunkedArchiveReader: lazy on-demand chunk loading from .didx indexes
+//   - SplitArchiveReader: v2 split archives (.mpxar.didx + .ppxar.didx)
+//   - PBSArchiveReader: PBS remote stores via H2 reader protocol
+//   - DecryptingReader: wraps any ArchiveReader for encrypted archives
 //
 // # Writers
 //
-// StreamArchiveWriter encodes to io.Writer streams (v1 and v2).
-// ChunkedArchiveWriter chunks and stores via datastore.ChunkStore.
-// SessionArchiveWriter uploads through a backupproxy.BackupSession.
+// All target formats implement ArchiveWriter:
+//   - StreamArchiveWriter: encodes to io.Writer (v1 or v2 split)
+//   - DedupSplitArchiveWriter: same-datastore dedup with chunk reuse
+//   - RemoteDedupSplitArchiveWriter: PBS remote dedup with chunk injection
+//   - SplitSessionArchiveWriter: uploads via BackupSession
 //
-// # Walks
+// # Transfer Functions
 //
-// WalkTree visits every entry in a directory tree with optional content
-// reading. WalkTreeMetadata performs metadata-only traversal. WalkFilter
-// selects which entry types to visit.
+// Copy copies specific paths between archives with optional path mapping.
+// CopyTree copies entire directory trees.
+//
+// # Walk Functions
+//
+// WalkTree visits every entry with optional content reading.
+// WalkTreeWith supports metadata-only mode, type filters, and skip counts.
+// WalkTreeMetadata performs metadata-only traversal with a type filter.
+//
+// # Dedup Utilities
+//
+// TryRecordStrictlyGreater provides monotonic offset validation for dedup writers.
+// MapFileToPayloadChunks maps file content to payload chunk ranges.
+// ReadFileContentFromChunks reads file content from specific chunks.
+// ComputeContentDigest computes SHA-256 without full stream reconstruction.
+//
+// # Lazy Chunk Loading
+//
+// ChunkedReadSeeker implements io.ReadSeeker over chunked data with configurable
+// chunk cache. DecryptingChunkSource wraps ChunkSource for encrypted chunks.
 package transfer

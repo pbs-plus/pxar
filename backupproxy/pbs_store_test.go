@@ -87,6 +87,10 @@ func (m *mockPBSProtocol) blobUpload(fileName string, encodedSize int, data []by
 	return nil
 }
 
+func (m *mockPBSProtocol) downloadPrevious(archiveName string) ([]byte, error) {
+	return nil, nil
+}
+
 func (m *mockPBSProtocol) finish() error {
 	m.finished = true
 	return nil

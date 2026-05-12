@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -22,6 +23,7 @@ type pbsBackupProtocol interface {
 	dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error
 	dynamicIndexClose(wid uint64, chunkCount int, size uint64, csum string) error
 	blobUpload(fileName string, encodedSize int, data []byte) error
+	downloadPrevious(archiveName string) ([]byte, error)
 	finish() error
 	close()
 }
@@ -43,6 +45,21 @@ func (p *h2Protocol) dynamicIndexCreate(archiveName string) (uint64, error) {
 		return 0, fmt.Errorf("parse wid: %w (body: %s)", err, data)
 	}
 	return wid, nil
+}
+
+// downloadPrevious calls the backup session's "previous" endpoint for the given
+// archive name. This triggers server-side chunk registration: the PBS server
+// reads the previous backup's index and registers all its chunk digests in the
+// session's known_chunks map, allowing dynamic_index_append to reference them.
+// Returns the raw DIDX index data.
+func (p *h2Protocol) downloadPrevious(archiveName string) ([]byte, error) {
+	params := url.Values{}
+	params.Set("archive-name", archiveName)
+	data, err := p.conn.do("GET", "previous", params, nil, "")
+	if err != nil {
+		return nil, fmt.Errorf("download previous %s: %w", archiveName, err)
+	}
+	return data, nil
 }
 
 func (p *h2Protocol) dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error {
@@ -298,6 +315,13 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 		s.knownChunks = make(map[[32]byte]bool)
 	}
 
+	// Register original chunks server-side via the "previous" endpoint.
+	if len(origChunks) > 0 {
+		if _, err := s.proto.downloadPrevious(name); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: download previous for chunk registration: %v\n", err)
+		}
+	}
+
 	wid, err := s.proto.dynamicIndexCreate(name)
 	if err != nil {
 		return nil, err
@@ -451,6 +475,15 @@ func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) err
 }
 
 func (s *pbsSession) InjectKnownChunks(_ context.Context, name string, chunks []KnownChunkRef) error {
+	// Register chunks server-side by calling the "previous" endpoint.
+	// This triggers PBS to read the previous backup's index and populate its
+	// known_chunks map, allowing dynamic_index_append to reference them.
+	if _, err := s.proto.downloadPrevious(name); err != nil {
+		// Non-fatal: if there's no previous backup, chunks won't be registered
+		// and the append will fail with "no such chunk".
+		fmt.Fprintf(os.Stderr, "Warning: download previous for chunk registration: %v\n", err)
+	}
+
 	wid, err := s.proto.dynamicIndexCreate(name)
 	if err != nil {
 		return fmt.Errorf("create index for %s: %w", name, err)

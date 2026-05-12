@@ -362,13 +362,25 @@ func (fw *FileWriter) Write(data []byte) (int, error) {
 	if uint64(len(data)) > fw.remaining {
 		return 0, fmt.Errorf("attempted to write more than allocated")
 	}
-	n, err := fw.enc.output.Write(data)
+	var n int
+	var err error
+	if fw.enc.payloadOut != nil {
+		n, err = fw.enc.payloadOut.Write(data)
+		if err == nil {
+			s := fw.enc.currentState()
+			s.payloadWritePos += uint64(n)
+		}
+	} else {
+		n, err = fw.enc.output.Write(data)
+		if err == nil {
+			s := fw.enc.currentState()
+			s.writePosition += uint64(n)
+		}
+	}
 	if err != nil {
 		return n, err
 	}
 	fw.remaining -= uint64(n)
-	s := fw.enc.currentState()
-	s.writePosition += uint64(n)
 	return n, nil
 }
 
@@ -377,7 +389,21 @@ func (fw *FileWriter) WriteAll(data []byte) error {
 	if uint64(len(data)) > fw.remaining {
 		return fmt.Errorf("attempted to write more than allocated")
 	}
-	n, err := fw.enc.output.Write(data)
+	var n int
+	var err error
+	if fw.enc.payloadOut != nil {
+		n, err = fw.enc.payloadOut.Write(data)
+		if err == nil {
+			s := fw.enc.currentState()
+			s.payloadWritePos += uint64(n)
+		}
+	} else {
+		n, err = fw.enc.output.Write(data)
+		if err == nil {
+			s := fw.enc.currentState()
+			s.writePosition += uint64(n)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -385,8 +411,6 @@ func (fw *FileWriter) WriteAll(data []byte) error {
 		return io.ErrShortWrite
 	}
 	fw.remaining -= uint64(len(data))
-	s := fw.enc.currentState()
-	s.writePosition += uint64(n)
 	return nil
 }
 

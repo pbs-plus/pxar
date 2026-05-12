@@ -55,8 +55,8 @@ type StreamArchiveWriter struct {
 	output     io.Writer
 	payloadOut io.Writer
 	enc        *encoder.Encoder
-	opts       WriterOptions
 	closers    []io.Closer
+	opts       WriterOptions
 	dirDepth   int
 }
 

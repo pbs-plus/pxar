@@ -10,9 +10,9 @@ import (
 // reference test vectors from the SipHash paper by Aumasson and Bernstein.
 func TestSipHash24Vectors(t *testing.T) {
 	tests := []struct {
-		key [16]byte
 		in  []byte
 		out uint64
+		key [16]byte
 	}{
 		// Reference vectors from SipHash-2-4 specification:
 		// key = 00 01 02 ... 0f

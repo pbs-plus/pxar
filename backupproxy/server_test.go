@@ -419,8 +419,8 @@ func TestServerArchiveRoundTrip(t *testing.T) {
 
 func TestDetectionModeString(t *testing.T) {
 	tests := []struct {
-		mode DetectionMode
 		want string
+		mode DetectionMode
 	}{
 		{mode: DetectionLegacy, want: "legacy"},
 		{mode: DetectionData, want: "data"},
@@ -475,10 +475,10 @@ func TestEntryMatches(t *testing.T) {
 	}
 
 	tests := []struct {
-		current     DirEntry
 		prev        *SnapshotEntry
 		name        string
 		currentMeta pxar.Metadata
+		current     DirEntry
 		want        bool
 	}{
 		{

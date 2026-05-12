@@ -29,12 +29,11 @@ type RemoteDedupSplitArchiveWriter struct {
 	inner       *StreamArchiveWriter
 	metaName    string
 	payloadName string
+	origChunks  []backupproxy.KnownChunkRef
 	metaBuf     bytes.Buffer
 	payloadBuf  bytes.Buffer
 	dirDepth    int
-
-	// Original payload index for chunk injection
-	origPayloadIdx *datastore.DynamicIndexReader
+	origSize    uint64
 }
 
 // NewRemoteDedupSplitArchiveWriter creates a dedup writer for PBS uploads.
@@ -57,7 +56,18 @@ func NewRemoteDedupSplitArchiveWriter(
 		if err != nil {
 			return nil, fmt.Errorf("read original payload index: %w", err)
 		}
-		w.origPayloadIdx = idx
+		w.origSize = idx.IndexBytes()
+		w.origChunks = make([]backupproxy.KnownChunkRef, idx.Count())
+		for i := 0; i < idx.Count(); i++ {
+			info, ok := idx.ChunkInfo(i)
+			if !ok {
+				break
+			}
+			w.origChunks[i] = backupproxy.KnownChunkRef{
+				Digest: info.Digest,
+				Size:   info.End - info.Start,
+			}
+		}
 	}
 
 	return w, nil
@@ -127,8 +137,9 @@ func (w *RemoteDedupSplitArchiveWriter) Finish() error {
 // start at origSize in the combined stream.
 //
 // Combined DIDX layout:
-//   [0, origSize)                — original chunks (injected)
-//   [origSize, origSize + newData) — new file data (uploaded)
+//
+//	[0, origSize)                — original chunks (injected)
+//	[origSize, origSize + newData) — new file data (uploaded)
 func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
 	enc := w.inner.Encoder()
 	if enc == nil {
@@ -136,38 +147,8 @@ func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
 		return err
 	}
 
-	origSize := uint64(0)
-	if w.origPayloadIdx != nil {
-		origSize = w.origPayloadIdx.IndexBytes()
-	}
-
-	// Collect original chunk references
-	var origChunks []backupproxy.KnownChunkRef
-	if w.origPayloadIdx != nil {
-		origChunks = make([]backupproxy.KnownChunkRef, w.origPayloadIdx.Count())
-		for i := 0; i < w.origPayloadIdx.Count(); i++ {
-			info, ok := w.origPayloadIdx.ChunkInfo(i)
-			if !ok {
-				break
-			}
-			origChunks[i] = backupproxy.KnownChunkRef{
-				Digest: info.Digest,
-				Size:   info.End - info.Start,
-			}
-		}
-	}
-
 	// The encoder wrote payloadBuf = [START_MARKER] [new file entries] [TAIL_MARKER]
-	// The START_MARKER belongs at position 0 (already covered by original chunks).
-	// New file data starts after START_MARKER in the buffer.
-	// In the combined stream, new data should be at offset origSize.
-	//
-	// We need to call Advance(HeaderSize) BEFORE the new files are written
-	// (to make payloadWritePos = origSize). But Finish() has already been called.
-	//
-	// Instead, we just place the new data at the correct offset.
-	// Strip the START_MARKER (first 16 bytes) from payloadBuf.
-	// The remaining bytes are: [file PAYLOAD_HEADER + data] [TAIL_MARKER]
+	// Strip the START_MARKER (first 16 bytes) — combined stream already has one.
 	newData := w.payloadBuf.Bytes()
 	if len(newData) > int(format.HeaderSize) {
 		newData = newData[format.HeaderSize:]
@@ -175,13 +156,12 @@ func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
 		newData = nil
 	}
 
-	// Use UploadPayloadWithInjection with newDataOffset = origSize
 	_, err := w.session.UploadPayloadWithInjection(
 		w.ctx,
 		w.payloadName,
-		origChunks,
+		w.origChunks,
 		bytes.NewReader(newData),
-		origSize,
+		w.origSize,
 	)
 	return err
 }

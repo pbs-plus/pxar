@@ -298,18 +298,18 @@ func TestStatIsSocket(t *testing.T) {
 
 func TestHeaderString(t *testing.T) {
 	tests := []struct {
-		htype uint64
 		want  string
+		htype uint64
 	}{
-		{PXARFormatVersion, "FORMAT_VERSION"},
-		{PXAREntry, "ENTRY"},
-		{PXARFilename, "FILENAME"},
-		{PXARSymlink, "SYMLINK"},
-		{PXARDevice, "DEVICE"},
-		{PXARGoodbye, "GOODBYE"},
-		{PXARPayload, "PAYLOAD"},
-		{PXARXAttr, "XATTR"},
-		{0xdeadbeef, "UNKNOWN"},
+		{"FORMAT_VERSION", PXARFormatVersion},
+		{"ENTRY", PXAREntry},
+		{"FILENAME", PXARFilename},
+		{"SYMLINK", PXARSymlink},
+		{"DEVICE", PXARDevice},
+		{"GOODBYE", PXARGoodbye},
+		{"PAYLOAD", PXARPayload},
+		{"XATTR", PXARXAttr},
+		{"UNKNOWN", 0xdeadbeef},
 	}
 	for _, tt := range tests {
 		h := Header{Type: tt.htype}

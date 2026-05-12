@@ -8,219 +8,9 @@ import (
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/backupproxy"
-	"github.com/pbs-plus/pxar/buzhash"
-	"github.com/pbs-plus/pxar/datastore"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
 )
-
-// ChunkedArchiveWriter writes an archive by encoding it to a buffer,
-// then chunking and storing via a local ChunkStore, producing a .didx index.
-type ChunkedArchiveWriter struct {
-	store        *datastore.ChunkStore
-	inner        *StreamArchiveWriter
-	closers      []io.Closer
-	IndexData    []byte
-	ChunkResults []datastore.ChunkResult
-	buf          bytes.Buffer
-	config       buzhash.Config
-	dirDepth     int
-	compress     bool
-}
-
-// NewChunkedArchiveWriter creates a chunked writer backed by a local chunk store.
-func NewChunkedArchiveWriter(store *datastore.ChunkStore, config buzhash.Config, compress bool) *ChunkedArchiveWriter {
-	return &ChunkedArchiveWriter{
-		store:    store,
-		config:   config,
-		compress: compress,
-	}
-}
-
-func (w *ChunkedArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOptions) error {
-	w.buf.Reset()
-	w.inner = NewStreamArchiveWriter(&w.buf)
-	if opts.Format == format.FormatVersion2 {
-		w.inner.payloadOut = &bytes.Buffer{}
-	}
-	w.dirDepth = 1
-	return w.inner.Begin(rootMeta, opts)
-}
-
-func (w *ChunkedArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
-	return w.inner.WriteEntry(entry, content)
-}
-
-func (w *ChunkedArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
-	return w.inner.WriteEntryRef(entry, payloadOffset)
-}
-
-func (w *ChunkedArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
-	return w.inner.WriteEntryReader(entry, r, size)
-}
-
-func (w *ChunkedArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
-	w.dirDepth++
-	return w.inner.BeginDirectory(name, meta)
-}
-
-func (w *ChunkedArchiveWriter) EndDirectory() error {
-	if w.dirDepth <= 1 {
-		return fmt.Errorf("no directory to finish")
-	}
-	w.dirDepth--
-	return w.inner.EndDirectory()
-}
-
-func (w *ChunkedArchiveWriter) Finish() error {
-	// Close remaining directories
-	for w.dirDepth > 1 {
-		if err := w.inner.EndDirectory(); err != nil {
-			return err
-		}
-		w.dirDepth--
-	}
-	if err := w.inner.Finish(); err != nil {
-		return err
-	}
-
-	// Now chunk and store the encoded archive
-	chunker := datastore.NewStoreChunker(w.store, w.config, w.compress)
-	results, idx, err := chunker.ChunkStream(bytes.NewReader(w.buf.Bytes()), nil)
-	if err != nil {
-		return fmt.Errorf("chunk archive: %w", err)
-	}
-
-	// Handle split archive payload
-	if w.inner.payloadOut != nil {
-		payloadBuf := w.inner.payloadOut.(*bytes.Buffer)
-		_, payloadIdx, err := chunker.ChunkStream(bytes.NewReader(payloadBuf.Bytes()), nil)
-		if err != nil {
-			return fmt.Errorf("chunk payload: %w", err)
-		}
-		_ = payloadIdx // caller can access via PayloadIndexData
-	}
-
-	idxData, err := idx.Finish()
-	if err != nil {
-		return fmt.Errorf("finish index: %w", err)
-	}
-
-	w.IndexData = idxData
-	w.ChunkResults = results
-	return nil
-}
-
-// PayloadIndexData returns the .didx index data for the payload stream.
-// Only valid for v2 split archives after Finish.
-func (w *ChunkedArchiveWriter) PayloadIndexData() ([]byte, error) {
-	if w.inner.payloadOut == nil {
-		return nil, fmt.Errorf("not a split archive")
-	}
-	payloadBuf := w.inner.payloadOut.(*bytes.Buffer)
-	chunker := datastore.NewStoreChunker(w.store, w.config, w.compress)
-	_, idx, err := chunker.ChunkStream(bytes.NewReader(payloadBuf.Bytes()), nil)
-	if err != nil {
-		return nil, fmt.Errorf("chunk payload: %w", err)
-	}
-	return idx.Finish()
-}
-
-func (w *ChunkedArchiveWriter) Close() error {
-	var err error
-	for _, c := range w.closers {
-		if closeErr := c.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}
-	return err
-}
-
-// SessionArchiveWriter writes an archive by uploading it through a BackupSession.
-// This works with both local stores and PBS remote stores.
-type SessionArchiveWriter struct {
-	session      backupproxy.BackupSession
-	ctx          context.Context
-	inner        *StreamArchiveWriter
-	UploadResult *backupproxy.UploadResult
-	name         string
-	closers      []io.Closer
-	buf          bytes.Buffer
-	dirDepth     int
-}
-
-// NewSessionArchiveWriter creates a writer that uploads via a BackupSession.
-func NewSessionArchiveWriter(ctx context.Context, session backupproxy.BackupSession, name string) *SessionArchiveWriter {
-	return &SessionArchiveWriter{
-		session: session,
-		ctx:     ctx,
-		name:    name,
-	}
-}
-
-func (w *SessionArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOptions) error {
-	w.buf.Reset()
-	w.inner = NewStreamArchiveWriter(&w.buf)
-	w.dirDepth = 1
-	return w.inner.Begin(rootMeta, opts)
-}
-
-func (w *SessionArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
-	return w.inner.WriteEntry(entry, content)
-}
-
-func (w *SessionArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
-	return w.inner.WriteEntryRef(entry, payloadOffset)
-}
-
-func (w *SessionArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
-	return w.inner.WriteEntryReader(entry, r, size)
-}
-
-func (w *SessionArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
-	w.dirDepth++
-	return w.inner.BeginDirectory(name, meta)
-}
-
-func (w *SessionArchiveWriter) EndDirectory() error {
-	if w.dirDepth <= 1 {
-		return fmt.Errorf("no directory to finish")
-	}
-	w.dirDepth--
-	return w.inner.EndDirectory()
-}
-
-func (w *SessionArchiveWriter) Finish() error {
-	// Close remaining directories
-	for w.dirDepth > 1 {
-		if err := w.inner.EndDirectory(); err != nil {
-			return err
-		}
-		w.dirDepth--
-	}
-	if err := w.inner.Finish(); err != nil {
-		return err
-	}
-
-	// Upload through the session
-	result, err := w.session.UploadArchive(w.ctx, w.name, bytes.NewReader(w.buf.Bytes()))
-	if err != nil {
-		return fmt.Errorf("upload archive: %w", err)
-	}
-
-	w.UploadResult = result
-	return nil
-}
-
-func (w *SessionArchiveWriter) Close() error {
-	var err error
-	for _, c := range w.closers {
-		if closeErr := c.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}
-	return err
-}
 
 // SplitSessionArchiveWriter writes a split (v2) archive by uploading
 // both metadata and payload streams through a BackupSession.
@@ -282,7 +72,6 @@ func (w *SplitSessionArchiveWriter) EndDirectory() error {
 }
 
 func (w *SplitSessionArchiveWriter) Finish() error {
-	// Close remaining directories
 	for w.dirDepth > 1 {
 		if err := w.inner.EndDirectory(); err != nil {
 			return err
@@ -293,7 +82,6 @@ func (w *SplitSessionArchiveWriter) Finish() error {
 		return err
 	}
 
-	// Upload both streams
 	result, err := w.session.UploadSplitArchive(
 		w.ctx,
 		w.metaName,

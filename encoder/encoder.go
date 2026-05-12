@@ -24,9 +24,11 @@ type Encoder struct {
 	payloadOut io.Writer
 	err        error
 	state      []encoderState
+	gbBuf      []byte
+	gbItems    []format.GoodbyeItem
+	gbTail     []format.GoodbyeItem
 	version    format.FormatVersion
 	finished   bool
-	gbBuf      []byte // reusable buffer for goodbye table serialization
 }
 
 type encoderState struct {
@@ -131,11 +133,12 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		return e.err
 	}
 
-	statBytes := format.MarshalStatBytes(metadata.Stat)
-	if e.err = e.writeHeader(format.PXAREntry, uint64(len(statBytes))); e.err != nil {
+	var statBuf [40]byte
+	format.MarshalStatBytesInto(statBuf[:], metadata.Stat)
+	if e.err = e.writeHeader(format.PXAREntry, 40); e.err != nil {
 		return e.err
 	}
-	if e.err = e.writeAll(statBytes); e.err != nil {
+	if e.err = e.writeAll(statBuf[:]); e.err != nil {
 		return e.err
 	}
 
@@ -240,7 +243,8 @@ func (e *Encoder) encodeFilename(name []byte) error {
 	if e.err = e.writeAll(name); e.err != nil {
 		return e.err
 	}
-	e.err = e.writeAll([]byte{0})
+	var zero [1]byte
+	e.err = e.writeAll(zero[:])
 	return e.err
 }
 
@@ -439,6 +443,7 @@ func (e *Encoder) AddSymlink(metadata *pxar.Metadata, name string, target string
 		return err
 	}
 
+	// AddSymlink
 	targetBytes := []byte(target)
 	contentSize := uint64(len(targetBytes) + 1)
 	if e.err = e.writeHeader(format.PXARSymlink, contentSize); e.err != nil {
@@ -447,7 +452,8 @@ func (e *Encoder) AddSymlink(metadata *pxar.Metadata, name string, target string
 	if e.err = e.writeAll(targetBytes); e.err != nil {
 		return e.err
 	}
-	e.err = e.writeAll([]byte{0})
+	var nl [1]byte
+	e.err = e.writeAll(nl[:])
 	if e.err != nil {
 		return e.err
 	}
@@ -479,20 +485,21 @@ func (e *Encoder) AddHardlink(name string, target string, targetOffset LinkOffse
 
 	// Hardlink: relative offset (uint64) + target path + null terminator
 	relOffset := currentOffset - uint64(targetOffset)
-	relBytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(relBytes, relOffset)
+	var relBuf [8]byte
+	binary.LittleEndian.PutUint64(relBuf[:], relOffset)
 	targetBytes := []byte(target)
 	contentSize := uint64(8 + len(targetBytes) + 1)
 	if e.err = e.writeHeader(format.PXARHardlink, contentSize); e.err != nil {
 		return e.err
 	}
-	if e.err = e.writeAll(relBytes); e.err != nil {
+	if e.err = e.writeAll(relBuf[:]); e.err != nil {
 		return e.err
 	}
 	if e.err = e.writeAll(targetBytes); e.err != nil {
 		return e.err
 	}
-	e.err = e.writeAll([]byte{0})
+	var nl [1]byte
+	e.err = e.writeAll(nl[:])
 	if e.err != nil {
 		return e.err
 	}
@@ -664,31 +671,39 @@ func (e *Encoder) Finish() error {
 func (e *Encoder) buildGoodbyeTable() []byte {
 	s := e.currentState()
 	goodbyeOffset := s.writePosition
+	n := len(s.items)
 
-	// Sort items by hash
-	tail := make([]format.GoodbyeItem, len(s.items))
+	// Sort items by hash into reusable tail buffer
+	if cap(e.gbTail) < n {
+		e.gbTail = make([]format.GoodbyeItem, n)
+	}
+	tail := e.gbTail[:n]
 	copy(tail, s.items)
 	sort.Slice(tail, func(i, j int) bool {
 		return tail[i].Hash < tail[j].Hash
 	})
 
-	// Build BST using binary tree array
-	bst := make([]format.GoodbyeItem, len(tail))
-	binarytree.Copy(len(tail), func(src, dest int) {
+	// Build BST using binary tree array into reusable buffer
+	bstSize := n + 1 // items + tail marker
+	if cap(e.gbItems) < bstSize {
+		e.gbItems = make([]format.GoodbyeItem, bstSize)
+	}
+	bst := e.gbItems[:n]
+	binarytree.Copy(n, func(src, dest int) {
 		item := tail[src]
-		item.Offset = goodbyeOffset - item.Offset // relative offset
+		item.Offset = goodbyeOffset - item.Offset
 		bst[dest] = item
 	})
 
 	// Append tail marker
-	bst = append(bst, format.GoodbyeItem{
+	tailMarker := format.GoodbyeItem{
 		Hash:   format.PXARGoodbyeTailMarker,
 		Offset: goodbyeOffset - s.entryOffset,
-		Size:   uint64(format.HeaderSize + (len(tail)+1)*binary.Size(format.GoodbyeItem{})),
-	})
+		Size:   uint64(format.HeaderSize + bstSize*binary.Size(format.GoodbyeItem{})),
+	}
 
 	// Serialize to bytes using reusable buffer
-	bufSize := len(bst) * binary.Size(format.GoodbyeItem{})
+	bufSize := bstSize * binary.Size(format.GoodbyeItem{})
 	if cap(e.gbBuf) < bufSize {
 		e.gbBuf = make([]byte, bufSize*2)
 	}
@@ -699,6 +714,12 @@ func (e *Encoder) buildGoodbyeTable() []byte {
 		binary.LittleEndian.PutUint64(buf[offset+8:], item.Offset)
 		binary.LittleEndian.PutUint64(buf[offset+16:], item.Size)
 	}
+
+	// Write tail marker at the end
+	offset := n * binary.Size(format.GoodbyeItem{})
+	binary.LittleEndian.PutUint64(buf[offset:], tailMarker.Hash)
+	binary.LittleEndian.PutUint64(buf[offset+8:], tailMarker.Offset)
+	binary.LittleEndian.PutUint64(buf[offset+16:], tailMarker.Size)
 
 	return buf
 }

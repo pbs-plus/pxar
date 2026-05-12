@@ -20,7 +20,7 @@ import (
 func encodeChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) ([]byte, error) {
 	if cc != nil {
 		bp := datastore.BlobBufPool.Get().(*[]byte)
-		dst := *bp
+		dst := (*bp)[:0]
 		encoded, err := datastore.EncodeEncryptedBlobTo(dst, chunk, cc, compress)
 		if err != nil {
 			datastore.PutBlobBuf(bp)
@@ -32,7 +32,7 @@ func encodeChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) ([]
 		return result, nil
 	}
 	bp := datastore.BlobBufPool.Get().(*[]byte)
-	dst := *bp
+	dst := (*bp)[:0]
 	encoded, err := encodeChunkBlobTo(dst, chunk, compress)
 	if err != nil {
 		datastore.PutBlobBuf(bp)
@@ -117,9 +117,6 @@ type BackupSession interface {
 	UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error)
 	UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error)
 	UploadBlob(ctx context.Context, name string, data []byte) error
-	// InjectKnownChunks creates a DIDX with pre-known chunk references without uploading data.
-	// Used for chunk-level deduplication where original payload chunks are already in the datastore.
-	InjectKnownChunks(ctx context.Context, name string, chunks []KnownChunkRef) error
 	// UploadPayloadWithInjection uploads a payload DIDX combining injected original chunks
 	// with new data chunks. Only new data is actually uploaded.
 	UploadPayloadWithInjection(ctx context.Context, name string, origChunks []KnownChunkRef, newData io.Reader, newDataOffset uint64) (*UploadResult, error)
@@ -167,10 +164,10 @@ func (ls *LocalStore) StartSession(_ context.Context, config BackupConfig) (Back
 
 // localSession implements BackupSession for local filesystem storage.
 type localSession struct {
-	config      BackupConfig
 	store       *datastore.ChunkStore
 	baseDir     string
 	files       []datastore.FileInfo
+	config      BackupConfig
 	chunkConfig buzhash.Config
 	compress    bool
 }
@@ -268,28 +265,6 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 
 	digest := sha256.Sum256(blobData)
 	addFileInfo(&s.files, name, uint64(len(blobData)), digest, string(s.config.CryptMode))
-
-	return nil
-}
-
-func (s *localSession) InjectKnownChunks(_ context.Context, name string, chunks []KnownChunkRef) error {
-	// For local store, write a DIDX file with the known chunk references.
-	// Chunks are already stored in the chunk directory, so just create the index.
-	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
-	totalSize := uint64(0)
-	for _, chunk := range chunks {
-		totalSize += chunk.Size
-		idx.Add(totalSize, chunk.Digest)
-	}
-	idxData, err := idx.Finish()
-	if err != nil {
-		return fmt.Errorf("finish index: %w", err)
-	}
-
-	idxPath := filepath.Join(s.baseDir, name)
-	if err := os.WriteFile(idxPath, idxData, 0o644); err != nil {
-		return fmt.Errorf("write index: %w", err)
-	}
 
 	return nil
 }

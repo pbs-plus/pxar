@@ -444,14 +444,30 @@ var slashBytes = []byte{'/'}
 
 // MarshalStatBytes serializes a Stat into a 40-byte slice.
 func MarshalStatBytes(s Stat) []byte {
-	buf := make([]byte, 40)
+	var buf [40]byte
+	marshalStatInto(buf[:], s)
+	return buf[:]
+}
+
+// MarshalStatBytesInto writes the serialized Stat into buf (must be >= 40 bytes).
+func MarshalStatBytesInto(buf []byte, s Stat) {
+	marshalStatInto(buf, s)
+}
+
+// AppendStatBytes appends the serialized Stat to dst.
+func AppendStatBytes(dst []byte, s Stat) []byte {
+	var buf [40]byte
+	marshalStatInto(buf[:], s)
+	return append(dst, buf[:]...)
+}
+
+func marshalStatInto(buf []byte, s Stat) {
 	binary.LittleEndian.PutUint64(buf[0:], s.Mode)
 	binary.LittleEndian.PutUint64(buf[8:], s.Flags)
 	binary.LittleEndian.PutUint32(buf[16:], s.UID)
 	binary.LittleEndian.PutUint32(buf[20:], s.GID)
 	binary.LittleEndian.PutUint64(buf[24:], uint64(s.Mtime.Secs))
 	binary.LittleEndian.PutUint32(buf[32:], s.Mtime.Nanos)
-	return buf
 }
 
 // UnmarshalStatBytes parses a Stat from a 40-byte slice.

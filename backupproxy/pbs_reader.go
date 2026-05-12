@@ -23,10 +23,10 @@ import (
 
 // PBSReader provides read access to a PBS datastore via the reader protocol.
 type PBSReader struct {
-	config     PBSConfig
 	conn       *pbsReaderConn
 	backupType string
 	backupID   string
+	config     PBSConfig
 	backupTime int64
 }
 

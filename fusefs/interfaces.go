@@ -7,7 +7,6 @@
 package fusefs
 
 import (
-	"io"
 	"syscall"
 )
 
@@ -41,12 +40,6 @@ type DirEntry struct {
 type DirEntryIndex struct {
 	DirEntry
 	Offset uint64
-}
-
-// XAttr represents an extended attribute.
-type XAttr struct {
-	Name  string
-	Value []byte
 }
 
 // FileSystem is the interface that maps pxar archive entries to FUSE operations.
@@ -103,11 +96,5 @@ type ContentRange struct {
 	Size   uint64
 }
 
-// ReaderAt is a minimal read interface (io.ReaderAt subset).
-type ReaderAt interface {
-	ReadAt(p []byte, off int64) (n int, err error)
-}
-
-// Ensure standard library interfaces are satisfied.
-var _ io.ReaderAt = (ReaderAt)(nil)
+// Ensure Session satisfies FileSystem.
 var _ FileSystem = (*Session)(nil)

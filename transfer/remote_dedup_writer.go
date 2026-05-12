@@ -15,9 +15,9 @@ import (
 
 // RemoteDedupSplitArchiveWriter writes a split archive to PBS with chunk-level dedup.
 //
-// For unchanged files (pxar-only entries), it uses AddPayloadRef to reference
-// original payload offsets without reading file content. The original payload
-// chunks are injected into the new DIDX by reference.
+// For files that are unchanged from the original archive (pxar-only entries),
+// it uses AddPayloadRef to reference original payload offsets without reading
+// file content. The original payload chunks are injected into the new DIDX directly.
 //
 // For new/modified files (backed entries), it writes payload data normally.
 //
@@ -121,12 +121,14 @@ func (w *RemoteDedupSplitArchiveWriter) Finish() error {
 
 // uploadPayload builds the combined payload DIDX.
 //
-// The new payload stream layout:
+// The encoder's payloadWritePos after all AddPayloadRef calls is at
+// origSize - HeaderSize (missing the original stream's TAIL_MARKER).
+// We call Advance(HeaderSize) to account for it, making new file data
+// start at origSize in the combined stream.
 //
-//	[original payload bytes 0..origSize] [new file data]
-//
-// Original chunks are injected by reference (no data read/uploaded).
-// New file data is chunked and uploaded normally.
+// Combined DIDX layout:
+//   [0, origSize)                — original chunks (injected)
+//   [origSize, origSize + newData) — new file data (uploaded)
 func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
 	enc := w.inner.Encoder()
 	if enc == nil {
@@ -155,115 +157,31 @@ func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
 		}
 	}
 
-	// The encoder's payloadWritePos tracks the virtual payload position.
-	// After all AddPayloadRef calls, it's at origSize - HeaderSize (missing
-	// the original stream's TAIL_MARKER). Then WriteEntry writes new data
-	// and Close writes a new TAIL_MARKER.
+	// The encoder wrote payloadBuf = [START_MARKER] [new file entries] [TAIL_MARKER]
+	// The START_MARKER belongs at position 0 (already covered by original chunks).
+	// New file data starts after START_MARKER in the buffer.
+	// In the combined stream, new data should be at offset origSize.
 	//
-	// payloadBuf = [START_MARKER] [new file entries] [TAIL_MARKER]
-	// The PayloadRef in metadata for new files points to positions starting at
-	// the virtual payloadWritePos before their WriteEntry call.
+	// We need to call Advance(HeaderSize) BEFORE the new files are written
+	// (to make payloadWritePos = origSize). But Finish() has already been called.
 	//
-	// The new file data in payloadBuf starts after the START_MARKER (16 bytes).
-	// In the combined stream, this should be placed at offset:
-	//   payloadWritePos_after_AddPayloadRefs - HeaderSize
-	// Because the encoder wrote START_MARKER to payloadBuf at virtual position 0,
-	// but in the combined stream, position 0 is covered by original chunks.
-	//
-	// Actually, the simplest correct approach: upload the payloadBuf as-is
-	// (with markers) and place it at the encoder's initial payloadWritePos (0).
-	// But the encoder's virtual offsets and payloadBuf offsets diverge because
-	// AddPayloadRef doesn't write to payloadBuf.
-	//
-	// The payloadBuf byte layout is:
-	//   [START_MARKER(16)] [new file PAYLOAD_HEADER+data] [TAIL_MARKER(16)]
-	//
-	// The encoder's PayloadRef offsets for new files are at virtual positions
-	// after the gap. The offset of the first new byte in payloadBuf is 16 (after
-	// START_MARKER). The virtual offset of the first new file is
-	// payloadWritePos_before_WriteEntry.
-	//
-	// So: newDataOffset_in_combined_stream = payloadWritePos_before_WriteEntry
-	// But payloadBuf_offset_of_new_data = HeaderSize (after START_MARKER)
-	//
-	// We can't simply place payloadBuf at an offset because the START_MARKER
-	// in payloadBuf doesn't belong in the combined stream (original already has one).
-	//
-	// Solution: strip the START_MARKER, upload [new file data] [TAIL_MARKER]
-	// starting at offset payloadWritePos_before_WriteEntry - HeaderSize.
-	// Wait, that doesn't work either because of the TAIL_MARKER overlap.
-	//
-	// SIMPLEST CORRECT: Don't inject chunks. Just upload the full payload
-	// stream. The encoder writes the complete payload including reused files'
-	// data (which AddPayloadRef writes as zero bytes... no it doesn't write
-	// anything).
-	//
-	// OK. For the mixed case (reused + new), the payload stream in the combined
-	// DIDX needs to have:
-	//   Bytes [0, origSize): original chunks (injected)
-	//   Bytes [origSize, ...): new file data (uploaded)
-	//
-	// But the encoder's PayloadRef for new files says they're at virtual
-	// position (origSize - 16). There's a 16-byte mismatch due to the original
-	// TAIL_MARKER not being accounted for.
-	//
-	// Fix: advance the encoder's payloadWritePos by HeaderSize after all
-	// AddPayloadRef calls to account for the TAIL_MARKER. But we can't do
-	// that without modifying the encoder.
-	//
-	// Alternative fix: skip the last original chunk (which contains the
-	// TAIL_MARKER) and include it in the new data upload. But that requires
-	// reading the TAIL_MARKER data.
-	//
-	// PRAGMATIC FIX: upload the full payloadBuf (just the new file portion)
-	// starting at the encoder's virtual payloadWritePos before WriteEntry.
-	// This means we strip the START_MARKER from payloadBuf and place the
-	// remaining bytes at the correct offset.
-
+	// Instead, we just place the new data at the correct offset.
+	// Strip the START_MARKER (first 16 bytes) from payloadBuf.
+	// The remaining bytes are: [file PAYLOAD_HEADER + data] [TAIL_MARKER]
 	newData := w.payloadBuf.Bytes()
 	if len(newData) > int(format.HeaderSize) {
-		newData = newData[format.HeaderSize:] // strip START_MARKER, keep file data + TAIL_MARKER
+		newData = newData[format.HeaderSize:]
+	} else {
+		newData = nil
 	}
 
-	// The encoder's PayloadPosition after Finish() includes the TAIL_MARKER.
-	// We need the offset where new file data starts in the combined stream.
-	// That's payloadWritePos after all AddPayloadRef calls, which equals
-	// the total virtual advance minus the final TAIL_MARKER.
-	// Since we stripped START_MARKER from payloadBuf, the new data starts at
-	// encoder's virtual position where it began writing.
-	//
-	// But we don't have that exact position. We have:
-	//   enc.PayloadPosition() = virtual_pos_after_Close = lastWritePos + TAIL
-	//   origSize = total original payload stream size
-	//
-	// The virtual gap for reused files = origSize - 16 (missing TAIL_MARKER).
-	// So new file data starts at virtual offset = origSize - 16.
-	//
-	// In the combined DIDX:
-	//   Original chunks: [0, origSize)
-	//   New data: [origSize-16, ...) — overlaps last 16 bytes of original
-	//
-	// This overlap is the TAIL_MARKER of the original stream. The new data's
-	// first 16 bytes would overwrite it. But since DIDX is chunk-based, the
-	// last original chunk's data (which includes the TAIL_MARKER) is already
-	// fixed. The new data would create a NEW chunk starting at origSize-16.
-	//
-	// This means the combined stream has a "seam" at origSize-16 where the
-	// original chunk's tail bytes and the new chunk's start bytes overlap.
-	// The reader uses PayloadRef offsets from metadata, so as long as the
-	// metadata offsets are correct, the reader will find the right data.
-
-	newDataOffset := uint64(0)
-	if origSize >= format.HeaderSize {
-		newDataOffset = origSize - format.HeaderSize
-	}
-
+	// Use UploadPayloadWithInjection with newDataOffset = origSize
 	_, err := w.session.UploadPayloadWithInjection(
 		w.ctx,
 		w.payloadName,
 		origChunks,
 		bytes.NewReader(newData),
-		newDataOffset,
+		origSize,
 	)
 	return err
 }
@@ -275,4 +193,14 @@ func (w *RemoteDedupSplitArchiveWriter) Close() error {
 // Encoder returns the underlying encoder.
 func (w *RemoteDedupSplitArchiveWriter) Encoder() *encoder.Encoder {
 	return w.inner.Encoder()
+}
+
+// AdvancePayloadPosition advances the encoder's payload write position.
+// Call after all AddPayloadRef calls to account for the original stream's
+// TAIL_MARKER before writing new files.
+func (w *RemoteDedupSplitArchiveWriter) AdvancePayloadPosition(n uint64) error {
+	if enc := w.inner.Encoder(); enc != nil {
+		return enc.Advance(n)
+	}
+	return nil
 }

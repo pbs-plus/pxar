@@ -356,8 +356,13 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 	}
 
 	// Phase 2: Chunk new data, upload, and append references
+	// Use newDataOffset as the starting offset for new data chunks.
 	newChunkCount := 0
 	if newData != nil {
+		// Advance totalSize to newDataOffset if there's a gap
+		if newDataOffset > totalSize {
+			totalSize = newDataOffset
+		}
 		chunker := buzhash.NewChunker(newData, s.chunkCfg)
 		for {
 			chunk, err := chunker.Next()

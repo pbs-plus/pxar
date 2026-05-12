@@ -197,6 +197,10 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 	digests := make([]string, 0, 64)
 	offsets := make([]uint64, 0, 64)
 
+	// Batch size for dynamicIndexAppend to avoid "Request body too large" errors.
+	// PBS has a limit on the append body size; 1024 entries per batch is safe.
+	const appendBatchSize = 1024
+
 	var hexBuf [64]byte
 	var (
 		totalSize  uint64
@@ -244,6 +248,15 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 
 		digests = append(digests, hexDigest)
 		offsets = append(offsets, chunkOffset)
+
+		// Flush batch if we've reached the batch size limit
+		if len(digests) >= appendBatchSize {
+			if err := s.proto.dynamicIndexAppend(wid, digests, offsets); err != nil {
+				return nil, fmt.Errorf("append index batch: %w", err)
+			}
+			digests = digests[:0]
+			offsets = offsets[:0]
+		}
 	}
 
 	if _, err := idx.Finish(); err != nil {

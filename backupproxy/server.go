@@ -56,8 +56,8 @@ func (cb *catalogBuilder) addCharDevice(name string) {
 	cb.w.AddCharDevice(name)
 }
 
-func (cb *catalogBuilder) addFifo(name string) {
-	cb.w.AddFifo(name)
+func (cb *catalogBuilder) addFIFO(name string) {
+	cb.w.AddFIFO(name)
 }
 
 func (cb *catalogBuilder) addSocket(name string) {
@@ -483,7 +483,7 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 			}
 
 		case entry.Stat.IsFIFO():
-			catBuilder.addFifo(entry.Name)
+			catBuilder.addFIFO(entry.Name)
 			if err := enc.AddFIFO(meta, entry.Name); err != nil {
 				return fmt.Errorf("fifo %q: %w", entry.Name, err)
 			}

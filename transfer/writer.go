@@ -110,7 +110,7 @@ func (w *StreamArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) erro
 	case pxar.KindDevice:
 		return w.enc.AddDevice(&entry.Metadata, name, entry.DeviceInfo)
 
-	case pxar.KindFifo:
+	case pxar.KindFIFO:
 		return w.enc.AddFIFO(&entry.Metadata, name)
 
 	case pxar.KindSocket:
@@ -141,7 +141,7 @@ func (w *StreamArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, s
 		return w.enc.AddSymlink(&entry.Metadata, name, entry.LinkTarget)
 	case pxar.KindDevice:
 		return w.enc.AddDevice(&entry.Metadata, name, entry.DeviceInfo)
-	case pxar.KindFifo:
+	case pxar.KindFIFO:
 		return w.enc.AddFIFO(&entry.Metadata, name)
 	case pxar.KindSocket:
 		return w.enc.AddSocket(&entry.Metadata, name)
@@ -163,7 +163,7 @@ func (w *StreamArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uin
 		return w.enc.AddSymlink(&entry.Metadata, name, entry.LinkTarget)
 	case pxar.KindDevice:
 		return w.enc.AddDevice(&entry.Metadata, name, entry.DeviceInfo)
-	case pxar.KindFifo:
+	case pxar.KindFIFO:
 		return w.enc.AddFIFO(&entry.Metadata, name)
 	case pxar.KindSocket:
 		return w.enc.AddSocket(&entry.Metadata, name)

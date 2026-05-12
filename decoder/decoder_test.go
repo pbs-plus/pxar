@@ -170,7 +170,7 @@ func TestDecodeFIFO(t *testing.T) {
 
 	found := false
 	for _, e := range entries {
-		if e.FileName() == "pipe" && e.IsFifo() {
+		if e.FileName() == "pipe" && e.IsFIFO() {
 			found = true
 		}
 	}
@@ -342,8 +342,8 @@ func TestRoundTripEncodeDecode(t *testing.T) {
 	if kinds[pxar.KindDevice] != 1 {
 		t.Errorf("expected 1 device, got %d", kinds[pxar.KindDevice])
 	}
-	if kinds[pxar.KindFifo] != 1 {
-		t.Errorf("expected 1 fifo, got %d", kinds[pxar.KindFifo])
+	if kinds[pxar.KindFIFO] != 1 {
+		t.Errorf("expected 1 fifo, got %d", kinds[pxar.KindFIFO])
 	}
 	if kinds[pxar.KindSocket] != 1 {
 		t.Errorf("expected 1 socket, got %d", kinds[pxar.KindSocket])

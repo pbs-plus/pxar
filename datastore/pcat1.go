@@ -101,7 +101,7 @@ func (cw *CatalogWriter) AddCharDevice(name string) {
 	})
 }
 
-func (cw *CatalogWriter) AddFifo(name string) {
+func (cw *CatalogWriter) AddFIFO(name string) {
 	top := &cw.dirstack[len(cw.dirstack)-1]
 	top.entries = append(top.entries, catalogDirEntry{
 		entryType: CatalogEntryFifo,

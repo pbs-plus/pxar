@@ -281,7 +281,7 @@ func TestBuildCatalogFastFIFO(t *testing.T) {
 	if len(children) != 1 {
 		t.Fatalf("expected 1 child, got %d: %+v", len(children), children)
 	}
-	if children[0].Name != "myfifo" || children[0].Kind != pxar.KindFifo {
+	if children[0].Name != "myfifo" || children[0].Kind != pxar.KindFIFO {
 		t.Errorf("child = %+v, want FIFO 'myfifo'", children[0])
 	}
 }

@@ -66,7 +66,7 @@ const (
 	KindHardlink                      // Hard link
 	KindDevice                        // Device node
 	KindSocket                        // Unix socket
-	KindFifo                          // Named pipe
+	KindFIFO                          // Named pipe
 	KindFile                          // Regular file
 	KindDirectory                     // Directory
 	KindGoodbyeTable                  // End-of-directory marker
@@ -100,8 +100,8 @@ func (e *Entry) IsHardlink() bool { return e.Kind == KindHardlink }
 // IsDevice reports whether the entry is a device node.
 func (e *Entry) IsDevice() bool { return e.Kind == KindDevice }
 
-// IsFifo reports whether the entry is a named pipe.
-func (e *Entry) IsFifo() bool { return e.Kind == KindFifo }
+// IsFIFO reports whether the entry is a named pipe.
+func (e *Entry) IsFIFO() bool { return e.Kind == KindFIFO }
 
 // IsSocket reports whether the entry is a socket.
 func (e *Entry) IsSocket() bool { return e.Kind == KindSocket }

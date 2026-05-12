@@ -65,7 +65,7 @@ func TestEntryKindChecks(t *testing.T) {
 		{pxar.KindSymlink, false, false, true},
 		{pxar.KindHardlink, false, false, false},
 		{pxar.KindDevice, false, false, false},
-		{pxar.KindFifo, false, false, false},
+		{pxar.KindFIFO, false, false, false},
 		{pxar.KindSocket, false, false, false},
 	}
 	for _, tt := range tests {
@@ -184,8 +184,8 @@ func TestRoundTripV1AllEntryTypes(t *testing.T) {
 	if kinds[pxar.KindDevice] != 1 {
 		t.Errorf("expected 1 device, got %d", kinds[pxar.KindDevice])
 	}
-	if kinds[pxar.KindFifo] != 1 {
-		t.Errorf("expected 1 fifo, got %d", kinds[pxar.KindFifo])
+	if kinds[pxar.KindFIFO] != 1 {
+		t.Errorf("expected 1 fifo, got %d", kinds[pxar.KindFIFO])
 	}
 	if kinds[pxar.KindSocket] != 1 {
 		t.Errorf("expected 1 socket, got %d", kinds[pxar.KindSocket])

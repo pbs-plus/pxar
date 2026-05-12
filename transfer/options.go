@@ -61,7 +61,7 @@ func (f WalkFilter) matches(kind pxar.EntryKind) bool {
 		return f&WalkHardlinks != 0
 	case pxar.KindDevice:
 		return f&WalkDevices != 0
-	case pxar.KindFifo:
+	case pxar.KindFIFO:
 		return f&WalkFifos != 0
 	case pxar.KindSocket:
 		return f&WalkSockets != 0

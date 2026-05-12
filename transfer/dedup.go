@@ -103,7 +103,7 @@ func (w *DedupSplitArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) 
 	case pxar.KindDevice:
 		return w.enc.AddDevice(&entry.Metadata, name, entry.DeviceInfo)
 
-	case pxar.KindFifo:
+	case pxar.KindFIFO:
 		return w.enc.AddFIFO(&entry.Metadata, name)
 
 	case pxar.KindSocket:
@@ -131,7 +131,7 @@ func (w *DedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reade
 		return w.enc.AddSymlink(&entry.Metadata, name, entry.LinkTarget)
 	case pxar.KindDevice:
 		return w.enc.AddDevice(&entry.Metadata, name, entry.DeviceInfo)
-	case pxar.KindFifo:
+	case pxar.KindFIFO:
 		return w.enc.AddFIFO(&entry.Metadata, name)
 	case pxar.KindSocket:
 		return w.enc.AddSocket(&entry.Metadata, name)

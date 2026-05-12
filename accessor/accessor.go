@@ -616,7 +616,7 @@ func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 
 		case format.PXARFilename, format.PXARGoodbye:
 			if stat.IsFIFO() {
-				entry.Kind = pxar.KindFifo
+				entry.Kind = pxar.KindFIFO
 			} else if stat.IsSocket() {
 				entry.Kind = pxar.KindSocket
 			} else {

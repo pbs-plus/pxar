@@ -361,7 +361,7 @@ func TestOnDemandListDirEntryTypes(t *testing.T) {
 		"file.txt": pxar.KindFile,
 		"link":     pxar.KindSymlink,
 		"null":     pxar.KindDevice,
-		"myfifo":   pxar.KindFifo,
+		"myfifo":   pxar.KindFIFO,
 		"mysock":   pxar.KindSocket,
 	}
 	for _, c := range children {

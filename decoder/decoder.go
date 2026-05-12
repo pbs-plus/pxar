@@ -344,7 +344,7 @@ func (d *Decoder) finishEntry(stat format.Stat, isV1 bool) (*pxar.Entry, error) 
 					break
 				}
 				if stat.IsFIFO() {
-					entry.Kind = pxar.KindFifo
+					entry.Kind = pxar.KindFIFO
 					return entry, nil
 				}
 				if stat.IsSocket() {
@@ -521,7 +521,7 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 
 	case format.PXARFilename, format.PXARGoodbye:
 		if entry.Metadata.IsFIFO() {
-			entry.Kind = pxar.KindFifo
+			entry.Kind = pxar.KindFIFO
 			d.state = stateInSpecialFile
 		} else if entry.Metadata.IsSocket() {
 			entry.Kind = pxar.KindSocket

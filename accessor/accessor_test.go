@@ -270,7 +270,7 @@ func TestAccessorFIFO(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /pipe: %v", err)
 	}
-	if !entry.IsFifo() {
+	if !entry.IsFIFO() {
 		t.Errorf("kind = %v, want fifo", entry.Kind)
 	}
 }

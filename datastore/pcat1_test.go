@@ -165,7 +165,7 @@ func TestCatalogWriterDeviceTypes(t *testing.T) {
 	cw.StartDirectory("root")
 	cw.AddBlockDevice("sda")
 	cw.AddCharDevice("null")
-	cw.AddFifo("pipe")
+	cw.AddFIFO("pipe")
 	cw.AddSocket("sock")
 	cw.AddHardlink("hardlink")
 

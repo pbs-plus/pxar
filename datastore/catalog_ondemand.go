@@ -796,7 +796,7 @@ func (r *lazyChunkReader) scanAttributes(stat format.Stat) (pxar.EntryKind, int6
 		case format.PXARFilename, format.PXARGoodbye:
 			switch fileType {
 			case format.ModeIFIFO:
-				return pxar.KindFifo, 0, &h, nil
+				return pxar.KindFIFO, 0, &h, nil
 			case format.ModeIFSOCK:
 				return pxar.KindSocket, 0, &h, nil
 			default:

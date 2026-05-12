@@ -419,7 +419,7 @@ func scanEntryAttributes(r streamReader, stat format.Stat) (pxar.EntryKind, int6
 			}
 			switch fileType {
 			case format.ModeIFIFO:
-				return pxar.KindFifo, 0, nil
+				return pxar.KindFIFO, 0, nil
 			case format.ModeIFSOCK:
 				return pxar.KindSocket, 0, nil
 			default:

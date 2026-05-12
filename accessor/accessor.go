@@ -537,6 +537,10 @@ func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 		if _, err := io.ReadFull(a.reader, data); err != nil {
 			return nil, err
 		}
+		if len(data) < 8 {
+			return nil, fmt.Errorf("hardlink entry too small")
+		}
+		relOffset := binary.LittleEndian.Uint64(data[:8])
 		target := data[8:]
 		if len(target) > 0 && target[len(target)-1] == 0 {
 			target = target[:len(target)-1]
@@ -545,6 +549,8 @@ func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 			Kind:       pxar.KindHardlink,
 			Path:       name,
 			LinkTarget: string(target),
+			LinkOffset: relOffset,
+			FileOffset: uint64(offset),
 		}, nil
 	}
 
@@ -802,4 +808,41 @@ func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, erro
 			}
 		}
 	}
+}
+
+// FollowHardlink resolves a hardlink entry to its target file entry.
+// Mirrors Rust's Accessor::follow_hardlink: uses the relative offset stored in the
+// hardlink wire format to seek back to the target's FILENAME header and re-reads
+// the full entry from that position.
+func (a *Accessor) FollowHardlink(entry *pxar.Entry) (*pxar.Entry, error) {
+	if !entry.IsHardlink() {
+		return nil, fmt.Errorf("cannot resolve a non-hardlink")
+	}
+
+	// FileOffset is the FILENAME header position of the hardlink entry.
+	filenameOffset := int64(entry.FileOffset)
+	if filenameOffset == 0 {
+		return nil, fmt.Errorf("cannot follow hardlink without file entry offset")
+	}
+
+	// LinkOffset is relative back from the hardlink's FILENAME to the target's FILENAME.
+	relOffset := int64(entry.LinkOffset)
+	if relOffset > filenameOffset {
+		return nil, fmt.Errorf("invalid offset in hardlink")
+	}
+
+	targetOffset := filenameOffset - relOffset
+
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+
+	resolved, err := a.readEntryAtLocked(targetOffset)
+	if err != nil {
+		return nil, fmt.Errorf("follow hardlink: %w", err)
+	}
+
+	if !resolved.IsRegularFile() {
+		return nil, fmt.Errorf("hardlink does not point to a regular file")
+	}
+	return resolved, nil
 }

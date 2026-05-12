@@ -539,3 +539,84 @@ func socketMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
 		},
 	}
 }
+
+// TestAccessorFollowHardlink mirrors Rust's check_bunzip2 test:
+// verify hardlink resolution and reading the target's content.
+func TestAccessorFollowHardlink(t *testing.T) {
+	var buf bytes.Buffer
+	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
+
+	// Encode: bin/bzip2 (regular file) + bin/bunzip2 (hardlink to bzip2)
+	enc.CreateDirectory("bin", dirMetadata(0o755))
+	offset, err := enc.AddFile(fileMetadata(0o755, 0, 0), "bzip2", []byte("This is the bzip2 executable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.AddHardlink("bunzip2", "bzip2", offset); err != nil {
+		t.Fatal(err)
+	}
+	enc.Finish() // bin
+	enc.Close()  // root
+
+	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
+
+	root, err := acc.ReadRoot()
+	if err != nil {
+		t.Fatalf("ReadRoot: %v", err)
+	}
+	if !root.IsDir() {
+		t.Fatal("root should be a directory")
+	}
+
+	// Lookup the hardlink
+	bunzip2, err := acc.Lookup("/bin/bunzip2")
+	if err != nil {
+		t.Fatalf("Lookup /bin/bunzip2: %v", err)
+	}
+	if !bunzip2.IsHardlink() {
+		t.Fatalf("expected hardlink, got %v", bunzip2.Kind)
+	}
+
+	// Follow the hardlink to the target
+	bzip2, err := acc.FollowHardlink(bunzip2)
+	if err != nil {
+		t.Fatalf("FollowHardlink: %v", err)
+	}
+	if !bzip2.IsRegularFile() {
+		t.Fatalf("expected regular file, got %v", bzip2.Kind)
+	}
+
+	// Read the target's content
+	r, err := acc.ReadFileContentReader(bzip2)
+	if err != nil {
+		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r.Close()
+	content, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(content) != "This is the bzip2 executable" {
+		t.Errorf("content = %q, want %q", content, "This is the bzip2 executable")
+	}
+}
+
+// TestAccessorFollowHardlinkRejectsNonHardlink verifies FollowHardlink
+// returns an error for non-hardlink entries.
+func TestAccessorFollowHardlinkRejectsNonHardlink(t *testing.T) {
+	var buf bytes.Buffer
+	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
+	enc.AddFile(fileMetadata(0o644, 0, 0), "test.txt", []byte("hello"))
+	enc.Close()
+
+	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
+	entry, err := acc.Lookup("/test.txt")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+
+	_, err = acc.FollowHardlink(entry)
+	if err == nil {
+		t.Error("FollowHardlink should reject non-hardlink entries")
+	}
+}

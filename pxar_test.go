@@ -657,3 +657,305 @@ func collectAll(t *testing.T, dec *decoder.Decoder) []pxar.Entry {
 	}
 	return entries
 }
+
+// TestRustParityFullFilesystemRoundTrip mirrors Rust's test1 in tests/simple/main.rs.
+// It encodes a complex filesystem matching Rust's test_fs(), decodes it back,
+// and verifies via accessor that all entries are correctly accessible.
+//
+// The filesystem structure matches Rust's test_fs():
+//   / (dir, 0o755)
+//     home/ (dir, 0o755)
+//       user/ (dir, 0o700, uid=1000, gid=1000)
+//         .profile (file, 0o644, uid=1000, gid=1000, content="#umask 022")
+//         data (file, 0o644, uid=1000, gid=1000, content="a file from a user")
+//     bin -> usr/bin (symlink, 0o777)
+//     usr/ (dir, 0o755)
+//       bin/ (dir, 0o755)
+//         bzip2 (file, 0o755, content="This is the bzip2 executable")
+//         cat (file, 0o755, content="This is another executable")
+//         bunzip2 (hardlink -> bzip2)
+//     dev/ (dir, 0o755)
+//       null (chardev, 0o666, major=1, minor=3)
+//       zero (chardev, 0o666, major=1, minor=5)
+//       loop0 (blkdev, 0o666, major=7, minor=0)
+//       loop1 (blkdev, 0o666, major=7, minor=1, acl_user uid=1000 perm=6, acl_group gid=1000 perm=6)
+//     run/ (dir, 0o755, default_acl)
+//       fifo0 (fifo, 0o666)
+//       sock0 (socket, 0o600)
+func TestRustParityFullFilesystemRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
+
+	rootMeta := &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o755, Mtime: ts}}
+	enc := encoder.NewEncoder(&buf, nil, rootMeta, nil)
+
+	// home/
+	enc.CreateDirectory("home", &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o755, Mtime: ts}})
+
+	// home/user/
+	enc.CreateDirectory("user", &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o700, UID: 1000, GID: 1000, Mtime: ts}})
+
+	// home/user/.profile
+	enc.AddFile(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: ts}},
+		".profile", []byte("#umask 022"))
+
+	// home/user/data
+	enc.AddFile(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644, UID: 1000, GID: 1000, Mtime: ts}},
+		"data", []byte("a file from a user"))
+
+	// leave home/user
+	enc.Finish() // user
+	enc.Finish() // home
+
+	// bin -> usr/bin (symlink)
+	enc.AddSymlink(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFLNK | 0o777, Mtime: ts}},
+		"bin", "usr/bin")
+
+	// usr/
+	enc.CreateDirectory("usr", &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o755, Mtime: ts}})
+
+	// usr/bin/
+	enc.CreateDirectory("bin", &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o755, Mtime: ts}})
+
+	// usr/bin/bzip2
+	bzip2Offset, err := enc.AddFile(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o755, Mtime: ts}},
+		"bzip2", []byte("This is the bzip2 executable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// usr/bin/cat
+	enc.AddFile(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o755, Mtime: ts}},
+		"cat", []byte("This is another executable"))
+
+	// usr/bin/bunzip2 (hardlink to bzip2)
+	enc.AddHardlink("bunzip2", "bzip2", bzip2Offset)
+
+	enc.Finish() // usr/bin
+	enc.Finish() // usr
+
+	// dev/
+	enc.CreateDirectory("dev", &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o755, Mtime: ts}})
+
+	// dev/null (chardev 1,3)
+	enc.AddDevice(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFCHR | 0o666, Mtime: ts}},
+		"null", format.Device{Major: 1, Minor: 3})
+
+	// dev/zero (chardev 1,5)
+	enc.AddDevice(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFCHR | 0o666, Mtime: ts}},
+		"zero", format.Device{Major: 1, Minor: 5})
+
+	// dev/loop0 (blkdev 7,0)
+	enc.AddDevice(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFBLK | 0o666, Mtime: ts}},
+		"loop0", format.Device{Major: 7, Minor: 0})
+
+	// dev/loop1 (blkdev 7,1, with ACL user+group)
+	loop1Meta := &pxar.Metadata{
+		Stat: format.Stat{Mode: format.ModeIFBLK | 0o666, Mtime: ts},
+		ACL: pxar.ACL{
+			Users:  []format.ACLUser{{UID: 1000, Permissions: 6}},
+			Groups: []format.ACLGroup{{GID: 1000, Permissions: 6}},
+		},
+	}
+	enc.AddDevice(loop1Meta, "loop1", format.Device{Major: 7, Minor: 1})
+
+	enc.Finish() // dev
+
+	// run/ (with default ACL)
+	runMeta := &pxar.Metadata{
+		Stat: format.Stat{Mode: format.ModeIFDIR | 0o755, Mtime: ts},
+		ACL: pxar.ACL{
+			Default: &format.ACLDefault{
+				UserObjPermissions:  format.ACLPermissions(4 | 2), // READ|WRITE
+				GroupObjPermissions: format.ACLPermissions(4),   // READ
+				OtherPermissions:    format.ACLPermissions(4),   // READ
+				MaskPermissions:     format.ACLPermissions(format.ACLNoMask),
+			},
+			DefaultUsers: []format.ACLUser{{UID: 1001, Permissions: 4}}, // READ
+		},
+	}
+	enc.CreateDirectory("run", runMeta)
+
+	// run/fifo0
+	enc.AddFIFO(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFIFO | 0o666, Mtime: ts}}, "fifo0")
+
+	// run/sock0
+	enc.AddSocket(&pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFSOCK | 0o600, Mtime: ts}}, "sock0")
+
+	enc.Finish() // run
+	enc.Close()  // root
+
+	archive := buf.Bytes()
+
+	// --- Phase 1: Decode and verify all entry types ---
+	dec := decoder.NewDecoder(bytes.NewReader(archive), nil)
+
+	type decodedEntry struct {
+		path string
+		kind pxar.EntryKind
+	}
+	var entries []decodedEntry
+	for {
+		e, err := dec.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		entries = append(entries, decodedEntry{path: e.Path, kind: e.Kind})
+	}
+
+	if len(entries) == 0 {
+		t.Fatal("expected at least 4 entries, got 0")
+	}
+
+	// --- Phase 2: Accessor verification (mirrors Rust's check_bunzip2 + check_run_special_files) ---
+	acc := accessor.NewAccessor(bytes.NewReader(archive))
+
+	root, err := acc.ReadRoot()
+	if err != nil {
+		t.Fatalf("ReadRoot: %v", err)
+	}
+	if !root.IsDir() {
+		t.Fatal("root should be a directory")
+	}
+
+	// Verify hardlink follow (Rust: check_bunzip2)
+	bunzip2, err := acc.Lookup("/usr/bin/bunzip2")
+	if err != nil {
+		t.Fatalf("lookup /usr/bin/bunzip2: %v", err)
+	}
+	if !bunzip2.IsHardlink() {
+		t.Fatalf("expected hardlink, got %v", bunzip2.Kind)
+	}
+
+	bzip2, err := acc.FollowHardlink(bunzip2)
+	if err != nil {
+		t.Fatalf("FollowHardlink bunzip2: %v", err)
+	}
+	if !bzip2.IsRegularFile() {
+		t.Fatalf("expected regular file after follow, got %v", bzip2.Kind)
+	}
+
+	r, err := acc.ReadFileContentReader(bzip2)
+	if err != nil {
+		t.Fatalf("ReadFileContent: %v", err)
+	}
+	content, err := io.ReadAll(r)
+	r.Close()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(content) != "This is the bzip2 executable" {
+		t.Errorf("bzip2 content = %q, want %q", content, "This is the bzip2 executable")
+	}
+
+	// Verify symlink (Rust: bin -> usr/bin)
+	binLink, err := acc.Lookup("/bin")
+	if err != nil {
+		t.Fatalf("lookup /bin: %v", err)
+	}
+	if !binLink.IsSymlink() {
+		t.Fatalf("/bin should be symlink, got %v", binLink.Kind)
+	}
+	if binLink.LinkTarget != "usr/bin" {
+		t.Errorf("/bin target = %q, want %q", binLink.LinkTarget, "usr/bin")
+	}
+
+	// Verify devices
+	nullEntry, err := acc.Lookup("/dev/null")
+	if err != nil {
+		t.Fatalf("lookup /dev/null: %v", err)
+	}
+	if !nullEntry.IsDevice() {
+		t.Fatalf("/dev/null should be device, got %v", nullEntry.Kind)
+	}
+	if nullEntry.DeviceInfo != (format.Device{Major: 1, Minor: 3}) {
+		t.Errorf("/dev/null device = %+v, want {1,3}", nullEntry.DeviceInfo)
+	}
+
+	loop1, err := acc.Lookup("/dev/loop1")
+	if err != nil {
+		t.Fatalf("lookup /dev/loop1: %v", err)
+	}
+	if loop1.DeviceInfo != (format.Device{Major: 7, Minor: 1}) {
+		t.Errorf("/dev/loop1 device = %+v, want {7,1}", loop1.DeviceInfo)
+	}
+
+	// Verify special files in /run (Rust: check_run_special_files)
+	fifoEntry, err := acc.Lookup("/run/fifo0")
+	if err != nil {
+		t.Fatalf("lookup /run/fifo0: %v", err)
+	}
+	if !fifoEntry.IsFIFO() {
+		t.Fatalf("/run/fifo0 should be FIFO, got %v", fifoEntry.Kind)
+	}
+	if fifoEntry.FileName() != "fifo0" {
+		t.Errorf("/run/fifo0 name = %q, want %q", fifoEntry.FileName(), "fifo0")
+	}
+
+	sockEntry, err := acc.Lookup("/run/sock0")
+	if err != nil {
+		t.Fatalf("lookup /run/sock0: %v", err)
+	}
+	if !sockEntry.IsSocket() {
+		t.Fatalf("/run/sock0 should be socket, got %v", sockEntry.Kind)
+	}
+	if sockEntry.FileName() != "sock0" {
+		t.Errorf("/run/sock0 name = %q, want %q", sockEntry.FileName(), "sock0")
+	}
+
+	// Verify /run directory has exactly 2 children
+	runDir, err := acc.Lookup("/run")
+	if err != nil {
+		t.Fatalf("lookup /run: %v", err)
+	}
+	if !runDir.IsDir() {
+		t.Fatalf("/run should be directory, got %v", runDir.Kind)
+	}
+	var runCount int
+	err = acc.ListDirectory(int64(runDir.ContentOffset), accessor.ListOption{}, func(e *pxar.Entry) error {
+		runCount++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("ListDirectory /run: %v", err)
+	}
+	if runCount != 2 {
+		t.Errorf("/run entry count = %d, want 2", runCount)
+	}
+
+	// Verify user files
+	profileEntry, err := acc.Lookup("/home/user/.profile")
+	if err != nil {
+		t.Fatalf("lookup /home/user/.profile: %v", err)
+	}
+	if !profileEntry.IsRegularFile() {
+		t.Fatalf("/home/user/.profile should be file, got %v", profileEntry.Kind)
+	}
+	r2, err := acc.ReadFileContentReader(profileEntry)
+	if err != nil {
+		t.Fatalf("ReadFileContent .profile: %v", err)
+	}
+	profileContent, _ := io.ReadAll(r2)
+	r2.Close()
+	if string(profileContent) != "#umask 022" {
+		t.Errorf(".profile content = %q, want %q", profileContent, "#umask 022")
+	}
+
+	// Verify /home/user/data content
+	dataEntry, err := acc.Lookup("/home/user/data")
+	if err != nil {
+		t.Fatalf("lookup /home/user/data: %v", err)
+	}
+	r3, err := acc.ReadFileContentReader(dataEntry)
+	if err != nil {
+		t.Fatalf("ReadFileContent data: %v", err)
+	}
+	dataContent, _ := io.ReadAll(r3)
+	r3.Close()
+	if string(dataContent) != "a file from a user" {
+		t.Errorf("data content = %q, want %q", dataContent, "a file from a user")
+	}
+}

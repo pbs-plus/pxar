@@ -320,6 +320,157 @@ func TestHeaderString(t *testing.T) {
 	}
 }
 
+// TestStatxTimestampNegativeDuration mirrors Rust's test_statx_timestamp for pre-epoch times.
+// Rust: MAY_1_1960_1530 = -305112600 → secs=-305112601, nanos=999_000_000
+func TestStatxTimestampNegativeDuration(t *testing.T) {
+	// 305112600 seconds before epoch, with 1ms sub-second precision
+	beforeEpoch := 305112600*time.Second + 1*time.Millisecond
+
+	// Rust's from_duration_before_epoch for non-zero nanos:
+	// secs = -(as_secs) - 1 = -305112601
+	// nanos = 1_000_000_000 - subsec_nanos = 999_000_000
+	secs := -int64(beforeEpoch / time.Second) - 1
+	nanos := uint32(1_000_000_000 - (beforeEpoch % time.Second))
+	ts := StatxTimestamp{Secs: secs, Nanos: nanos}
+
+	if ts.Secs != -305112601 {
+		t.Errorf("Secs = %d, want -305112601", ts.Secs)
+	}
+	if ts.Nanos != 999_000_000 {
+		t.Errorf("Nanos = %d, want 999000000", ts.Nanos)
+	}
+
+	// Exact boundary: sub-second portion is exactly 0
+	beforeEpoch2 := 305112600 * time.Second
+	secs2 := -int64(beforeEpoch2 / time.Second)
+	ts2 := StatxTimestamp{Secs: secs2, Nanos: 0}
+	if ts2.Secs != -305112600 {
+		t.Errorf("Secs = %d, want -305112600", ts2.Secs)
+	}
+	if ts2.Nanos != 0 {
+		t.Errorf("Nanos = %d, want 0", ts2.Nanos)
+	}
+}
+
+// TestStatMarshalUnmarshalRoundTrip verifies that Stat marshals to exactly 40 bytes
+// with _pad=0 and round-trips correctly. Mirrors Rust's Endian trait behavior.
+func TestStatMarshalUnmarshalRoundTrip(t *testing.T) {
+	original := Stat{
+		Mode:  ModeIFREG | 0o644,
+		Flags: 0x12345678,
+		UID:   1000,
+		GID:   1000,
+		Mtime: StatxTimestamp{Secs: 1430487000, Nanos: 1_000_000},
+	}
+
+	var buf [40]byte
+	MarshalStatBytesInto(buf[:], original)
+
+	// Verify _pad field at bytes 36-39 is zero (matching Rust's _zero: 0)
+	pad := binary.LittleEndian.Uint32(buf[36:])
+	if pad != 0 {
+		t.Errorf("_pad = %d, want 0 (bytes 36-39: %x)", pad, buf[36:40])
+	}
+
+	// Verify mode at offset 0
+	mode := binary.LittleEndian.Uint64(buf[0:])
+	if mode != original.Mode {
+		t.Errorf("mode = %x, want %x", mode, original.Mode)
+	}
+
+	// Verify flags at offset 8
+	flags := binary.LittleEndian.Uint64(buf[8:])
+	if flags != original.Flags {
+		t.Errorf("flags = %x, want %x", flags, original.Flags)
+	}
+
+	// Verify uid at offset 16
+	uid := binary.LittleEndian.Uint32(buf[16:])
+	if uid != original.UID {
+		t.Errorf("uid = %d, want %d", uid, original.UID)
+	}
+
+	// Verify gid at offset 20
+	gid := binary.LittleEndian.Uint32(buf[20:])
+	if gid != original.GID {
+		t.Errorf("gid = %d, want %d", gid, original.GID)
+	}
+
+	// Round-trip
+	decoded := UnmarshalStatBytes(buf[:])
+	if decoded.Mode != original.Mode {
+		t.Errorf("round-trip mode = %x, want %x", decoded.Mode, original.Mode)
+	}
+	if decoded.Flags != original.Flags {
+		t.Errorf("round-trip flags = %x, want %x", decoded.Flags, original.Flags)
+	}
+	if decoded.UID != original.UID {
+		t.Errorf("round-trip uid = %d, want %d", decoded.UID, original.UID)
+	}
+	if decoded.GID != original.GID {
+		t.Errorf("round-trip gid = %d, want %d", decoded.GID, original.GID)
+	}
+	if decoded.Mtime != original.Mtime {
+		t.Errorf("round-trip mtime = %+v, want %+v", decoded.Mtime, original.Mtime)
+	}
+
+	// Verify that filling pad with garbage then marshaling clears it
+	garbageBuf := [40]byte{}
+	for i := range garbageBuf {
+		garbageBuf[i] = 0xFF
+	}
+	MarshalStatBytesInto(garbageBuf[:], original)
+	pad = binary.LittleEndian.Uint32(garbageBuf[36:])
+	if pad != 0 {
+		t.Errorf("_pad not cleared after marshaling into dirty buffer: %d", pad)
+	}
+}
+
+// TestDeviceFromDevTToDevTRoundTrip mirrors Rust's test_linux_devices.
+// Uses the same test values: makedev(0xabcd_1234, 0xdcba_5678).
+func TestDeviceFromDevTToDevTRoundTrip(t *testing.T) {
+	dev := DeviceFromDevT(makeDevT(0xabcd1234, 0xdcba5678))
+	if dev.Major != 0xabcd1234 {
+		t.Errorf("Major = %x, want %x", dev.Major, uint64(0xabcd1234))
+	}
+	if dev.Minor != 0xdcba5678 {
+		t.Errorf("Minor = %x, want %x", dev.Minor, uint64(0xdcba5678))
+	}
+	// Round-trip back
+	got := dev.ToDevT()
+	want := makeDevT(0xabcd1234, 0xdcba5678)
+	if got != want {
+		t.Errorf("ToDevT = %x, want %x", got, want)
+	}
+}
+
+// makeDevT mirrors Linux's makedev macro.
+func makeDevT(major, minor uint64) uint64 {
+	return (major&0x00000fff)<<8 |
+		(major&0xfffff000)<<32 |
+		(minor&0x000000ff) |
+		(minor&0xffffff00)<<12
+}
+
+// TestHeaderMarshalTo verifies the zero-copy MarshalTo produces identical bytes
+// to binary.Write.
+func TestHeaderMarshalTo(t *testing.T) {
+	h := HeaderWithContentSize(PXARFilename, 13)
+
+	// Reference: binary.Write
+	var ref [16]byte
+	binary.LittleEndian.PutUint64(ref[0:], h.Type)
+	binary.LittleEndian.PutUint64(ref[8:], h.Size)
+
+	// MarshalTo
+	var got [16]byte
+	h.MarshalTo(got[:])
+
+	if got != ref {
+		t.Errorf("MarshalTo = %x, want %x", got, ref)
+	}
+}
+
 func TestXAttr(t *testing.T) {
 	x := NewXAttr([]byte("user.test"), []byte("value"))
 	if string(x.Name()) != "user.test" {

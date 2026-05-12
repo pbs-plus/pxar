@@ -83,6 +83,7 @@ type Entry struct {
 	FileOffset    uint64
 	PayloadOffset uint64
 	ContentOffset uint64
+	LinkOffset    uint64 // relative offset to hardlink target (from FILENAME header)
 }
 
 // IsDir reports whether the entry is a directory.

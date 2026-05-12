@@ -55,7 +55,7 @@ func (p *h2Protocol) dynamicIndexCreate(archiveName string) (uint64, error) {
 func (p *h2Protocol) downloadPrevious(archiveName string) ([]byte, error) {
 	params := url.Values{}
 	params.Set("archive-name", archiveName)
-	data, err := p.conn.do("GET", "previous", params, nil, "")
+	data, err := p.conn.doRaw("GET", "previous", params)
 	if err != nil {
 		return nil, fmt.Errorf("download previous %s: %w", archiveName, err)
 	}

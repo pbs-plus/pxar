@@ -339,6 +339,106 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 	return result.Data, nil
 }
 
+// doRaw sends a request and returns the raw response body without JSON parsing.
+// Used for binary endpoints like "previous" that return raw index data.
+func (c *pbsH2Conn) doRaw(method, path string, params url.Values) ([]byte, error) {
+	streamID := c.allocID()
+
+	fullPath := path
+	if len(params) > 0 {
+		fullPath += "?" + params.Encode()
+	}
+
+	c.hdrBuf.Reset()
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
+
+	if err := c.framer.WriteHeaders(http2.HeadersFrameParam{
+		StreamID:      streamID,
+		BlockFragment: c.hdrBuf.Bytes(),
+		EndHeaders:    true,
+		EndStream:     true,
+	}); err != nil {
+		return nil, fmt.Errorf("write HEADERS: %w", err)
+	}
+
+	return c.readRawResponse(streamID)
+}
+
+// readRawResponse reads the response and returns raw bytes without JSON parsing.
+func (c *pbsH2Conn) readRawResponse(streamID uint32) ([]byte, error) {
+	var (
+		status  int
+		dataBuf bytes.Buffer
+		gotEnd  bool
+		hdrBuf  bytes.Buffer
+	)
+
+	for !gotEnd {
+		frame, err := c.framer.ReadFrame()
+		if err != nil {
+			return nil, fmt.Errorf("read frame: %w", err)
+		}
+
+		switch f := frame.(type) {
+		case *http2.HeadersFrame:
+			if f.StreamID != streamID {
+				continue
+			}
+			hdrBuf.Write(f.HeaderBlockFragment())
+			if f.Flags.Has(http2.FlagHeadersEndHeaders) {
+				status = c.decodeStatus(&hdrBuf)
+			}
+			if f.StreamEnded() {
+				gotEnd = true
+			}
+
+		case *http2.ContinuationFrame:
+			if f.StreamID != streamID {
+				continue
+			}
+			hdrBuf.Write(f.HeaderBlockFragment())
+			if f.Flags.Has(http2.FlagHeadersEndHeaders) {
+				status = c.decodeStatus(&hdrBuf)
+			}
+
+		case *http2.DataFrame:
+			if f.StreamID != streamID {
+				continue
+			}
+			dataBuf.Write(f.Data())
+			if f.StreamEnded() {
+				gotEnd = true
+			}
+
+		case *http2.SettingsFrame:
+			if !f.IsAck() {
+				_ = c.framer.WriteSettingsAck()
+			}
+
+		case *http2.PingFrame:
+			if !f.IsAck() {
+				_ = c.framer.WritePing(true, f.Data)
+			}
+
+		case *http2.RSTStreamFrame:
+			if f.StreamID == streamID {
+				return nil, fmt.Errorf("stream reset: error code %d", f.ErrCode)
+			}
+
+		case *http2.GoAwayFrame:
+			return nil, fmt.Errorf("server GOAWAY: error code %d", f.ErrCode)
+		}
+	}
+
+	if status >= 400 {
+		return nil, fmt.Errorf("HTTP %d: %s", status, dataBuf.String())
+	}
+
+	return dataBuf.Bytes(), nil
+}
+
 func (c *pbsH2Conn) close() error {
 	return c.conn.Close()
 }

@@ -652,3 +652,68 @@ func TestDynamicIndexRoundTrip(t *testing.T) {
 		t.Errorf("offset 3000: chunk = %d, ok = %v", chunk, ok)
 	}
 }
+
+func TestTryRecordStrictlyGreaterAcceptsIncreasing(t *testing.T) {
+	var last *uint64
+	if !transfer.TryRecordStrictlyGreater(&last, 100) {
+		t.Error("first call should accept 100")
+	}
+	if last == nil || *last != 100 {
+		t.Errorf("last = %v, want 100", last)
+	}
+	if !transfer.TryRecordStrictlyGreater(&last, 200) {
+		t.Error("second call should accept 200")
+	}
+	if last == nil || *last != 200 {
+		t.Errorf("last = %v, want 200", last)
+	}
+}
+
+func TestTryRecordStrictlyGreaterRejectsEqualAndBackwards(t *testing.T) {
+	v := uint64(200)
+	last := &v
+	// duplicate offset
+	if transfer.TryRecordStrictlyGreater(&last, 200) {
+		t.Error("should reject equal offset")
+	}
+	if *last != 200 {
+		t.Errorf("rejected offset must not update state: last = %d, want 200", *last)
+	}
+	// backwards offset
+	if transfer.TryRecordStrictlyGreater(&last, 150) {
+		t.Error("should reject backwards offset")
+	}
+	if *last != 200 {
+		t.Errorf("rejected offset must not update state: last = %d, want 200", *last)
+	}
+}
+
+func TestTryRecordStrictlyGreaterFirstCallAcceptsZero(t *testing.T) {
+	var last *uint64
+	if !transfer.TryRecordStrictlyGreater(&last, 0) {
+		t.Error("first call should accept 0")
+	}
+	if last == nil || *last != 0 {
+		t.Errorf("last = %v, want 0", last)
+	}
+}
+
+func TestTryRecordStrictlyGreaterPersistsAcrossResets(t *testing.T) {
+	var last *uint64
+	if !transfer.TryRecordStrictlyGreater(&last, 1000) {
+		t.Error("should accept 1000")
+	}
+	// a per-range implementation would clear here on cache flush
+	if transfer.TryRecordStrictlyGreater(&last, 500) {
+		t.Error("should reject 500 after 1000")
+	}
+	if last == nil || *last != 1000 {
+		t.Errorf("last = %v, want 1000", last)
+	}
+	if !transfer.TryRecordStrictlyGreater(&last, 1500) {
+		t.Error("should accept 1500")
+	}
+	if last == nil || *last != 1500 {
+		t.Errorf("last = %v, want 1500", last)
+	}
+}

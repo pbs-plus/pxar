@@ -34,6 +34,7 @@ type RemoteDedupSplitArchiveWriter struct {
 	payloadBuf  bytes.Buffer
 	dirDepth    int
 	origSize    uint64
+	lastRefOff  *uint64 // monotonic offset tracker for WriteEntryRef (nil = no offset yet)
 }
 
 // NewRemoteDedupSplitArchiveWriter creates a dedup writer for PBS uploads.
@@ -91,7 +92,12 @@ func (w *RemoteDedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io
 }
 
 // WriteEntryRef writes an entry referencing existing payload data.
+// Returns an error if payloadOffset is not strictly greater than the last accepted
+// offset (mirrors Rust's try_record_strictly_greater validation).
 func (w *RemoteDedupSplitArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
+	if !TryRecordStrictlyGreater(&w.lastRefOff, payloadOffset) {
+		return fmt.Errorf("payload offset %d is not strictly greater than last accepted offset %v", payloadOffset, w.lastRefOff)
+	}
 	return w.inner.WriteEntryRef(entry, payloadOffset)
 }
 

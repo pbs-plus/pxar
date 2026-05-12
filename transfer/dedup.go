@@ -358,3 +358,21 @@ func ComputeContentDigest(source datastore.ChunkSource, payloadIdx *datastore.Dy
 	}
 	return sha256.Sum256(content), nil
 }
+
+// TryRecordStrictlyGreater mirrors Rust's try_record_strictly_greater from
+// pbs-client/src/pxar/create.rs. It records a strictly-monotonically-increasing
+// offset into `last`. Returns true if offset > *last (or first call when *last == nil),
+// false otherwise. Rejected offsets do not update state.
+//
+// This prevents a corrupt previous archive from injecting backwards PXAR_PAYLOAD_REF
+// offsets, which the encoder's strict offset check would reject, aborting the backup.
+func TryRecordStrictlyGreater(last **uint64, offset uint64) bool {
+	if *last != nil {
+		if offset <= **last {
+			return false
+		}
+	}
+	v := offset
+	*last = &v
+	return true
+}

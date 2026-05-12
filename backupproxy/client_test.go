@@ -1,8 +1,10 @@
 package backupproxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/pbs-plus/pxar/format"
@@ -13,7 +15,7 @@ type mockFS struct {
 	NoExtendedAttrs
 	statFn     func(path string) (format.Stat, error)
 	readDirFn  func(path string) ([]DirEntry, error)
-	readFileFn func(path string, offset, length int64) ([]byte, error)
+	openFileFn func(path string) (io.ReadCloser, uint64, error)
 	readLinkFn func(path string) (string, error)
 }
 
@@ -25,8 +27,8 @@ func (m *mockFS) ReadDir(path string) ([]DirEntry, error) {
 	return m.readDirFn(path)
 }
 
-func (m *mockFS) ReadFile(path string, offset, length int64) ([]byte, error) {
-	return m.readFileFn(path, offset, length)
+func (m *mockFS) OpenFile(path string) (io.ReadCloser, uint64, error) {
+	return m.openFileFn(path)
 }
 
 func (m *mockFS) ReadLink(path string) (string, error) {
@@ -81,22 +83,28 @@ func TestLocalClientReadDir(t *testing.T) {
 func TestLocalClientReadFile(t *testing.T) {
 	content := []byte("hello world")
 	fs := &mockFS{
-		readFileFn: func(path string, offset, length int64) ([]byte, error) {
-			if offset != 6 || length != 5 {
-				t.Errorf("read(%q, %d, %d), want (%q, 6, 5)", path, offset, length, path)
+		openFileFn: func(path string) (io.ReadCloser, uint64, error) {
+			if path != "/test.txt" {
+				t.Errorf("open(%q), want %q", path, "/test.txt")
 			}
-			return content[6:11], nil
+			return io.NopCloser(bytes.NewReader(content[6:11])), uint64(len(content)), nil
 		},
 	}
 
 	c := NewLocalClient(fs)
-	got, err := c.ReadFile(context.Background(), "/test.txt", 6, 5)
+	rc, size, err := c.OpenFile(context.Background(), "/test.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != "world" {
 		t.Errorf("data = %q, want %q", string(got), "world")
 	}
+	_ = size
 }
 
 func TestLocalClientReadLink(t *testing.T) {
@@ -132,13 +140,13 @@ func TestLocalClientStatError(t *testing.T) {
 
 func TestLocalClientReadFileError(t *testing.T) {
 	fs := &mockFS{
-		readFileFn: func(path string, offset, length int64) ([]byte, error) {
-			return nil, fmt.Errorf("permission denied")
+		openFileFn: func(path string) (io.ReadCloser, uint64, error) {
+			return nil, 0, fmt.Errorf("permission denied")
 		},
 	}
 
 	c := NewLocalClient(fs)
-	_, err := c.ReadFile(context.Background(), "/secret", 0, 100)
+	_, _, err := c.OpenFile(context.Background(), "/secret")
 	if err == nil {
 		t.Error("expected error")
 	}

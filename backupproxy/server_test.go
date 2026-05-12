@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"os"
 	"testing"
 
@@ -19,7 +20,7 @@ import (
 type mockClient struct {
 	statFn      func(ctx context.Context, path string) (format.Stat, error)
 	readDirFn   func(ctx context.Context, path string) ([]DirEntry, error)
-	readFileFn  func(ctx context.Context, path string, offset, length int64) ([]byte, error)
+	openFileFn  func(ctx context.Context, path string) (io.ReadCloser, uint64, error)
 	readLinkFn  func(ctx context.Context, path string) (string, error)
 	getXAttrsFn func(ctx context.Context, path string) ([]format.XAttr, error)
 	getACLFn    func(ctx context.Context, path string) (pxar.ACL, error)
@@ -34,8 +35,8 @@ func (m *mockClient) ReadDir(ctx context.Context, path string) ([]DirEntry, erro
 	return m.readDirFn(ctx, path)
 }
 
-func (m *mockClient) ReadFile(ctx context.Context, path string, offset, length int64) ([]byte, error) {
-	return m.readFileFn(ctx, path, offset, length)
+func (m *mockClient) OpenFile(ctx context.Context, path string) (io.ReadCloser, uint64, error) {
+	return m.openFileFn(ctx, path)
 }
 
 func (m *mockClient) ReadLink(ctx context.Context, path string) (string, error) {
@@ -151,20 +152,12 @@ func (fs memFS) provider() *mockClient {
 			}
 			return f.entries, nil
 		},
-		readFileFn: func(_ context.Context, path string, offset, length int64) ([]byte, error) {
+		openFileFn: func(_ context.Context, path string) (io.ReadCloser, uint64, error) {
 			f, ok := fs[path]
 			if !ok {
-				return nil, fmt.Errorf("not found: %s", path)
+				return nil, 0, fmt.Errorf("not found: %s", path)
 			}
-			data := f.data
-			if offset > int64(len(data)) {
-				return nil, nil
-			}
-			data = data[offset:]
-			if length >= 0 && length < int64(len(data)) {
-				data = data[:length]
-			}
-			return data, nil
+			return io.NopCloser(bytes.NewReader(f.data)), uint64(len(f.data)), nil
 		},
 		readLinkFn: func(_ context.Context, path string) (string, error) {
 			f, ok := fs[path]
@@ -339,8 +332,8 @@ func TestServerClientError(t *testing.T) {
 		readDirFn: func(_ context.Context, _ string) ([]DirEntry, error) {
 			return nil, fmt.Errorf("permission denied")
 		},
-		readFileFn: func(_ context.Context, _ string, _, _ int64) ([]byte, error) {
-			return nil, nil
+		openFileFn: func(_ context.Context, _ string) (io.ReadCloser, uint64, error) {
+			return nil, 0, nil
 		},
 		readLinkFn: func(_ context.Context, _ string) (string, error) {
 			return "", nil
@@ -730,7 +723,12 @@ func verifyFileContent(t *testing.T, acc *accessor.Accessor, path, expected stri
 	if !entry.IsRegularFile() {
 		t.Fatalf("expected %q to be a regular file, got kind=%v", path, entry.Kind)
 	}
-	content, err := acc.ReadFileContent(entry)
+	r1, err := acc.ReadFileContentReader(entry)
+	if err != nil {
+		t.Fatalf("read %q content: %v", path, err)
+	}
+	defer r1.Close()
+	content, err := io.ReadAll(r1)
 	if err != nil {
 		t.Fatalf("read %q content: %v", path, err)
 	}
@@ -936,7 +934,12 @@ func TestLegacyLargeFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup large.bin: %v", err)
 	}
-	content, err := acc.ReadFileContent(entry)
+	r2, err := acc.ReadFileContentReader(entry)
+	if err != nil {
+		t.Fatalf("read large.bin content: %v", err)
+	}
+	defer r2.Close()
+	content, err := io.ReadAll(r2)
 	if err != nil {
 		t.Fatalf("read large.bin content: %v", err)
 	}
@@ -1077,7 +1080,12 @@ func TestDataModeLargeFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup large.bin: %v", err)
 	}
-	content, err := acc.ReadFileContent(entry)
+	r3, err := acc.ReadFileContentReader(entry)
+	if err != nil {
+		t.Fatalf("read large.bin: %v", err)
+	}
+	defer r3.Close()
+	content, err := io.ReadAll(r3)
 	if err != nil {
 		t.Fatalf("read large.bin: %v", err)
 	}

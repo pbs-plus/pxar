@@ -2,6 +2,7 @@ package transfer_test
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,9 +108,14 @@ func TestSplitArchiveFullRoundTrip(t *testing.T) {
 		t.Errorf("file size = %d, want 11", entry.FileSize)
 	}
 
-	content, err := reader.ReadFileContent(entry)
+	r1, err := reader.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r1.Close()
+	content, err := io.ReadAll(r1)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "hello world" {
 		t.Errorf("content = %q, want %q", string(content), "hello world")
@@ -119,9 +125,14 @@ func TestSplitArchiveFullRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /subdir/nested.txt: %v", err)
 	}
-	nestedContent, err := reader.ReadFileContent(nested)
+	r2, err := reader.ReadFileContentReader(nested)
 	if err != nil {
 		t.Fatalf("ReadFileContent nested: %v", err)
+	}
+	defer r2.Close()
+	nestedContent, err := io.ReadAll(r2)
+	if err != nil {
+		t.Fatalf("read nested content: %v", err)
 	}
 	if string(nestedContent) != "nested content" {
 		t.Errorf("nested content = %q, want %q", string(nestedContent), "nested content")

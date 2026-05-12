@@ -3,7 +3,6 @@ package transfer
 import (
 	"context"
 	"fmt"
-	"io"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/accessor"
@@ -104,13 +103,7 @@ func (r *PBSArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOpti
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
-func (r *PBSArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
-	return r.inner.ReadFileContent(entry)
-}
 
-func (r *PBSArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
-	return r.inner.ReadFileContentReader(entry)
-}
 
 func (r *PBSArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return readCatalog(r.inner, fn)

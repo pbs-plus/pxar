@@ -2009,9 +2009,14 @@ func TestIntegration_PBSLegacyModeBackupRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup hello.txt: %v", err)
 	}
-	helloContent, err := acc.ReadFileContent(helloEntry)
+	r1, err := acc.ReadFileContentReader(helloEntry)
 	if err != nil {
 		t.Fatalf("read hello.txt content: %v", err)
+	}
+	defer r1.Close()
+	helloContent, err := io.ReadAll(r1)
+	if err != nil {
+		t.Fatalf("read hello.txt: %v", err)
 	}
 	if string(helloContent) != "hello world" {
 		t.Errorf("hello.txt content = %q, want %q", string(helloContent), "hello world")
@@ -2021,9 +2026,14 @@ func TestIntegration_PBSLegacyModeBackupRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup subdir/nested.txt: %v", err)
 	}
-	nestedContent, err := acc.ReadFileContent(nestedEntry)
+	r2, err := acc.ReadFileContentReader(nestedEntry)
 	if err != nil {
 		t.Fatalf("read nested.txt content: %v", err)
+	}
+	defer r2.Close()
+	nestedContent, err := io.ReadAll(r2)
+	if err != nil {
+		t.Fatalf("read nested.txt: %v", err)
 	}
 	if string(nestedContent) != "nested content" {
 		t.Errorf("nested.txt content = %q, want %q", string(nestedContent), "nested content")
@@ -2088,9 +2098,14 @@ func TestIntegration_PBSDataModeBackupRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup data.txt: %v", err)
 	}
-	dataContent, err := acc.ReadFileContent(dataEntry)
+	r3, err := acc.ReadFileContentReader(dataEntry)
 	if err != nil {
 		t.Fatalf("read data.txt content: %v", err)
+	}
+	defer r3.Close()
+	dataContent, err := io.ReadAll(r3)
+	if err != nil {
+		t.Fatalf("read data.txt: %v", err)
 	}
 	if string(dataContent) != "data mode content" {
 		t.Errorf("data.txt content = %q, want %q", string(dataContent), "data mode content")
@@ -2100,9 +2115,14 @@ func TestIntegration_PBSDataModeBackupRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup subdir/nested.txt: %v", err)
 	}
-	nestedContent, err := acc.ReadFileContent(nestedEntry)
+	r4, err := acc.ReadFileContentReader(nestedEntry)
 	if err != nil {
 		t.Fatalf("read nested.txt content: %v", err)
+	}
+	defer r4.Close()
+	nestedContent, err := io.ReadAll(r4)
+	if err != nil {
+		t.Fatalf("read nested.txt: %v", err)
 	}
 	if string(nestedContent) != "nested in data mode" {
 		t.Errorf("nested.txt content = %q, want %q", string(nestedContent), "nested in data mode")
@@ -2163,7 +2183,12 @@ func TestIntegration_PBSMetadataModeBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup unchanged.txt in prev: %v", err)
 	}
-	prevUncContent, err := prevAcc.ReadFileContent(prevUncEntry)
+	prevUncR, err := prevAcc.ReadFileContentReader(prevUncEntry)
+	if err != nil {
+		t.Fatalf("read prev unchanged.txt: %v", err)
+	}
+	defer prevUncR.Close()
+	prevUncContent, err := io.ReadAll(prevUncR)
 	if err != nil {
 		t.Fatalf("read prev unchanged.txt: %v", err)
 	}
@@ -2216,7 +2241,12 @@ func TestIntegration_PBSMetadataModeBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup unchanged.txt in curr: %v", err)
 	}
-	currUncContent, err := currAcc.ReadFileContent(currUncEntry)
+	currUncR, err := currAcc.ReadFileContentReader(currUncEntry)
+	if err != nil {
+		t.Fatalf("read curr unchanged.txt: %v", err)
+	}
+	defer currUncR.Close()
+	currUncContent, err := io.ReadAll(currUncR)
 	if err != nil {
 		t.Fatalf("read curr unchanged.txt: %v", err)
 	}
@@ -2228,7 +2258,12 @@ func TestIntegration_PBSMetadataModeBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup changed.txt in curr: %v", err)
 	}
-	currChgContent, err := currAcc.ReadFileContent(currChgEntry)
+	currChgR, err := currAcc.ReadFileContentReader(currChgEntry)
+	if err != nil {
+		t.Fatalf("read curr changed.txt: %v", err)
+	}
+	defer currChgR.Close()
+	currChgContent, err := io.ReadAll(currChgR)
 	if err != nil {
 		t.Fatalf("read curr changed.txt: %v", err)
 	}
@@ -2394,7 +2429,12 @@ func verifyFileWithAccessor(t *testing.T, acc *accessor.Accessor, path, expected
 	if err != nil {
 		t.Fatalf("lookup %q: %v", path, err)
 	}
-	content, err := acc.ReadFileContent(entry)
+	r, err := acc.ReadFileContentReader(entry)
+	if err != nil {
+		t.Fatalf("read %q: %v", path, err)
+	}
+	defer r.Close()
+	content, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatalf("read %q: %v", path, err)
 	}

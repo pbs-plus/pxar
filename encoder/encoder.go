@@ -51,8 +51,9 @@ func NewEncoder(output, payloadOut io.Writer, metadata *pxar.Metadata, prelude [
 		enc.payloadOut = payloadOut
 		enc.version = format.FormatVersion2
 		// Write payload start marker
-		h := format.HeaderWithContentSize(format.PXARPayloadStartMarker, 0)
-		if err := binary.Write(payloadOut, binary.LittleEndian, &h); err != nil {
+		var hdrBuf [format.HeaderSize]byte
+		format.HeaderWithContentSize(format.PXARPayloadStartMarker, 0).MarshalTo(hdrBuf[:])
+		if _, err := payloadOut.Write(hdrBuf[:]); err != nil {
 			enc.err = err
 			return enc
 		}
@@ -102,12 +103,10 @@ func (e *Encoder) writeHeader(htype, contentSize uint64) error {
 	if err := h.CheckHeaderSize(); err != nil {
 		return err
 	}
-	if err := binary.Write(e.output, binary.LittleEndian, &h); err != nil {
-		return err
-	}
-	s := e.currentState()
-	s.writePosition += format.HeaderSize
-	return nil
+	var hdrBuf [format.HeaderSize]byte
+	h.MarshalTo(hdrBuf[:])
+	// writeAll already advances writePosition by HeaderSize.
+	return e.writeAll(hdrBuf[:])
 }
 
 func (e *Encoder) encodeFormatVersion() {
@@ -122,6 +121,16 @@ func (e *Encoder) encodeFormatVersion() {
 }
 
 func (e *Encoder) encodePrelude(prelude []byte) {
+	if e.version != format.FormatVersion2 {
+		e.err = fmt.Errorf("encoding prelude not supported in format version 1")
+		return
+	}
+	// Prelude must immediately follow the format version header.
+	// Format version occupies: HeaderSize (version header) + 8 (version uint64) = 24 bytes.
+	if pos := e.currentState().writePosition; pos != format.HeaderSize+8 {
+		e.err = fmt.Errorf("prelude must be encoded following the version header, current position %d", pos)
+		return
+	}
 	if e.err = e.writeHeader(format.PXARPrelude, uint64(len(prelude))); e.err != nil {
 		return
 	}
@@ -275,8 +284,9 @@ func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) 
 			return 0, e.err
 		}
 
-		h := format.HeaderWithContentSize(format.PXARPayload, uint64(len(content)))
-		if err := binary.Write(e.payloadOut, binary.LittleEndian, &h); err != nil {
+		var hdrBuf [format.HeaderSize]byte
+		format.HeaderWithContentSize(format.PXARPayload, uint64(len(content))).MarshalTo(hdrBuf[:])
+		if _, err := e.payloadOut.Write(hdrBuf[:]); err != nil {
 			e.err = err
 			return 0, err
 		}
@@ -332,8 +342,9 @@ func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) 
 			return nil, e.err
 		}
 
-		h := format.HeaderWithContentSize(format.PXARPayload, size)
-		if err := binary.Write(e.payloadOut, binary.LittleEndian, &h); err != nil {
+		var hdrBuf [format.HeaderSize]byte
+		format.HeaderWithContentSize(format.PXARPayload, size).MarshalTo(hdrBuf[:])
+		if _, err := e.payloadOut.Write(hdrBuf[:]); err != nil {
 			e.err = err
 			return nil, err
 		}
@@ -835,8 +846,9 @@ func (e *Encoder) Close() error {
 
 	// Write payload tail marker if split archive
 	if e.payloadOut != nil {
-		h := format.HeaderWithContentSize(format.PXARPayloadTailMarker, 0)
-		if err := binary.Write(e.payloadOut, binary.LittleEndian, &h); err != nil {
+		var hdrBuf [format.HeaderSize]byte
+		format.HeaderWithContentSize(format.PXARPayloadTailMarker, 0).MarshalTo(hdrBuf[:])
+		if _, err := e.payloadOut.Write(hdrBuf[:]); err != nil {
 			e.state = e.state[:0]
 			e.finished = true
 			return err

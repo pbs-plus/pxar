@@ -2,6 +2,7 @@ package transfer_test
 
 import (
 	"bytes"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -136,9 +137,14 @@ func TestFileArchiveReaderReadFileContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	content, err := reader.ReadFileContent(entry)
+	r, err := reader.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r.Close()
+	content, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "hello world" {
 		t.Errorf("content = %q, want %q", content, "hello world")
@@ -183,9 +189,14 @@ func TestFileArchiveReaderNestedDirectory(t *testing.T) {
 		t.Errorf("expected regular file, got %v", entry.Kind)
 	}
 
-	content, err := reader.ReadFileContent(entry)
+	r2, err := reader.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r2.Close()
+	content, err := io.ReadAll(r2)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "deep" {
 		t.Errorf("content = %q, want %q", content, "deep")
@@ -277,9 +288,14 @@ func TestCopySingleFile(t *testing.T) {
 		t.Errorf("expected regular file, got %v", entry.Kind)
 	}
 
-	content, err := dstReader.ReadFileContent(entry)
+	r3, err := dstReader.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r3.Close()
+	content, err := io.ReadAll(r3)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "hello world" {
 		t.Errorf("content = %q, want %q", content, "hello world")
@@ -325,9 +341,14 @@ func TestCopyDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /a/b/deep.txt: %v", err)
 	}
-	content, err := dstReader.ReadFileContent(nested)
+	r4, err := dstReader.ReadFileContentReader(nested)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r4.Close()
+	content, err := io.ReadAll(r4)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "deep" {
 		t.Errorf("content = %q, want %q", content, "deep")
@@ -383,7 +404,12 @@ func TestMergeArchives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err := dstReader.ReadFileContent(entry)
+	r5, err := dstReader.ReadFileContentReader(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r5.Close()
+	content, err := io.ReadAll(r5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +422,12 @@ func TestMergeArchives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nestedContent, err := dstReader.ReadFileContent(nested)
+	r6, err := dstReader.ReadFileContentReader(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r6.Close()
+	nestedContent, err := io.ReadAll(r6)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,9 +460,14 @@ func TestV2SplitArchiveRoundTrip(t *testing.T) {
 		t.Errorf("expected regular file, got %v", entry.Kind)
 	}
 
-	content, err := reader.ReadFileContent(entry)
+	r7, err := reader.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r7.Close()
+	content, err := io.ReadAll(r7)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "payload data" {
 		t.Errorf("content = %q, want %q", content, "payload data")
@@ -478,9 +514,14 @@ func TestV2CopyToV1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
-	content, err := dstReader.ReadFileContent(entry)
+	r8, err := dstReader.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r8.Close()
+	content, err := io.ReadAll(r8)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "v2 content" {
 		t.Errorf("content = %q, want %q", content, "v2 content")
@@ -566,9 +607,14 @@ func TestStreamArchiveWriterAllEntryTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup sub.txt: %v", err)
 	}
-	content, err := reader.ReadFileContent(subEntry)
+	r9, err := reader.ReadFileContentReader(subEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r9.Close()
+	content, err := io.ReadAll(r9)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "sub" {
 		t.Errorf("content = %q, want %q", content, "sub")
@@ -608,9 +654,14 @@ func TestCopyTreePathRemapping(t *testing.T) {
 	if !deepEntry.IsRegularFile() {
 		t.Errorf("expected regular file, got %v", deepEntry.Kind)
 	}
-	content, err := dstReader.ReadFileContent(deepEntry)
+	r10, err := dstReader.ReadFileContentReader(deepEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r10.Close()
+	content, err := io.ReadAll(r10)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "deep" {
 		t.Errorf("content = %q, want %q", content, "deep")
@@ -621,9 +672,14 @@ func TestCopyTreePathRemapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /backup/a/mid.txt: %v", err)
 	}
-	midContent, err := dstReader.ReadFileContent(midEntry)
+	r11, err := dstReader.ReadFileContentReader(midEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r11.Close()
+	midContent, err := io.ReadAll(r11)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(midContent) != "mid" {
 		t.Errorf("content = %q, want %q", midContent, "mid")

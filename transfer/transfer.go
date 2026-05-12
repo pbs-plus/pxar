@@ -61,15 +61,15 @@ func CopyTree(src ArchiveReader, dst ArchiveWriter, srcPath, dstPath string, opt
 
 // copyEntry copies a single non-directory entry to the target.
 func copyEntry(src ArchiveReader, dst ArchiveWriter, entry *pxar.Entry, opts TransferOption) error {
-	var content []byte
-	if entry.IsRegularFile() {
-		var err error
-		content, err = src.ReadFileContent(entry)
+	if entry.IsRegularFile() && entry.FileSize > 0 {
+		r, err := src.ReadFileContentReader(entry)
 		if err != nil {
-			return fmt.Errorf("read file content for %q: %w", entry.Path, err)
+			return fmt.Errorf("open file content for %q: %w", entry.Path, err)
 		}
+		defer r.Close()
+		return dst.WriteEntryReader(entry, r, entry.FileSize)
 	}
-	return dst.WriteEntry(entry, content)
+	return dst.WriteEntry(entry, nil)
 }
 
 // copyDir copies a directory and all its contents to the target,

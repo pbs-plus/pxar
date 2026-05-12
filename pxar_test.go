@@ -446,9 +446,14 @@ func TestAccessorRoundTrip(t *testing.T) {
 		t.Errorf("link target = %q", link.LinkTarget)
 	}
 
-	content, err := acc.ReadFileContent(f1)
+	r, err := acc.ReadFileContentReader(f1)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r.Close()
+	content, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "content1" {
 		t.Errorf("content = %q, want %q", content, "content1")
@@ -474,9 +479,14 @@ func TestAccessorRoundTripNested(t *testing.T) {
 		t.Errorf("kind = %v", entry.Kind)
 	}
 
-	content, err := acc.ReadFileContent(entry)
+	r, err := acc.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r.Close()
+	content, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "nested" {
 		t.Errorf("content = %q", content)
@@ -521,7 +531,12 @@ func TestEncoderDecoderAccessorRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := acc.ReadFileContent(readme)
+	r, err := acc.ReadFileContentReader(readme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	data, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +548,12 @@ func TestEncoderDecoderAccessorRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err = acc.ReadFileContent(mainFile)
+	r2, err := acc.ReadFileContentReader(mainFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	data, err = io.ReadAll(r2)
 	if err != nil {
 		t.Fatal(err)
 	}

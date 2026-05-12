@@ -24,8 +24,6 @@ type ArchiveReader interface {
 	// If fn returns a non-nil error, iteration stops.
 	ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error
 
-	// ReadFileContent reads the complete content of a regular file.
-	ReadFileContent(entry *pxar.Entry) ([]byte, error)
 
 	// ReadFileContentReader returns a streaming reader for file content.
 	// The caller must close the reader. Use this for large files to avoid
@@ -76,15 +74,13 @@ func (r *FileArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOpt
 	return r.accessor.ListDirectory(dirOffset, opts, fn)
 }
 
-func (r *FileArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
-	return r.accessor.ReadFileContent(entry)
-}
+
+
+// ReadEntryAt reads a full pxar entry at the given archive byte offset.
 
 func (r *FileArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.accessor.ReadFileContentReader(entry)
 }
-
-// ReadEntryAt reads a full pxar entry at the given archive byte offset.
 func (r *FileArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	return r.accessor.ReadEntryAt(offset)
 }
@@ -176,14 +172,12 @@ func (r *ChunkedArchiveReader) ListDirectory(dirOffset int64, opts accessor.List
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
-func (r *ChunkedArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
-	return r.inner.ReadFileContent(entry)
-}
+
+
 
 func (r *ChunkedArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
 }
-
 func (r *ChunkedArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	return r.inner.ReadEntryAt(offset)
 }
@@ -328,14 +322,12 @@ func (r *SplitArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOp
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
-func (r *SplitArchiveReader) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
-	return r.inner.ReadFileContent(entry)
-}
+
+
 
 func (r *SplitArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
 }
-
 func (r *SplitArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	return r.inner.ReadEntryAt(offset)
 }

@@ -3,6 +3,7 @@ package transfer_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -113,9 +114,14 @@ func TestSplitArchivePayloadRefRoundTrip(t *testing.T) {
 			t.Errorf("%s: fileSize = %d, want %d", expected.name, entry.FileSize, expected.fileSize)
 		}
 
-		content, err := newReader.ReadFileContent(entry)
+		r, err := newReader.ReadFileContentReader(entry)
 		if err != nil {
 			t.Fatalf("ReadFileContent %s: %v", expected.name, err)
+		}
+		content, err := io.ReadAll(r)
+		r.Close()
+		if err != nil {
+			t.Fatalf("read %s: %v", expected.name, err)
 		}
 
 		// Verify content matches what the original payload had at that offset

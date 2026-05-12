@@ -500,10 +500,18 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 }
 
 func (s *Server) encodeFile(ctx context.Context, enc *encoder.Encoder, name, fullPath string, meta *pxar.Metadata) error {
-	data, err := s.client.ReadFile(ctx, fullPath, 0, -1)
+	r, size, err := s.client.OpenFile(ctx, fullPath)
 	if err != nil {
 		return err
 	}
-	_, err = enc.AddFile(meta, name, data)
-	return err
+	defer r.Close()
+	fw, err := enc.CreateFile(meta, name, size)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(fw, r); err != nil {
+		fw.Close()
+		return err
+	}
+	return fw.Close()
 }

@@ -275,9 +275,14 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /etc/hosts: %v", err)
 	}
-	hostsContent, err := mergedReader.ReadFileContent(hostsEntry)
+	r1, err := mergedReader.ReadFileContentReader(hostsEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent /etc/hosts: %v", err)
+	}
+	defer r1.Close()
+	hostsContent, err := io.ReadAll(r1)
+	if err != nil {
+		t.Fatalf("read /etc/hosts: %v", err)
 	}
 	if string(hostsContent) != "127.0.0.1 localhost" {
 		t.Errorf("/etc/hosts content = %q, want %q", string(hostsContent), "127.0.0.1 localhost")
@@ -288,9 +293,14 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /opt/app/config.yml: %v", err)
 	}
-	configContent, err := mergedReader.ReadFileContent(configEntry)
+	r2, err := mergedReader.ReadFileContentReader(configEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent /opt/app/config.yml: %v", err)
+	}
+	defer r2.Close()
+	configContent, err := io.ReadAll(r2)
+	if err != nil {
+		t.Fatalf("read /opt/app/config.yml: %v", err)
 	}
 	if string(configContent) != "key: value\n" {
 		t.Errorf("/opt/app/config.yml content = %q, want %q", string(configContent), "key: value\n")
@@ -301,9 +311,14 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /var/log/syslog: %v", err)
 	}
-	syslogContent, err := mergedReader.ReadFileContent(syslogEntry)
+	r3, err := mergedReader.ReadFileContentReader(syslogEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent /var/log/syslog: %v", err)
+	}
+	defer r3.Close()
+	syslogContent, err := io.ReadAll(r3)
+	if err != nil {
+		t.Fatalf("read /var/log/syslog: %v", err)
 	}
 	if string(syslogContent) != "system booting" {
 		t.Errorf("/var/log/syslog content = %q, want %q", string(syslogContent), "system booting")
@@ -519,9 +534,14 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /etc/hosts: %v", err)
 	}
-	hostsContent, err := mergedReader.ReadFileContent(hostsEntry)
+	r4, err := mergedReader.ReadFileContentReader(hostsEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent /etc/hosts: %v", err)
+	}
+	defer r4.Close()
+	hostsContent, err := io.ReadAll(r4)
+	if err != nil {
+		t.Fatalf("read /etc/hosts: %v", err)
 	}
 	if string(hostsContent) != "127.0.0.1 localhost" {
 		t.Errorf("/etc/hosts = %q, want %q", string(hostsContent), "127.0.0.1 localhost")
@@ -532,9 +552,14 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /opt/app/config.yml: %v", err)
 	}
-	configContent, err := mergedReader.ReadFileContent(configEntry)
+	r5, err := mergedReader.ReadFileContentReader(configEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent /opt/app/config.yml: %v", err)
+	}
+	defer r5.Close()
+	configContent, err := io.ReadAll(r5)
+	if err != nil {
+		t.Fatalf("read /opt/app/config.yml: %v", err)
 	}
 	if string(configContent) != "key: value\n" {
 		t.Errorf("/opt/app/config.yml = %q, want %q", string(configContent), "key: value\n")
@@ -668,9 +693,14 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /backup/etc/hosts: %v", err)
 	}
-	backupContent, err := remapReader.ReadFileContent(backupHosts)
+	r6, err := remapReader.ReadFileContentReader(backupHosts)
 	if err != nil {
 		t.Fatalf("ReadFileContent /backup/etc/hosts: %v", err)
+	}
+	defer r6.Close()
+	backupContent, err := io.ReadAll(r6)
+	if err != nil {
+		t.Fatalf("read /backup/etc/hosts: %v", err)
 	}
 	if string(backupContent) != "127.0.0.1 localhost" {
 		t.Errorf("/backup/etc/hosts = %q, want %q", string(backupContent), "127.0.0.1 localhost")

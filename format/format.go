@@ -78,6 +78,12 @@ type Header struct {
 // HeaderSize is the byte size of Header.
 const HeaderSize = 16
 
+// MarshalTo writes the header as 16 little-endian bytes into dst.
+func (h Header) MarshalTo(dst []byte) {
+	binary.LittleEndian.PutUint64(dst[0:], h.Type)
+	binary.LittleEndian.PutUint64(dst[8:], h.Size)
+}
+
 // NewHeader creates a Header with the given full size.
 func NewHeader(htype, fullSize uint64) Header {
 	return Header{Type: htype, Size: fullSize}
@@ -109,9 +115,9 @@ func (h Header) MaxContentSize() uint64 {
 	case PXARXAttr, PXARFCaps:
 		return MaxXAttrLen
 	case PXARACLUser, PXARACLDefaultUser:
-		return 24 // ACLUser struct size
+		return 16 // acl.User: uid(8) + permissions(8)
 	case PXARACLGroup, PXARACLDefaultGroup:
-		return 24 // ACLGroup struct size
+		return 16 // acl.Group: gid(8) + permissions(8)
 	case PXARACLDefault:
 		return 32 // ACLDefault struct size
 	case PXARACLGroupObj:
@@ -125,7 +131,7 @@ func (h Header) MaxContentSize() uint64 {
 	case PXARPayloadRef:
 		return 16 // PayloadRef struct size
 	case PXARPayloadTailMarker:
-		return 0
+		return HeaderSize // matches Rust: size_of::<Header>()
 	default:
 		return ^uint64(0) - HeaderSize
 	}
@@ -466,6 +472,7 @@ func marshalStatInto(buf []byte, s Stat) {
 	binary.LittleEndian.PutUint32(buf[20:], s.GID)
 	binary.LittleEndian.PutUint64(buf[24:], uint64(s.Mtime.Secs))
 	binary.LittleEndian.PutUint32(buf[32:], s.Mtime.Nanos)
+	binary.LittleEndian.PutUint32(buf[36:], 0) // _pad: must be zero per Rust Endian trait
 }
 
 // UnmarshalStatBytes parses a Stat from a 40-byte slice.

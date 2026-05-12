@@ -2,6 +2,7 @@ package backupproxy
 
 import (
 	"context"
+	"io"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/format"
@@ -13,13 +14,13 @@ import (
 type FileSystemAccessor interface {
 	Stat(path string) (format.Stat, error)
 	ReadDir(path string) ([]DirEntry, error)
-	ReadFile(path string, offset, length int64) ([]byte, error)
+	// OpenFile returns a reader for streaming file content. The caller must
+	// close the reader. The returned size is the total file size.
+	OpenFile(path string) (io.ReadCloser, uint64, error)
 	ReadLink(path string) (string, error)
 
 	// Extended metadata methods. Implementations that don't support these
-	// should return nil/empty values. The default implementations below
-	// return zero values, allowing partial implementations to embed
-	// NoExtendedAttrs for convenience.
+	// should return nil/empty values.
 
 	// GetXAttrs returns the extended attributes for the given path.
 	GetXAttrs(path string) ([]format.XAttr, error)
@@ -46,13 +47,24 @@ func (NoExtendedAttrs) GetFCaps(string) ([]byte, error)          { return nil, n
 type ClientProvider interface {
 	Stat(ctx context.Context, path string) (format.Stat, error)
 	ReadDir(ctx context.Context, path string) ([]DirEntry, error)
-	ReadFile(ctx context.Context, path string, offset, length int64) ([]byte, error)
+	// OpenFile returns a reader for streaming file content. The caller must
+	// close the reader. The returned size is the total file size.
+	OpenFile(ctx context.Context, path string) (io.ReadCloser, uint64, error)
 	ReadLink(ctx context.Context, path string) (string, error)
 
 	// Extended metadata methods for full archive fidelity.
 	GetXAttrs(ctx context.Context, path string) ([]format.XAttr, error)
 	GetACL(ctx context.Context, path string) (pxar.ACL, error)
 	GetFCaps(ctx context.Context, path string) ([]byte, error)
+}
+
+// FileOpener is an optional interface for streaming file reads.
+// Clients that implement this allow the server to stream file content
+// directly into the archive encoder without buffering the entire file.
+type FileOpener interface {
+	// OpenFile returns a reader for the file at the given path. The caller
+	// must close the reader. The returned size is the total file size.
+	OpenFile(ctx context.Context, path string) (io.ReadCloser, uint64, error)
 }
 
 // LocalClient implements ClientProvider by delegating to a FileSystemAccessor.
@@ -78,10 +90,9 @@ func (lc *LocalClient) ReadDir(_ context.Context, path string) ([]DirEntry, erro
 	return lc.fs.ReadDir(path)
 }
 
-// ReadFile returns file content at the given path and offset by delegating to
-// the underlying FileSystemAccessor.
-func (lc *LocalClient) ReadFile(_ context.Context, path string, offset, length int64) ([]byte, error) {
-	return lc.fs.ReadFile(path, offset, length)
+// OpenFile delegates to the underlying FileSystemAccessor.
+func (lc *LocalClient) OpenFile(_ context.Context, path string) (io.ReadCloser, uint64, error) {
+	return lc.fs.OpenFile(path)
 }
 
 // ReadLink returns the symlink target for the given path by delegating to the

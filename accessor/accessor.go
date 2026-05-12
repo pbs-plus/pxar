@@ -718,20 +718,6 @@ func (a *Accessor) findDirContentOffset(entryOffset int64) (int64, error) {
 	}
 }
 
-// ReadFileContent reads the content of a file entry from the archive.
-func (a *Accessor) ReadFileContent(entry *pxar.Entry) ([]byte, error) {
-	if !entry.IsRegularFile() {
-		return nil, fmt.Errorf("entry is not a regular file")
-	}
-
-	r, err := a.ReadFileContentReader(entry)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	return io.ReadAll(r)
-}
-
 // ReadFileContentReader returns a streaming reader for file content.
 // The caller must close the returned reader when done. This avoids
 // materializing the entire file in memory.

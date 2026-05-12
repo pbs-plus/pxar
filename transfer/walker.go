@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"fmt"
+	"io"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/accessor"
@@ -71,7 +72,7 @@ func walkTreeInternal(reader ArchiveReader, rootPath string, opts WalkOption, fn
 		}
 		var content []byte
 		if !opts.MetaOnly && root.IsRegularFile() {
-			content, err = reader.ReadFileContent(root)
+			content, err = readFileContent(reader, root)
 			if err != nil {
 				return fmt.Errorf("read file content: %w", err)
 			}
@@ -137,7 +138,7 @@ func walkDirChildren(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn 
 			}
 			var content []byte
 			if !opts.MetaOnly && child.IsRegularFile() {
-				content, err = reader.ReadFileContent(child)
+				content, err = readFileContent(reader, child)
 				if err != nil {
 					return fmt.Errorf("read file %q: %w", child.Path, err)
 				}
@@ -153,4 +154,13 @@ func walkDirChildren(reader ArchiveReader, dir *pxar.Entry, opts WalkOption, fn 
 	}
 
 	return nil
+}
+
+func readFileContent(reader ArchiveReader, entry *pxar.Entry) ([]byte, error) {
+	r, err := reader.ReadFileContentReader(entry)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
 }

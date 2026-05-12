@@ -3,6 +3,7 @@ package transfer_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,7 +94,12 @@ func TestSplitArchiveCopyRoundTrip(t *testing.T) {
 			err := srcReader.ListDirectory(int64(entry.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
 				t.Logf("  Child: %s kind=%v size=%d", child.Path, child.Kind, child.FileSize)
 				if child.IsRegularFile() {
-					content, err := srcReader.ReadFileContent(child)
+					r, err := srcReader.ReadFileContentReader(child)
+					if err != nil {
+						return err
+					}
+					content, err := io.ReadAll(r)
+					r.Close()
 					if err != nil {
 						return err
 					}
@@ -113,7 +119,12 @@ func TestSplitArchiveCopyRoundTrip(t *testing.T) {
 		}
 
 		if entry.IsRegularFile() {
-			content, err := srcReader.ReadFileContent(entry)
+			r2, err := srcReader.ReadFileContentReader(entry)
+			if err != nil {
+				return err
+			}
+			content, err := io.ReadAll(r2)
+			r2.Close()
 			if err != nil {
 				return err
 			}
@@ -165,9 +176,14 @@ func TestSplitArchiveCopyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /file1.txt: %v", err)
 	}
-	c1, err := reader.ReadFileContent(e1)
+	c1R, err := reader.ReadFileContentReader(e1)
 	if err != nil {
 		t.Fatalf("ReadFileContent file1: %v", err)
+	}
+	defer c1R.Close()
+	c1, err := io.ReadAll(c1R)
+	if err != nil {
+		t.Fatalf("read file1: %v", err)
 	}
 	if string(c1) != string(fileContent1) {
 		t.Errorf("file1 content = %q, want %q", string(c1), string(fileContent1))
@@ -177,9 +193,14 @@ func TestSplitArchiveCopyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup /subdir/nested.txt: %v", err)
 	}
-	c2, err := reader.ReadFileContent(e2)
+	c2R, err := reader.ReadFileContentReader(e2)
 	if err != nil {
 		t.Fatalf("ReadFileContent nested: %v", err)
+	}
+	defer c2R.Close()
+	c2, err := io.ReadAll(c2R)
+	if err != nil {
+		t.Fatalf("read nested: %v", err)
 	}
 	if string(c2) != string(nestedContent) {
 		t.Errorf("nested content = %q, want %q", string(c2), string(nestedContent))

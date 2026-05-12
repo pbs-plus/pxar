@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/format"
@@ -549,10 +550,40 @@ func (d *Decoder) readHeader() (format.Header, error) {
 	return h, nil
 }
 
+// decoderBufPool provides reusable buffers for readContent, avoiding
+// per-entry allocations during sequential archive parsing.
+var decoderBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 4096)
+		return &buf
+	},
+}
+
 func (d *Decoder) readContent() ([]byte, error) {
 	size := d.header.ContentSize()
 	if size == 0 {
 		return nil, nil
+	}
+	// Use pool for small allocations (<64KB). Large payloads go to heap.
+	if size <= 65536 {
+		bp := decoderBufPool.Get().(*[]byte)
+		buf := *bp
+		if cap(buf) < int(size) {
+			buf = make([]byte, size)
+		} else {
+			buf = buf[:size]
+		}
+		_, err := io.ReadFull(d.input, buf)
+		if err != nil {
+			decoderBufPool.Put(bp)
+			return nil, fmt.Errorf("reading content: %w", err)
+		}
+		// Copy out: caller may retain the slice; we return the pool buf.
+		data := make([]byte, size)
+		copy(data, buf)
+		*bp = buf[:0]
+		decoderBufPool.Put(bp)
+		return data, nil
 	}
 	data := make([]byte, size)
 	_, err := io.ReadFull(d.input, data)

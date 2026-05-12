@@ -219,26 +219,16 @@ func (fs *osFS) ReadDir(path string) ([]backupproxy.DirEntry, error) {
 	return result, nil
 }
 
-func (fs *osFS) ReadFile(path string, offset, length int64) ([]byte, error) {
+func (fs *osFS) OpenFile(path string) (io.ReadCloser, uint64, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	defer f.Close()
-	if offset > 0 {
-		if _, err := f.Seek(offset, 0); err != nil {
-			return nil, err
-		}
-	}
-	if length < 0 {
-		return io.ReadAll(f)
-	}
-	buf := make([]byte, length)
-	n, err := f.Read(buf)
-	if err != nil {
-		return nil, err
-	}
-	return buf[:n], nil
+	return f, uint64(fi.Size()), nil
 }
 
 func (fs *osFS) ReadLink(path string) (string, error) {
@@ -574,18 +564,25 @@ func runExtract() error {
 		return fmt.Errorf("%q is not a regular file (kind: %v)", filePath, entry.Kind)
 	}
 
-	content, err := reader.ReadFileContent(entry)
+	r, err := reader.ReadFileContentReader(entry)
 	if err != nil {
-		return fmt.Errorf("read file content: %w", err)
+		return fmt.Errorf("open file content: %w", err)
 	}
+	defer r.Close()
 
 	if *output != "" {
-		if err := os.WriteFile(*output, content, 0o644); err != nil {
+		f, err := os.Create(*output)
+		if err != nil {
+			return fmt.Errorf("create output: %w", err)
+		}
+		defer f.Close()
+		if _, err := io.Copy(f, r); err != nil {
 			return fmt.Errorf("write output: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "Extracted %d bytes to %s\n", len(content), *output)
 	} else {
-		os.Stdout.Write(content)
+		if _, err := io.Copy(os.Stdout, r); err != nil {
+			return fmt.Errorf("write stdout: %w", err)
+		}
 	}
 	return nil
 }

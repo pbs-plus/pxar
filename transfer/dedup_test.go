@@ -3,6 +3,7 @@ package transfer_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"io"
 	"testing"
 
 	pxar "github.com/pbs-plus/pxar"
@@ -237,11 +238,21 @@ func TestChunkedReadSeekerMatchesEager(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	content1, err := eagerReader.ReadFileContent(entry1)
+	r1, err := eagerReader.ReadFileContentReader(entry1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	content2, err := lazyReader.ReadFileContent(entry2)
+	defer r1.Close()
+	content1, err := io.ReadAll(r1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := lazyReader.ReadFileContentReader(entry2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	content2, err := io.ReadAll(r2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,11 +294,21 @@ func TestSplitArchiveReaderLazyMatchesEager(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eagerContent, err := eagerReader.ReadFileContent(eagerEntry)
+	r3, err := eagerReader.ReadFileContentReader(eagerEntry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lazyContent, err := lazyReader.ReadFileContent(lazyEntry)
+	defer r3.Close()
+	eagerContent, err := io.ReadAll(r3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r4, err := lazyReader.ReadFileContentReader(lazyEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r4.Close()
+	lazyContent, err := io.ReadAll(r4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,9 +373,14 @@ func TestDedupSplitArchiveWriterRoundTrip(t *testing.T) {
 		t.Fatalf("Lookup: %v", err)
 	}
 
-	content, err := newReader.ReadFileContent(newEntry)
+	r5, err := newReader.ReadFileContentReader(newEntry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer r5.Close()
+	content, err := io.ReadAll(r5)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(content) != "original content" {
 		t.Errorf("content = %q, want %q", content, "original content")
@@ -500,7 +526,12 @@ func TestComputeContentDigestCorrectness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content, err := reader.ReadFileContent(entry)
+	r6, err := reader.ReadFileContentReader(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r6.Close()
+	content, err := io.ReadAll(r6)
 	if err != nil {
 		t.Fatal(err)
 	}

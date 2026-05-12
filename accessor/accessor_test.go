@@ -2,6 +2,7 @@ package accessor
 
 import (
 	"bytes"
+	"io"
 	"testing"
 	"time"
 
@@ -108,9 +109,14 @@ func TestAccessorReadFileContent(t *testing.T) {
 		t.Fatalf("Lookup: %v", err)
 	}
 
-	data, err := acc.ReadFileContent(entry)
+	rc, err := acc.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(data) != string(content) {
 		t.Errorf("content = %q, want %q", data, content)
@@ -209,9 +215,14 @@ func TestAccessorReadNestedFileContent(t *testing.T) {
 		t.Fatalf("Lookup: %v", err)
 	}
 
-	data, err := acc.ReadFileContent(entry)
+	rc2, err := acc.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer rc2.Close()
+	data, err := io.ReadAll(rc2)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(data) != string(content) {
 		t.Errorf("content = %q, want %q", data, content)
@@ -345,8 +356,9 @@ func TestAccessorRootIsNotRegularFile(t *testing.T) {
 		t.Fatalf("ReadRoot: %v", err)
 	}
 
-	_, err = acc.ReadFileContent(root)
+	r, err := acc.ReadFileContentReader(root)
 	if err == nil {
+		r.Close()
 		t.Error("expected error when reading directory content")
 	}
 }
@@ -406,9 +418,14 @@ func TestAccessorV2Archive(t *testing.T) {
 	}
 
 	// Test reading file content from payload stream
-	data, err := acc.ReadFileContent(entry)
+	dataR, err := acc.ReadFileContentReader(entry)
 	if err != nil {
 		t.Fatalf("ReadFileContent: %v", err)
+	}
+	defer dataR.Close()
+	data, err := io.ReadAll(dataR)
+	if err != nil {
+		t.Fatalf("read content: %v", err)
 	}
 	if string(data) != string(content) {
 		t.Errorf("content = %q, want %q", data, content)
@@ -432,8 +449,9 @@ func TestAccessorV2ArchiveWithoutPayloadReader(t *testing.T) {
 	}
 
 	// Reading content should fail because payload reader is not provided
-	_, err = acc.ReadFileContent(entry)
+	r, err := acc.ReadFileContentReader(entry)
 	if err == nil {
+		r.Close()
 		t.Error("ReadFileContent should fail without payload reader for split archives")
 	}
 }

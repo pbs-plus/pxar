@@ -19,14 +19,16 @@ import (
 
 // pbsH2Conn is a raw HTTP/2 client for the PBS backup protocol.
 type pbsH2Conn struct {
-	conn         net.Conn
-	framer       *http2.Framer
-	enc          *hpack.Encoder
-	dec          *hpack.Decoder
-	hdrBuf       *bytes.Buffer
-	authority    string
-	nextID       uint32
-	maxFrameSize uint32
+	conn              net.Conn
+	framer            *http2.Framer
+	enc               *hpack.Encoder
+	dec               *hpack.Decoder
+	hdrBuf            *bytes.Buffer
+	authority         string
+	nextID            uint32
+	maxFrameSize      uint32
+	connWindow        uint32
+	connInitialWindow uint32
 }
 
 // dialPBSH2 establishes an H2 connection to PBS via HTTP/1.1 upgrade.
@@ -157,14 +159,16 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 	hdrBuf := new(bytes.Buffer)
 	dec := hpack.NewDecoder(4096, nil)
 	return &pbsH2Conn{
-		conn:         conn,
-		framer:       framer,
-		enc:          hpack.NewEncoder(hdrBuf),
-		dec:          dec,
-		hdrBuf:       hdrBuf,
-		authority:    u.Host,
-		nextID:       1,
-		maxFrameSize: maxFrame,
+		conn:              conn,
+		framer:            framer,
+		enc:               hpack.NewEncoder(hdrBuf),
+		dec:               dec,
+		hdrBuf:            hdrBuf,
+		authority:         u.Host,
+		nextID:            1,
+		maxFrameSize:      maxFrame,
+		connWindow:        uint32(targetWindow),
+		connInitialWindow: uint32(targetWindow),
 	}, nil
 }
 
@@ -247,6 +251,8 @@ func (c *pbsH2Conn) decodeStatus(buf *bytes.Buffer) int {
 }
 
 // readResponse reads H2 frames until the response for streamID is complete.
+// Manages connection-level HTTP/2 flow control by sending WINDOW_UPDATE frames
+// when the receive window drops below half, preventing deadlocks on large responses.
 func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 	var (
 		status      int
@@ -255,6 +261,11 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 		hdrBuf      bytes.Buffer
 		otherHdrBuf bytes.Buffer // To keep HPACK state for other streams
 	)
+
+	const initialStreamWindow = 65535
+	streamWin := int32(initialStreamWindow)
+	streamThreshold := int32(initialStreamWindow / 2)
+	connThreshold := int32(c.connInitialWindow / 2)
 
 	for !gotEnd {
 		frame, err := c.framer.ReadFrame()
@@ -296,9 +307,30 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 			}
 
 		case *http2.DataFrame:
+			dataLen := int32(len(f.Data()))
+
+			// Connection-level flow control
+			c.connWindow -= uint32(dataLen)
+			if c.connWindow < uint32(connThreshold) {
+				incr := c.connInitialWindow - c.connWindow
+				if incr > 0 {
+					_ = c.framer.WriteWindowUpdate(0, incr)
+					c.connWindow += incr
+				}
+			}
+
 			if f.StreamID != streamID {
 				continue
 			}
+
+			// Stream-level flow control
+			streamWin -= dataLen
+			if streamWin < streamThreshold {
+				incr := uint32(initialStreamWindow - streamWin)
+				_ = c.framer.WriteWindowUpdate(streamID, incr)
+				streamWin += int32(incr)
+			}
+
 			dataBuf.Write(f.Data())
 			if f.StreamEnded() {
 				gotEnd = true

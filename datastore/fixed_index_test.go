@@ -34,7 +34,7 @@ func TestFixedIndexWriteReadRoundTrip(t *testing.T) {
 		t.Error("missing fixed index magic")
 	}
 
-	r, err := ReadFixedIndex(raw)
+	r, err := ParseFixedIndex(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestFixedIndexChunkFromOffset(t *testing.T) {
 
 	w := mustFixedWriter(t, 1700000000, size, chunkSize)
 	raw, _ := w.Finish()
-	r, _ := ReadFixedIndex(raw)
+	r, _ := ParseFixedIndex(raw)
 
 	tests := []struct {
 		offset  uint64
@@ -94,7 +94,7 @@ func TestFixedIndexChunkInfo(t *testing.T) {
 		w.Set(i, sha256.Sum256([]byte{byte(i)}))
 	}
 	raw, _ := w.Finish()
-	r, _ := ReadFixedIndex(raw)
+	r, _ := ParseFixedIndex(raw)
 
 	info, ok := r.ChunkInfo(0)
 	if !ok {
@@ -116,7 +116,7 @@ func TestFixedIndexChunkInfo(t *testing.T) {
 func TestFixedIndexPartialLastChunk(t *testing.T) {
 	w := mustFixedWriter(t, 1700000000, 100, 64)
 	raw, _ := w.Finish()
-	r, _ := ReadFixedIndex(raw)
+	r, _ := ParseFixedIndex(raw)
 
 	if r.Count() != 2 {
 		t.Errorf("count = %d, want 2", r.Count())
@@ -135,7 +135,7 @@ func TestFixedIndexCTime(t *testing.T) {
 	ctime := int64(1700000000)
 	w := mustFixedWriter(t, ctime, 1024, 512)
 	raw, _ := w.Finish()
-	r, _ := ReadFixedIndex(raw)
+	r, _ := ParseFixedIndex(raw)
 
 	if r.CTime() != ctime {
 		t.Errorf("ctime = %d, want %d", r.CTime(), ctime)
@@ -150,14 +150,14 @@ func TestFixedIndexInvalidChunkSize(t *testing.T) {
 }
 
 func TestFixedIndexInvalidData(t *testing.T) {
-	_, err := ReadFixedIndex([]byte{1, 2, 3})
+	_, err := ParseFixedIndex([]byte{1, 2, 3})
 	if err == nil {
 		t.Error("expected error for too-short data")
 	}
 
 	buf := make([]byte, IndexHeaderSize)
 	copy(buf[0:8], MagicDynamicChunkIndex[:])
-	_, err = ReadFixedIndex(buf)
+	_, err = ParseFixedIndex(buf)
 	if err == nil {
 		t.Error("expected error for wrong magic")
 	}
@@ -178,7 +178,7 @@ func TestFixedIndexComputeCsum(t *testing.T) {
 	d := sha256.Sum256([]byte("test"))
 	w.Set(0, d)
 	raw, _ := w.Finish()
-	r, _ := ReadFixedIndex(raw)
+	r, _ := ParseFixedIndex(raw)
 
 	csum, sz := r.ComputeCsum()
 	if sz != 64 {

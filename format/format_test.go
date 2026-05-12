@@ -78,7 +78,7 @@ func TestStatxTimestampSize(t *testing.T) {
 }
 
 func TestStatxTimestampFromDuration(t *testing.T) {
-	ts := StatxTimestampFromDurationSinceEpoch(1430487000*time.Second + 1*time.Millisecond)
+	ts := NewStatxTimestampFromDuration(1430487000*time.Second + 1*time.Millisecond)
 	if ts.Secs != 1430487000 {
 		t.Errorf("Secs = %d, want 1430487000", ts.Secs)
 	}
@@ -89,7 +89,7 @@ func TestStatxTimestampFromDuration(t *testing.T) {
 
 func TestStatxTimestampRoundTrip(t *testing.T) {
 	d := 1430487000*time.Second + 1_000_000*time.Nanosecond
-	ts := StatxTimestampFromDurationSinceEpoch(d)
+	ts := NewStatxTimestampFromDuration(d)
 	got := ts.Duration()
 	if got != d {
 		t.Errorf("round-trip: got %v, want %v", got, d)

@@ -46,7 +46,7 @@
 //	indexData, err := writer.Finish()
 //
 //	// Read back
-//	reader, err := datastore.ReadDynamicIndex(indexData)
+//	reader, err := datastore.ParseDynamicIndex(indexData)
 //	count := reader.Count()
 //	info, ok := reader.ChunkInfo(0)
 //

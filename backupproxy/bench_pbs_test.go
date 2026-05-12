@@ -34,14 +34,14 @@ func pbsConfigFromBench(tb testing.TB) PBSConfig {
 	}
 }
 
-func newBenchStore(tb testing.TB) *PBSRemoteStore {
+func newBenchStore(tb testing.TB) *PBSStore {
 	tb.Helper()
 	cfg := pbsConfigFromBench(tb)
 	chunkCfg, err := buzhash.NewConfig(4096)
 	if err != nil {
 		tb.Fatalf("create chunk config: %v", err)
 	}
-	return NewPBSRemoteStore(cfg, chunkCfg, false)
+	return NewPBSStore(cfg, chunkCfg, false)
 }
 
 func cleanupBenchSnapshot(tb testing.TB, cfg PBSConfig, bc BackupConfig) {

@@ -17,7 +17,7 @@ func TestChunkedReadSeekerReadAtConcurrent(t *testing.T) {
 	})
 	source := datastore.NewChunkStoreSource(store)
 
-	idx, err := datastore.ReadDynamicIndex(idxData)
+	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestChunkedReadSeekerReadAtSeekIndependent(t *testing.T) {
 	})
 	source := datastore.NewChunkStoreSource(store)
 
-	idx, err := datastore.ReadDynamicIndex(idxData)
+	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		t.Fatal(err)
 	}

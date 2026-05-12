@@ -108,7 +108,7 @@ func newTestPBSSession(t *testing.T) (*pbsSession, *mockPBSProtocol) {
 	}
 	mock := newMockPBSProtocol()
 	return &pbsSession{
-		store:    &PBSRemoteStore{chunkCfg: cfg},
+		store:    &PBSStore{chunkCfg: cfg},
 		proto:    mock,
 		config:   BackupConfig{BackupType: datastore.BackupHost, BackupID: "test"},
 		compress: false,

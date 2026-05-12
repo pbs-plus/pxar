@@ -15,8 +15,8 @@ type FixedIndexReader struct {
 	chunkSize uint64
 }
 
-// ReadFixedIndex parses a fixed index from raw bytes.
-func ReadFixedIndex(data []byte) (*FixedIndexReader, error) {
+// ParseFixedIndex parses a fixed index from raw bytes.
+func ParseFixedIndex(data []byte) (*FixedIndexReader, error) {
 	if len(data) < IndexHeaderSize {
 		return nil, fmt.Errorf("fixed index: need at least %d bytes, got %d", IndexHeaderSize, len(data))
 	}

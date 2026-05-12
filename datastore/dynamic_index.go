@@ -19,8 +19,8 @@ type DynamicIndexReader struct {
 	header  DynamicIndexHeader
 }
 
-// ReadDynamicIndex parses a dynamic index from raw bytes.
-func ReadDynamicIndex(data []byte) (*DynamicIndexReader, error) {
+// ParseDynamicIndex parses a dynamic index from raw bytes.
+func ParseDynamicIndex(data []byte) (*DynamicIndexReader, error) {
 	if len(data) < IndexHeaderSize {
 		return nil, fmt.Errorf("dynamic index: need at least %d bytes, got %d", IndexHeaderSize, len(data))
 	}

@@ -26,9 +26,9 @@ type PathMapping struct {
 // Return nil to continue, or an error to stop.
 type WalkFunc func(entry *pxar.Entry, content []byte) error
 
-// MetaWalkFunc is called for each entry during a metadata-only walk.
+// MetadataWalkFunc is called for each entry during a metadata-only walk.
 // Unlike WalkFunc, no content parameter is provided since content is never read.
-type MetaWalkFunc func(entry *pxar.Entry) error
+type MetadataWalkFunc func(entry *pxar.Entry) error
 
 // WalkFilter is a bitmask that controls which entry types are visited during
 // a walk. Entries whose type is not in the mask are skipped entirely — the
@@ -97,5 +97,5 @@ type WalkOption struct {
 	SkipCount int
 }
 
-// WalkMetaOnly is a convenience WalkOption for metadata-only walks.
-var WalkMetaOnly = WalkOption{MetaOnly: true}
+// WalkMetadataOnly is a convenience WalkOption for metadata-only walks.
+var WalkMetadataOnly = WalkOption{MetaOnly: true}

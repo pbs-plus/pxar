@@ -75,7 +75,7 @@ func TestLocalStoreUploadArchive(t *testing.T) {
 	}
 
 	// Verify it's a valid dynamic index
-	reader, err := datastore.ReadDynamicIndex(raw)
+	reader, err := datastore.ParseDynamicIndex(raw)
 	if err != nil {
 		t.Fatalf("read dynamic index: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestLocalStoreRoundTrip(t *testing.T) {
 	// Read back index
 	indexPath := filepath.Join(dir, result.Filename)
 	raw, _ := os.ReadFile(indexPath)
-	reader, _ := datastore.ReadDynamicIndex(raw)
+	reader, _ := datastore.ParseDynamicIndex(raw)
 
 	// Load and verify each chunk
 	chunkStore, _ := datastore.NewChunkStore(dir)
@@ -221,7 +221,7 @@ func TestLocalStoreDeduplication(t *testing.T) {
 	// Count chunks from first upload
 	indexPath := filepath.Join(ls.baseDir, "root.pxar.didx")
 	raw1, _ := os.ReadFile(indexPath)
-	reader1, _ := datastore.ReadDynamicIndex(raw1)
+	reader1, _ := datastore.ParseDynamicIndex(raw1)
 	chunkCount := reader1.Count()
 
 	// Second upload with same data
@@ -234,7 +234,7 @@ func TestLocalStoreDeduplication(t *testing.T) {
 	// Verify same number of chunks
 	indexPath2 := filepath.Join(ls.baseDir, "root2.pxar.didx")
 	raw2, _ := os.ReadFile(indexPath2)
-	reader2, _ := datastore.ReadDynamicIndex(raw2)
+	reader2, _ := datastore.ParseDynamicIndex(raw2)
 
 	if reader2.Count() != chunkCount {
 		t.Errorf("second upload: %d chunks, want %d", reader2.Count(), chunkCount)
@@ -319,11 +319,11 @@ func TestLocalStoreUploadSplitArchive(t *testing.T) {
 		t.Fatalf("payload index not found: %v", err)
 	}
 
-	metaIdx, err := datastore.ReadDynamicIndex(metaRaw)
+	metaIdx, err := datastore.ParseDynamicIndex(metaRaw)
 	if err != nil {
 		t.Fatalf("read metadata didx: %v", err)
 	}
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadRaw)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadRaw)
 	if err != nil {
 		t.Fatalf("read payload didx: %v", err)
 	}

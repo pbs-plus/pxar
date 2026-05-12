@@ -14,7 +14,7 @@ import (
 func TestBuildDirIndexEmpty(t *testing.T) {
 	idx := NewDynamicIndexWriter(0)
 	idxData, _ := idx.Finish()
-	reader, _ := ReadDynamicIndex(idxData)
+	reader, _ := ParseDynamicIndex(idxData)
 
 	result, err := BuildDirIndex(reader, nil, CatalogOptions{})
 	if err != nil {

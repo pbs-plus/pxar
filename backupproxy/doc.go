@@ -47,7 +47,7 @@
 //
 //	// Download index
 //	didxData, _ := reader.DownloadFile("root.pxar.didx")
-//	idx, _ := datastore.ReadDynamicIndex(didxData)
+//	idx, _ := datastore.ParseDynamicIndex(didxData)
 //
 //	// Restore entire file
 //	var buf bytes.Buffer

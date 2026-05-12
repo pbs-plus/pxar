@@ -52,7 +52,7 @@ func NewRemoteDedupSplitArchiveWriter(
 	}
 
 	if len(origPayloadIndex) > 0 {
-		idx, err := datastore.ReadDynamicIndex(origPayloadIndex)
+		idx, err := datastore.ParseDynamicIndex(origPayloadIndex)
 		if err != nil {
 			return nil, fmt.Errorf("read original payload index: %w", err)
 		}

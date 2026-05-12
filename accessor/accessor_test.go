@@ -453,7 +453,7 @@ func encodeSimpleArchive(t *testing.T, name string, content []byte) []byte {
 }
 
 func dirMetadata(mode uint64) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * time.Second)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  format.ModeIFDIR | mode,
@@ -463,7 +463,7 @@ func dirMetadata(mode uint64) *pxar.Metadata {
 }
 
 func fileMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * time.Second)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  format.ModeIFREG | mode,
@@ -475,7 +475,7 @@ func fileMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
 }
 
 func symlinkMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * time.Second)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  format.ModeIFLNK | mode,
@@ -487,7 +487,7 @@ func symlinkMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
 }
 
 func deviceMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * time.Second)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  mode,
@@ -499,7 +499,7 @@ func deviceMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
 }
 
 func fifoMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * time.Second)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  format.ModeIFIFO | mode,
@@ -511,7 +511,7 @@ func fifoMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
 }
 
 func socketMetadata(mode uint64, uid, gid uint32) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * time.Second)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  format.ModeIFSOCK | mode,

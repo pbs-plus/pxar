@@ -125,7 +125,7 @@ type ChunkedArchiveReader struct {
 // stream into memory — only chunks needed for Lookups and ReadFileContent
 // calls are loaded.
 func NewChunkedArchiveReader(idxData []byte, source datastore.ChunkSource) (*ChunkedArchiveReader, error) {
-	idx, err := datastore.ReadDynamicIndex(idxData)
+	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		return nil, fmt.Errorf("read dynamic index: %w", err)
 	}
@@ -144,7 +144,7 @@ func NewChunkedArchiveReader(idxData []byte, source datastore.ChunkSource) (*Chu
 // stream into memory upfront. Use this for small archives or when you need
 // guaranteed sequential access performance.
 func NewChunkedArchiveReaderEager(idxData []byte, source datastore.ChunkSource) (*ChunkedArchiveReader, error) {
-	idx, err := datastore.ReadDynamicIndex(idxData)
+	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		return nil, fmt.Errorf("read dynamic index: %w", err)
 	}
@@ -233,12 +233,12 @@ type SplitArchiveReader struct {
 // ReadFileContent calls are loaded, which is critical for same-datastore
 // PBS transfers where downloading the entire payload stream is expensive.
 func NewSplitArchiveReader(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
-	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
+	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read metadata index: %w", err)
 	}
 
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read payload index: %w", err)
 	}
@@ -262,7 +262,7 @@ func NewSplitArchiveReader(metaIdxData, payloadIdxData []byte, source datastore.
 // fetched. ReadFileContent/ReadFileContentReader will return errors for files
 // stored in the payload stream (PayloadOffset > 0).
 func NewSplitArchiveReaderMetaOnly(metaIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
-	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
+	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read metadata index: %w", err)
 	}
@@ -281,12 +281,12 @@ func NewSplitArchiveReaderMetaOnly(metaIdxData []byte, source datastore.ChunkSou
 // into memory upfront. Use for small archives or when you need guaranteed
 // sequential access performance.
 func NewSplitArchiveReaderEager(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
-	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
+	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read metadata index: %w", err)
 	}
 
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read payload index: %w", err)
 	}

@@ -49,7 +49,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 	chunkCfg, _ := buzhash.NewConfig(4096)
 
 	// --- Phase 1: Create first snapshot (snap1) with /etc/hosts and /var/log/syslog ---
-	store1 := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store1 := backupproxy.NewPBSStore(pbsCfg, chunkCfg, false)
 	snap1Cfg := backupproxy.BackupConfig{
 		BackupType: datastore.BackupHost,
 		BackupID:   fmt.Sprintf("transfer-test-%d", time.Now().UnixMilli()),
@@ -128,7 +128,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 		BackupTime: snap2Time,
 	}
 
-	store2 := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store2 := backupproxy.NewPBSStore(pbsCfg, chunkCfg, false)
 	sess2, err := store2.StartSession(ctx, snap2Cfg)
 	if err != nil {
 		t.Fatalf("StartSession snap2: %v", err)
@@ -220,7 +220,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 		BackupTime: mergedTime,
 	}
 
-	store3 := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store3 := backupproxy.NewPBSStore(pbsCfg, chunkCfg, false)
 	sess3, err := store3.StartSession(ctx, mergedCfg)
 	if err != nil {
 		t.Fatalf("StartSession merged: %v", err)
@@ -320,7 +320,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	chunkCfg, _ := buzhash.NewConfig(4096)
 
 	// --- Phase 1: Create snap1 with /etc/hosts and /etc/resolv.conf ---
-	store1 := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store1 := backupproxy.NewPBSStore(pbsCfg, chunkCfg, false)
 	snap1Cfg := backupproxy.BackupConfig{
 		BackupType: datastore.BackupHost,
 		BackupID:   fmt.Sprintf("sel-test-%d", time.Now().UnixMilli()),
@@ -380,7 +380,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 		BackupTime: snap2Time,
 	}
 
-	store2 := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store2 := backupproxy.NewPBSStore(pbsCfg, chunkCfg, false)
 	sess2, err := store2.StartSession(ctx, snap2Cfg)
 	if err != nil {
 		t.Fatalf("StartSession snap2: %v", err)
@@ -468,7 +468,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 		BackupTime: mergedTime,
 	}
 
-	store3 := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store3 := backupproxy.NewPBSStore(pbsCfg, chunkCfg, false)
 	sess3, err := store3.StartSession(ctx, mergedCfg)
 	if err != nil {
 		t.Fatalf("StartSession merged: %v", err)
@@ -553,7 +553,7 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	chunkCfg, _ := buzhash.NewConfig(4096)
 
 	// Create a snapshot with /etc/hosts
-	store := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store := backupproxy.NewPBSStore(pbsCfg, chunkCfg, false)
 	srcCfg := backupproxy.BackupConfig{
 		BackupType: datastore.BackupHost,
 		BackupID:   fmt.Sprintf("remap-test-%d", time.Now().UnixMilli()),
@@ -625,7 +625,7 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 		BackupTime: srcCfg.BackupTime + 1,
 	}
 
-	store2 := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store2 := backupproxy.NewPBSStore(pbsCfg, chunkCfg, false)
 	sess2, err := store2.StartSession(ctx, remapCfg)
 	if err != nil {
 		t.Fatalf("StartSession remap: %v", err)

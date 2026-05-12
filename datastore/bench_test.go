@@ -225,7 +225,7 @@ func BenchmarkDynamicIndexReadAndComputeCsum(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		r, err := ReadDynamicIndex(raw)
+		r, err := ParseDynamicIndex(raw)
 		if err != nil {
 			b.Fatal(err)
 		}

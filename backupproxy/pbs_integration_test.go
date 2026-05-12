@@ -47,8 +47,8 @@ func pbsConfigFromEnv(t *testing.T) PBSConfig {
 	}
 }
 
-// newIntegrationStore creates a PBSRemoteStore from environment configuration.
-func newIntegrationStore(t *testing.T) *PBSRemoteStore {
+// newIntegrationStore creates a PBSStore from environment configuration.
+func newIntegrationStore(t *testing.T) *PBSStore {
 	t.Helper()
 
 	cfg := pbsConfigFromEnv(t)
@@ -56,7 +56,7 @@ func newIntegrationStore(t *testing.T) *PBSRemoteStore {
 	if err != nil {
 		t.Fatalf("create chunk config: %v", err)
 	}
-	return NewPBSRemoteStore(cfg, chunkCfg, false)
+	return NewPBSStore(cfg, chunkCfg, false)
 }
 
 // pbsHTTPClient returns an HTTP client with TLS verification disabled
@@ -471,7 +471,7 @@ func TestIntegration_IndexReconstructionRoundTrip(t *testing.T) {
 
 	// Download the .didx file from PBS
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	reader, err := datastore.ReadDynamicIndex(didxData)
+	reader, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -519,7 +519,7 @@ func TestIntegration_CompressedBlobRoundTrip(t *testing.T) {
 		t.Fatalf("create chunk config: %v", err)
 	}
 	// Use compression
-	store := NewPBSRemoteStore(pbsCfg, chunkCfg, true)
+	store := NewPBSStore(pbsCfg, chunkCfg, true)
 	cfg := defaultBackupConfig(t)
 	cleanupSnapshot(t, pbsCfg, cfg)
 
@@ -558,7 +558,7 @@ func TestIntegration_CompressedBlobRoundTrip(t *testing.T) {
 
 	// Download .didx and verify index reconstruction with compressed chunks
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	reader, err := datastore.ReadDynamicIndex(didxData)
+	reader, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -605,7 +605,7 @@ func TestIntegration_SmallInput(t *testing.T) {
 
 	// Download index and verify
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	reader, err := datastore.ReadDynamicIndex(didxData)
+	reader, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -786,7 +786,7 @@ func TestIntegration_ChunkOffsetOrdering(t *testing.T) {
 
 	// Download and verify offset ordering
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	reader, err := datastore.ReadDynamicIndex(didxData)
+	reader, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -844,7 +844,7 @@ func TestIntegration_LargeDataRoundTrip(t *testing.T) {
 
 	// Download and parse .didx
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	reader, err := datastore.ReadDynamicIndex(didxData)
+	reader, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -905,7 +905,7 @@ func TestIntegration_PBSChecksumParity(t *testing.T) {
 
 	// Download PBS-stored index
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	reader, err := datastore.ReadDynamicIndex(didxData)
+	reader, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -1013,7 +1013,7 @@ func TestIntegration_MultipleArchivesPerSession(t *testing.T) {
 	// Verify each archive via download and reconstruction
 	for _, a := range archives {
 		didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, a.name)
-		reader, err := datastore.ReadDynamicIndex(didxData)
+		reader, err := datastore.ParseDynamicIndex(didxData)
 		if err != nil {
 			t.Fatalf("parse didx %s: %v", a.name, err)
 		}
@@ -1072,7 +1072,7 @@ func TestIntegration_ProtocolErrors(t *testing.T) {
 		t.Fatalf("create chunk config: %v", err)
 	}
 
-	badStore := NewPBSRemoteStore(PBSConfig{
+	badStore := NewPBSStore(PBSConfig{
 		BaseURL:       pbsCfg.BaseURL,
 		Datastore:     pbsCfg.Datastore,
 		AuthToken:     "invalid-token-id:invalid-secret",
@@ -1127,7 +1127,7 @@ func TestIntegration_ChunkedDidxUploadDownload(t *testing.T) {
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
 
 	// Parse the downloaded didx
-	idx, err := datastore.ReadDynamicIndex(didxData)
+	idx, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse downloaded didx: %v", err)
 	}
@@ -1223,7 +1223,7 @@ func TestIntegration_ChunkedDidxRestoreFile(t *testing.T) {
 		t.Fatalf("DownloadFile didx: %v", err)
 	}
 
-	idx, err := datastore.ReadDynamicIndex(didxData)
+	idx, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -1320,7 +1320,7 @@ func TestIntegration_ChunkedDidxRestoreRange(t *testing.T) {
 
 	// Download didx via HTTP API
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	idx, err := datastore.ReadDynamicIndex(didxData)
+	idx, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -1375,7 +1375,7 @@ func TestIntegration_ChunkedDidxWithCompression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create chunk config: %v", err)
 	}
-	store := NewPBSRemoteStore(pbsCfg, chunkCfg, true)
+	store := NewPBSStore(pbsCfg, chunkCfg, true)
 
 	cfg := defaultBackupConfig(t)
 	cleanupSnapshot(t, pbsCfg, cfg)
@@ -1400,7 +1400,7 @@ func TestIntegration_ChunkedDidxWithCompression(t *testing.T) {
 
 	// Download didx and verify chunk metadata
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	idx, err := datastore.ReadDynamicIndex(didxData)
+	idx, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -1501,7 +1501,7 @@ func TestIntegration_ChunkedDidxMultipleFiles(t *testing.T) {
 			// Download didx via HTTP API
 			didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, a.name)
 
-			idx, err := datastore.ReadDynamicIndex(didxData)
+			idx, err := datastore.ParseDynamicIndex(didxData)
 			if err != nil {
 				t.Fatalf("parse didx %s: %v", a.name, err)
 			}
@@ -1570,7 +1570,7 @@ func TestIntegration_ChunkedDidxChunkCountAndSize(t *testing.T) {
 	// Download didx via HTTP API
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
 
-	idx, err := datastore.ReadDynamicIndex(didxData)
+	idx, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -1855,11 +1855,11 @@ func TestIntegration_PBSSplitArchive(t *testing.T) {
 	}
 
 	// Parse both indexes
-	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
+	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		t.Fatalf("parse metadata didx: %v", err)
 	}
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadIdxData)
 	if err != nil {
 		t.Fatalf("parse payload didx: %v", err)
 	}
@@ -1893,11 +1893,11 @@ func pbsRestoreSplitArchive(t *testing.T, pbsCfg PBSConfig, backupType, backupID
 	payloadIdxData := pbsDownload(t, pbsCfg, backupType, backupID, backupTime, "root.ppxar.didx")
 
 	var err error
-	metaIdx, err = datastore.ReadDynamicIndex(metaIdxData)
+	metaIdx, err = datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		t.Fatalf("parse metadata didx: %v", err)
 	}
-	payloadIdx, err = datastore.ReadDynamicIndex(payloadIdxData)
+	payloadIdx, err = datastore.ParseDynamicIndex(payloadIdxData)
 	if err != nil {
 		t.Fatalf("parse payload didx: %v", err)
 	}
@@ -1974,7 +1974,7 @@ func TestIntegration_PBSLegacyModeBackupRestore(t *testing.T) {
 
 	// Download and restore the archive from PBS
 	didxData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "root.pxar.didx")
-	idx, err := datastore.ReadDynamicIndex(didxData)
+	idx, err := datastore.ParseDynamicIndex(didxData)
 	if err != nil {
 		t.Fatalf("parse didx: %v", err)
 	}
@@ -2592,7 +2592,7 @@ func TestIntegration_PBSEncryptModeBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create chunk config: %v", err)
 	}
-	store := NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store := NewPBSStore(pbsCfg, chunkCfg, false)
 
 	// Generate a random encryption key
 	var encKey [32]byte
@@ -2665,7 +2665,7 @@ func TestIntegration_PBSSignOnlyModeBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create chunk config: %v", err)
 	}
-	store := NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store := NewPBSStore(pbsCfg, chunkCfg, false)
 
 	var encKey [32]byte
 	if _, err := rand.Read(encKey[:]); err != nil {
@@ -2716,7 +2716,7 @@ func TestIntegration_PBSDataModeEncryptWithCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create chunk config: %v", err)
 	}
-	store := NewPBSRemoteStore(pbsCfg, chunkCfg, false)
+	store := NewPBSStore(pbsCfg, chunkCfg, false)
 
 	var encKey [32]byte
 	if _, err := rand.Read(encKey[:]); err != nil {

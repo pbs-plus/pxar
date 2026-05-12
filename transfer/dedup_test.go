@@ -118,7 +118,7 @@ func TestChunkedReadSeekerBasicRead(t *testing.T) {
 	})
 	source := datastore.NewChunkStoreSource(store)
 
-	idx, err := datastore.ReadDynamicIndex(idxData)
+	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestChunkedReadSeekerSeekAndRead(t *testing.T) {
 	})
 	source := datastore.NewChunkStoreSource(store)
 
-	idx, err := datastore.ReadDynamicIndex(idxData)
+	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestChunkedReadSeekerCaching(t *testing.T) {
 	})
 	source := datastore.NewChunkStoreSource(store)
 
-	idx, err := datastore.ReadDynamicIndex(idxData)
+	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestDedupSplitArchiveWriterRoundTrip(t *testing.T) {
 	source := datastore.NewChunkStoreSource(store)
 
 	// Read source payload index
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadIdxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestMapFileToPayloadChunksBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := datastore.ReadDynamicIndex(idxData)
+	reader, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestMapFileToPayloadChunksSpanning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := datastore.ReadDynamicIndex(idxData)
+	reader, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +463,7 @@ func TestMapFileToPayloadChunksEmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := datastore.ReadDynamicIndex(idxData)
+	reader, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func TestComputeContentDigestCorrectness(t *testing.T) {
 	expected := sha256.Sum256(content)
 
 	// Now use ComputeContentDigest with the payload index
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadIdxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestReferenceSourcePayloadChunks(t *testing.T) {
 		"file.txt": "test content",
 	})
 
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadIdxData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +592,7 @@ func TestDynamicIndexRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := datastore.ReadDynamicIndex(data)
+	reader, err := datastore.ParseDynamicIndex(data)
 	if err != nil {
 		t.Fatal(err)
 	}

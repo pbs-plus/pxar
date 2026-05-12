@@ -200,13 +200,13 @@ type StatxTimestamp struct {
 	_pad  uint32 //nolint:unused // required for wire format alignment
 }
 
-// StatxTimestampNew creates a timestamp from seconds and nanoseconds.
-func StatxTimestampNew(secs int64, nanos uint32) StatxTimestamp {
+// NewStatxTimestamp creates a timestamp from seconds and nanoseconds.
+func NewStatxTimestamp(secs int64, nanos uint32) StatxTimestamp {
 	return StatxTimestamp{Secs: secs, Nanos: nanos}
 }
 
-// StatxTimestampFromDurationSinceEpoch creates a timestamp from a positive duration.
-func StatxTimestampFromDurationSinceEpoch(d time.Duration) StatxTimestamp {
+// NewStatxTimestampFromDuration creates a timestamp from a positive duration.
+func NewStatxTimestampFromDuration(d time.Duration) StatxTimestamp {
 	return StatxTimestamp{
 		Secs:  int64(d / time.Second),
 		Nanos: uint32(d % time.Second),
@@ -306,7 +306,7 @@ func (v1 StatV1) ToStat() Stat {
 		Flags: v1.Flags,
 		UID:   v1.UID,
 		GID:   v1.GID,
-		Mtime: StatxTimestampFromDurationSinceEpoch(time.Duration(v1.Mtime) * time.Nanosecond),
+		Mtime: NewStatxTimestampFromDuration(time.Duration(v1.Mtime) * time.Nanosecond),
 	}
 }
 

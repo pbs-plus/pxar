@@ -72,7 +72,7 @@ func TestStoreChunkerIndexRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := ReadDynamicIndex(raw)
+	reader, err := ParseDynamicIndex(raw)
 	if err != nil {
 		t.Fatal(err)
 	}

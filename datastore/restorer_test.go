@@ -34,9 +34,9 @@ func TestRestorerRestoreFile(t *testing.T) {
 	idx.Add(uint64(len(chunk1)+len(chunk2)), digest2)
 	idxData, _ := idx.Finish()
 
-	reader, err := ReadDynamicIndex(idxData)
+	reader, err := ParseDynamicIndex(idxData)
 	if err != nil {
-		t.Fatalf("ReadDynamicIndex: %v", err)
+		t.Fatalf("ParseDynamicIndex: %v", err)
 	}
 
 	// Restore file
@@ -81,9 +81,9 @@ func TestRestorerRestoreFileCompressedChunks(t *testing.T) {
 	idx.Add(uint64(len(chunk1)+len(chunk2)), digest2)
 	idxData, _ := idx.Finish()
 
-	reader, err := ReadDynamicIndex(idxData)
+	reader, err := ParseDynamicIndex(idxData)
 	if err != nil {
-		t.Fatalf("ReadDynamicIndex: %v", err)
+		t.Fatalf("ParseDynamicIndex: %v", err)
 	}
 
 	// Restore file
@@ -133,9 +133,9 @@ func TestRestorerRestoreRange(t *testing.T) {
 	idx.Add(30, digest3)
 	idxData, _ := idx.Finish()
 
-	reader, err := ReadDynamicIndex(idxData)
+	reader, err := ParseDynamicIndex(idxData)
 	if err != nil {
-		t.Fatalf("ReadDynamicIndex: %v", err)
+		t.Fatalf("ParseDynamicIndex: %v", err)
 	}
 
 	source := NewChunkStoreSource(store)
@@ -176,7 +176,7 @@ func TestRestorerEmptyFile(t *testing.T) {
 	// Create empty index
 	idx := NewDynamicIndexWriter(time.Now().Unix())
 	idxData, _ := idx.Finish()
-	reader, _ := ReadDynamicIndex(idxData)
+	reader, _ := ParseDynamicIndex(idxData)
 
 	var buf bytes.Buffer
 	if err := restorer.RestoreFile(reader, &buf); err != nil {
@@ -208,7 +208,7 @@ func TestRestorerMissingChunk(t *testing.T) {
 	idx.Add(uint64(len(chunk1)+100), missingDigest)
 
 	idxData, _ := idx.Finish()
-	reader, _ := ReadDynamicIndex(idxData)
+	reader, _ := ParseDynamicIndex(idxData)
 
 	source := NewChunkStoreSource(store)
 	restorer := NewRestorer(source)
@@ -248,7 +248,7 @@ func TestRestorerFileSize(t *testing.T) {
 	idx.Add(500, digest)
 
 	idxData, _ := idx.Finish()
-	reader, _ := ReadDynamicIndex(idxData)
+	reader, _ := ParseDynamicIndex(idxData)
 
 	source := NewChunkStoreSource(nil)
 	restorer := NewRestorer(source)

@@ -639,7 +639,7 @@ func TestCopyTreePathRemapping(t *testing.T) {
 // Metadata helpers
 
 func dirMeta(mode uint64) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * 1e9)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * 1e9)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  format.ModeIFDIR | mode,
@@ -649,7 +649,7 @@ func dirMeta(mode uint64) *pxar.Metadata {
 }
 
 func fileMeta(mode uint64, uid, gid uint32) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * 1e9)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * 1e9)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  format.ModeIFREG | mode,
@@ -661,7 +661,7 @@ func fileMeta(mode uint64, uid, gid uint32) *pxar.Metadata {
 }
 
 func symlinkMeta(mode uint64, uid, gid uint32) *pxar.Metadata {
-	ts := format.StatxTimestampFromDurationSinceEpoch(1430487000 * 1e9)
+	ts := format.NewStatxTimestampFromDuration(1430487000 * 1e9)
 	return &pxar.Metadata{
 		Stat: format.Stat{
 			Mode:  format.ModeIFLNK | mode,
@@ -680,7 +680,7 @@ func TestWalkTreeMetaOnly(t *testing.T) {
 	defer reader.Close()
 
 	var paths []string
-	err := transfer.WalkTreeWith(reader, "/", transfer.WalkMetaOnly, func(entry *pxar.Entry, content []byte) error {
+	err := transfer.WalkTreeWith(reader, "/", transfer.WalkMetadataOnly, func(entry *pxar.Entry, content []byte) error {
 		if content != nil {
 			t.Errorf("content should be nil in MetaOnly mode, got %d bytes for %q", len(content), entry.Path)
 		}
@@ -706,12 +706,12 @@ func TestWalkTreeMetaFunc(t *testing.T) {
 	defer reader.Close()
 
 	var paths []string
-	err := transfer.WalkTreeMeta(reader, "/", transfer.WalkAll, func(entry *pxar.Entry) error {
+	err := transfer.WalkTreeMetadata(reader, "/", transfer.WalkAll, func(entry *pxar.Entry) error {
 		paths = append(paths, entry.Path)
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("WalkTreeMeta: %v", err)
+		t.Fatalf("WalkTreeMetadata: %v", err)
 	}
 
 	if len(paths) != 5 {
@@ -725,34 +725,34 @@ func TestWalkFilterMask(t *testing.T) {
 	defer reader.Close()
 
 	// Only files
-	err := transfer.WalkTreeMeta(reader, "/", transfer.WalkFiles, func(entry *pxar.Entry) error {
+	err := transfer.WalkTreeMetadata(reader, "/", transfer.WalkFiles, func(entry *pxar.Entry) error {
 		if entry.Kind != pxar.KindFile {
 			t.Errorf("expected only files, got kind %d for %q", entry.Kind, entry.Path)
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("WalkTreeMeta with WalkFiles: %v", err)
+		t.Fatalf("WalkTreeMetadata with WalkFiles: %v", err)
 	}
 
 	// Only dirs
 	reader2 := transfer.NewFileArchiveReader(bytes.NewReader(data))
 	defer reader2.Close()
-	err = transfer.WalkTreeMeta(reader2, "/", transfer.WalkDirs, func(entry *pxar.Entry) error {
+	err = transfer.WalkTreeMetadata(reader2, "/", transfer.WalkDirs, func(entry *pxar.Entry) error {
 		if entry.Kind != pxar.KindDirectory {
 			t.Errorf("expected only dirs, got kind %d for %q", entry.Kind, entry.Path)
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("WalkTreeMeta with WalkDirs: %v", err)
+		t.Fatalf("WalkTreeMetadata with WalkDirs: %v", err)
 	}
 
 	// Files + symlinks
 	reader3 := transfer.NewFileArchiveReader(bytes.NewReader(data))
 	defer reader3.Close()
 	kinds := make(map[pxar.EntryKind]int)
-	err = transfer.WalkTreeMeta(reader3, "/", transfer.WalkFiles|transfer.WalkSymlinks, func(entry *pxar.Entry) error {
+	err = transfer.WalkTreeMetadata(reader3, "/", transfer.WalkFiles|transfer.WalkSymlinks, func(entry *pxar.Entry) error {
 		if entry.Kind != pxar.KindFile && entry.Kind != pxar.KindSymlink {
 			t.Errorf("expected files or symlinks, got kind %d", entry.Kind)
 		}
@@ -760,7 +760,7 @@ func TestWalkFilterMask(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("WalkTreeMeta with WalkFiles|WalkSymlinks: %v", err)
+		t.Fatalf("WalkTreeMetadata with WalkFiles|WalkSymlinks: %v", err)
 	}
 }
 
@@ -771,7 +771,7 @@ func TestWalkFilterSkipsDirDescent(t *testing.T) {
 
 	// Walk only files — should still descend into dirs to find files
 	var paths []string
-	err := transfer.WalkTreeMeta(reader, "/", transfer.WalkFiles, func(entry *pxar.Entry) error {
+	err := transfer.WalkTreeMetadata(reader, "/", transfer.WalkFiles, func(entry *pxar.Entry) error {
 		if entry.Kind != pxar.KindFile {
 			t.Errorf("expected only files, got kind %d for %q", entry.Kind, entry.Path)
 		}
@@ -779,7 +779,7 @@ func TestWalkFilterSkipsDirDescent(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("WalkTreeMeta with WalkFiles: %v", err)
+		t.Fatalf("WalkTreeMetadata with WalkFiles: %v", err)
 	}
 
 	// Should have found files but NOT dirs in the callback

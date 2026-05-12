@@ -188,7 +188,7 @@ func (fs *osFS) Stat(path string) (format.Stat, error) {
 		Flags: 0,
 		UID:   st.Uid,
 		GID:   st.Gid,
-		Mtime: format.StatxTimestampNew(st.Mtim.Sec, uint32(st.Mtim.Nsec)),
+		Mtime: format.NewStatxTimestamp(st.Mtim.Sec, uint32(st.Mtim.Nsec)),
 	}, nil
 }
 
@@ -211,7 +211,7 @@ func (fs *osFS) ReadDir(path string) ([]backupproxy.DirEntry, error) {
 				Flags: 0,
 				UID:   st.Uid,
 				GID:   st.Gid,
-				Mtime: format.StatxTimestampNew(st.Mtim.Sec, uint32(st.Mtim.Nsec)),
+				Mtime: format.NewStatxTimestamp(st.Mtim.Sec, uint32(st.Mtim.Nsec)),
 			},
 			Size: uint64(st.Size),
 		})
@@ -312,7 +312,7 @@ func runBackup() error {
 		SkipTLSVerify: *fingerprint != "",
 	}
 
-	store := backupproxy.NewPBSRemoteStore(pbsCfg, chunkCfg, *compressFlag)
+	store := backupproxy.NewPBSStore(pbsCfg, chunkCfg, *compressFlag)
 	client := backupproxy.NewLocalClient(&osFS{})
 	srv := backupproxy.NewServer(client, store)
 

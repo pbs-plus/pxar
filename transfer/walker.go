@@ -28,10 +28,10 @@ func WalkTreeWith(reader ArchiveReader, rootPath string, opts WalkOption, fn Wal
 	return walkTreeInternal(reader, rootPath, opts, fn)
 }
 
-// WalkTreeMeta walks a directory tree in metadata-only mode with a simplified
+// WalkTreeMetadata walks a directory tree in metadata-only mode with a simplified
 // callback. Content is never read, and the filter mask controls which entry
 // types are visited. Use WalkAll to visit all types.
-func WalkTreeMeta(reader ArchiveReader, rootPath string, filter WalkFilter, fn MetaWalkFunc) error {
+func WalkTreeMetadata(reader ArchiveReader, rootPath string, filter WalkFilter, fn MetadataWalkFunc) error {
 	opts := WalkOption{MetaOnly: true, Filter: filter}
 	return walkTreeInternal(reader, rootPath, opts, func(entry *pxar.Entry, _ []byte) error {
 		return fn(entry)

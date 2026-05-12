@@ -53,9 +53,9 @@ func chunkArchive(t *testing.T, archive []byte, chunkSize int) (*DynamicIndexRea
 	if err != nil {
 		t.Fatalf("idx.Finish: %v", err)
 	}
-	reader, err := ReadDynamicIndex(idxData)
+	reader, err := ParseDynamicIndex(idxData)
 	if err != nil {
-		t.Fatalf("ReadDynamicIndex: %v", err)
+		t.Fatalf("ParseDynamicIndex: %v", err)
 	}
 	return reader, NewChunkStoreSource(store)
 }
@@ -63,7 +63,7 @@ func chunkArchive(t *testing.T, archive []byte, chunkSize int) (*DynamicIndexRea
 func TestBuildCatalogFastEmpty(t *testing.T) {
 	idx := NewDynamicIndexWriter(time.Now().Unix())
 	idxData, _ := idx.Finish()
-	reader, _ := ReadDynamicIndex(idxData)
+	reader, _ := ParseDynamicIndex(idxData)
 
 	catalog, err := BuildCatalogFast(reader, nil, CatalogOptions{})
 	if err != nil {
@@ -368,7 +368,7 @@ func TestBuildCatalogFastMissingChunk(t *testing.T) {
 	missingDigest := sha256.Sum256([]byte("missing"))
 	idx.Add(100, missingDigest)
 	idxData, _ := idx.Finish()
-	reader, _ := ReadDynamicIndex(idxData)
+	reader, _ := ParseDynamicIndex(idxData)
 
 	// Create a dummy store with no chunks.
 	tmpDir := t.TempDir()

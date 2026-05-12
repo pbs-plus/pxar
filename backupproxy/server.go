@@ -271,11 +271,11 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 		return nil, fmt.Errorf("read previous payload index: %w", err)
 	}
 
-	metaIdx, err := datastore.ReadDynamicIndex(metaIdxData)
+	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("parse previous metadata index: %w", err)
 	}
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadIdxData)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("parse previous payload index: %w", err)
 	}

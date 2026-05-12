@@ -385,7 +385,7 @@ func TestServerArchiveRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := datastore.ReadDynamicIndex(raw)
+	reader, err := datastore.ParseDynamicIndex(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +651,7 @@ func restoreLegacyArchive(t *testing.T, dir string) *accessor.Accessor {
 	if err != nil {
 		t.Fatalf("read legacy index: %v", err)
 	}
-	idx, err := datastore.ReadDynamicIndex(raw)
+	idx, err := datastore.ParseDynamicIndex(raw)
 	if err != nil {
 		t.Fatalf("parse legacy index: %v", err)
 	}
@@ -686,11 +686,11 @@ func restoreSplitArchive(t *testing.T, dir string) (*accessor.Accessor, *accesso
 	if err != nil {
 		t.Fatalf("read payload index: %v", err)
 	}
-	metaIdx, err := datastore.ReadDynamicIndex(metaRaw)
+	metaIdx, err := datastore.ParseDynamicIndex(metaRaw)
 	if err != nil {
 		t.Fatalf("parse metadata index: %v", err)
 	}
-	payloadIdx, err := datastore.ReadDynamicIndex(payloadRaw)
+	payloadIdx, err := datastore.ParseDynamicIndex(payloadRaw)
 	if err != nil {
 		t.Fatalf("parse payload index: %v", err)
 	}

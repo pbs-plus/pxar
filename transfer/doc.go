@@ -20,6 +20,6 @@
 // # Walks
 //
 // WalkTree visits every entry in a directory tree with optional content
-// reading. WalkTreeMeta performs metadata-only traversal. WalkFilter
+// reading. WalkTreeMetadata performs metadata-only traversal. WalkFilter
 // selects which entry types to visit.
 package transfer

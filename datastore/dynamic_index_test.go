@@ -28,7 +28,7 @@ func TestDynamicIndexWriteReadRoundTrip(t *testing.T) {
 		t.Error("missing dynamic index magic")
 	}
 
-	r, err := ReadDynamicIndex(raw)
+	r, err := ParseDynamicIndex(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestDynamicIndexChunkFromOffset(t *testing.T) {
 	}
 	raw, _ := w.Finish()
 
-	r, _ := ReadDynamicIndex(raw)
+	r, _ := ParseDynamicIndex(raw)
 
 	tests := []struct {
 		offset   uint64
@@ -100,7 +100,7 @@ func TestDynamicIndexChunkInfo(t *testing.T) {
 		w.Add(e.EndOffset, e.Digest)
 	}
 	raw, _ := w.Finish()
-	r, _ := ReadDynamicIndex(raw)
+	r, _ := ParseDynamicIndex(raw)
 
 	// First chunk: offset 0 to 1000
 	info, ok := r.ChunkInfo(0)
@@ -127,7 +127,7 @@ func TestDynamicIndexChecksumVerification(t *testing.T) {
 	w.Add(2000, [32]byte{})
 
 	raw, _ := w.Finish()
-	r, err := ReadDynamicIndex(raw)
+	r, err := ParseDynamicIndex(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestDynamicIndexEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := ReadDynamicIndex(raw)
+	r, err := ParseDynamicIndex(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestDynamicIndexEmpty(t *testing.T) {
 
 func TestDynamicIndexInvalidData(t *testing.T) {
 	// Too short
-	_, err := ReadDynamicIndex([]byte{1, 2, 3})
+	_, err := ParseDynamicIndex([]byte{1, 2, 3})
 	if err == nil {
 		t.Error("expected error for too-short data")
 	}
@@ -165,7 +165,7 @@ func TestDynamicIndexInvalidData(t *testing.T) {
 	// Wrong magic
 	buf := make([]byte, IndexHeaderSize)
 	copy(buf[0:8], MagicFixedChunkIndex[:]) // wrong magic
-	_, err = ReadDynamicIndex(buf)
+	_, err = ParseDynamicIndex(buf)
 	if err == nil {
 		t.Error("expected error for wrong magic")
 	}
@@ -175,7 +175,7 @@ func TestDynamicIndexCTime(t *testing.T) {
 	ctime := int64(1700000000)
 	w := NewDynamicIndexWriter(ctime)
 	raw, _ := w.Finish()
-	r, _ := ReadDynamicIndex(raw)
+	r, _ := ParseDynamicIndex(raw)
 
 	if r.CTime() != ctime {
 		t.Errorf("ctime = %d, want %d", r.CTime(), ctime)
@@ -188,7 +188,7 @@ func TestDynamicIndexIndexBytes(t *testing.T) {
 	w.Add(5000, [32]byte{})
 	w.Add(10000, [32]byte{})
 	raw, _ := w.Finish()
-	r, _ := ReadDynamicIndex(raw)
+	r, _ := ParseDynamicIndex(raw)
 
 	if r.IndexBytes() != 10000 {
 		t.Errorf("IndexBytes = %d, want 10000", r.IndexBytes())

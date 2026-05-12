@@ -12,7 +12,7 @@ import (
 // (pxar/src/format/mod.rs test_statx_timestamp).
 func TestStatxTimestampParityWithPBS(t *testing.T) {
 	// MAY_1_2015_1530: secs=1430487000, nanos=1_000_000
-	ts := format.StatxTimestampNew(1430487000, 1_000_000)
+	ts := format.NewStatxTimestamp(1430487000, 1_000_000)
 	if ts.Secs != 1430487000 {
 		t.Errorf("Secs = %d, want 1430487000", ts.Secs)
 	}
@@ -30,7 +30,7 @@ func TestStatxTimestampParityWithPBS(t *testing.T) {
 	// Negative timestamps: Duration returns negative value which is correct
 	// for Go (unlike Rust which adjusts to positive SystemTime representation).
 	negSecs := int64(-305112600)
-	negTs := format.StatxTimestampNew(negSecs, 1_000_000)
+	negTs := format.NewStatxTimestamp(negSecs, 1_000_000)
 	if negTs.Secs != negSecs {
 		t.Errorf("Negative Secs = %d, want %d", negTs.Secs, negSecs)
 	}
@@ -39,7 +39,7 @@ func TestStatxTimestampParityWithPBS(t *testing.T) {
 	}
 
 	// MAY_1_1960_1530 with nanos=0
-	zeroTs := format.StatxTimestampNew(negSecs, 0)
+	zeroTs := format.NewStatxTimestamp(negSecs, 0)
 	if zeroTs.Secs != negSecs {
 		t.Errorf("Zero nanos Secs = %d, want %d", zeroTs.Secs, negSecs)
 	}

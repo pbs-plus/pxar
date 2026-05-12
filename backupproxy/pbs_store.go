@@ -137,16 +137,16 @@ type PBSConfig struct {
 	SkipTLSVerify bool
 }
 
-// PBSRemoteStore implements RemoteStore via the PBS H2 backup protocol.
-type PBSRemoteStore struct {
+// PBSStore implements RemoteStore via the PBS H2 backup protocol.
+type PBSStore struct {
 	config   PBSConfig
 	chunkCfg buzhash.Config
 	compress bool
 }
 
-// NewPBSRemoteStore creates a PBS remote store with the given configuration.
-func NewPBSRemoteStore(config PBSConfig, chunkCfg buzhash.Config, compress bool) *PBSRemoteStore {
-	return &PBSRemoteStore{
+// NewPBSStore creates a PBS remote store with the given configuration.
+func NewPBSStore(config PBSConfig, chunkCfg buzhash.Config, compress bool) *PBSStore {
+	return &PBSStore{
 		config:   config,
 		chunkCfg: chunkCfg,
 		compress: compress,
@@ -154,7 +154,7 @@ func NewPBSRemoteStore(config PBSConfig, chunkCfg buzhash.Config, compress bool)
 }
 
 // StartSession dials PBS via H2 upgrade and returns a backup session.
-func (ps *PBSRemoteStore) StartSession(ctx context.Context, config BackupConfig) (BackupSession, error) {
+func (ps *PBSStore) StartSession(ctx context.Context, config BackupConfig) (BackupSession, error) {
 	h2Conn, err := dialPBSH2(ctx, ps.config.BaseURL, ps.config.Datastore, ps.config.AuthToken, config, ps.config.SkipTLSVerify)
 	if err != nil {
 		return nil, fmt.Errorf("PBS H2 connect: %w", err)
@@ -173,7 +173,7 @@ func (ps *PBSRemoteStore) StartSession(ctx context.Context, config BackupConfig)
 // pbsSession implements BackupSession for PBS.
 type pbsSession struct {
 	proto       pbsBackupProtocol
-	store       *PBSRemoteStore
+	store       *PBSStore
 	knownChunks map[[32]byte]bool
 	files       []datastore.FileInfo
 	config      BackupConfig
@@ -194,7 +194,7 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 
 			// Register previous chunks server-side via the backup protocol.
 			if prevData, err := s.proto.downloadPrevious(name); err == nil {
-				if idx, err := datastore.ReadDynamicIndex(prevData); err == nil {
+				if idx, err := datastore.ParseDynamicIndex(prevData); err == nil {
 					for i := 0; i < idx.Count(); i++ {
 						if info, ok := idx.ChunkInfo(i); ok {
 							s.knownChunks[info.Digest] = true
@@ -207,7 +207,7 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 				// In this case all chunks will be uploaded fresh.
 				data, err := s.store.ReadPreviousArchive(ctx, prev.BackupType, prev.BackupID, prev.BackupTime, prev.Namespace, name)
 				if err == nil {
-					if idx, err := datastore.ReadDynamicIndex(data); err == nil {
+					if idx, err := datastore.ParseDynamicIndex(data); err == nil {
 						for i := 0; i < idx.Count(); i++ {
 							if info, ok := idx.ChunkInfo(i); ok {
 								s.knownChunks[info.Digest] = true
@@ -501,7 +501,7 @@ func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) err
 }
 
 // ReadPreviousArchive reads an archive file from a previous PBS backup snapshot.
-func (ps *PBSRemoteStore) ReadPreviousArchive(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace, filename string) ([]byte, error) {
+func (ps *PBSStore) ReadPreviousArchive(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace, filename string) ([]byte, error) {
 	cfg := PBSConfig{
 		BaseURL:       ps.config.BaseURL,
 		Datastore:     ps.config.Datastore,
@@ -535,7 +535,7 @@ func (ps *pbsSnapshotSource) Close() error {
 }
 
 // NewPreviousSnapshotSource creates a PreviousSnapshotSource connected to a PBS snapshot.
-func (ps *PBSRemoteStore) NewPreviousSnapshotSource(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace string) (PreviousSnapshotSource, error) {
+func (ps *PBSStore) NewPreviousSnapshotSource(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace string) (PreviousSnapshotSource, error) {
 	cfg := PBSConfig{
 		BaseURL:       ps.config.BaseURL,
 		Datastore:     ps.config.Datastore,

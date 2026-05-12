@@ -126,6 +126,3 @@ func (r *PBSArchiveReader) Close() error {
 	}
 	return err
 }
-
-// ensure context is used
-var _ context.Context

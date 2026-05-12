@@ -17,8 +17,6 @@ import (
 	"github.com/pbs-plus/pxar/transfer"
 )
 
-func ptr[T any](v T) *T { return &v }
-
 // TestSplitArchiveCopyRoundTrip mimics what pxar-mount commit does:
 // 1. Create a source split archive
 // 2. Read entries from it

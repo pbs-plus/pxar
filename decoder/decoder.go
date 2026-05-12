@@ -313,45 +313,7 @@ func (d *Decoder) readEntry() (*pxar.Entry, error) {
 	if len(statData) != 40 {
 		return nil, fmt.Errorf("invalid stat size: %d", len(statData))
 	}
-
-	stat := format.UnmarshalStatBytes(statData)
-	entry := &pxar.Entry{
-		Path:     d.path,
-		Metadata: pxar.Metadata{Stat: stat},
-	}
-
-	for {
-		h, err := d.readHeader()
-		if err != nil {
-			if err == io.EOF {
-				if stat.IsFIFO() {
-					entry.Kind = pxar.KindFifo
-					return entry, nil
-				}
-				if stat.IsSocket() {
-					entry.Kind = pxar.KindSocket
-					return entry, nil
-				}
-				return nil, io.EOF
-			}
-			return nil, err
-		}
-		d.header = h
-
-		done, err := d.readCurrentItem(entry)
-		if err != nil {
-			return nil, err
-		}
-		if done {
-			break
-		}
-	}
-
-	if entry.IsDir() {
-		d.pathLens = append(d.pathLens, len(d.path))
-	}
-
-	return entry, nil
+	return d.finishEntry(format.UnmarshalStatBytes(statData), false)
 }
 
 func (d *Decoder) readEntryV1() (*pxar.Entry, error) {
@@ -362,9 +324,13 @@ func (d *Decoder) readEntryV1() (*pxar.Entry, error) {
 	if len(data) != 32 {
 		return nil, fmt.Errorf("invalid stat_v1 size: %d", len(data))
 	}
+	return d.finishEntry(format.UnmarshalStatV1Bytes(data).ToStat(), true)
+}
 
-	v1 := format.UnmarshalStatV1Bytes(data)
-	stat := v1.ToStat()
+// finishEntry reads remaining attributes for an entry after the stat has been
+// parsed. isV1 controls EOF behavior: V1 treats stream EOF as end-of-entry
+// without checking for FIFO/Socket types.
+func (d *Decoder) finishEntry(stat format.Stat, isV1 bool) (*pxar.Entry, error) {
 	entry := &pxar.Entry{
 		Path:     d.path,
 		Metadata: pxar.Metadata{Stat: stat},
@@ -374,7 +340,18 @@ func (d *Decoder) readEntryV1() (*pxar.Entry, error) {
 		h, err := d.readHeader()
 		if err != nil {
 			if err == io.EOF {
-				break
+				if isV1 {
+					break
+				}
+				if stat.IsFIFO() {
+					entry.Kind = pxar.KindFifo
+					return entry, nil
+				}
+				if stat.IsSocket() {
+					entry.Kind = pxar.KindSocket
+					return entry, nil
+				}
+				return nil, io.EOF
 			}
 			return nil, err
 		}
@@ -451,7 +428,8 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		entry.Metadata.ACL.Default = format.UnmarshalACLDefaultBytes(data)
+		df := format.UnmarshalACLDefault(data)
+		entry.Metadata.ACL.Default = &df
 		return false, nil
 
 	case format.PXARACLDefaultUser:

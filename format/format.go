@@ -353,8 +353,8 @@ type PayloadRef struct {
 // Bytes returns the little-endian bytes of the PayloadRef.
 func (pr PayloadRef) Bytes() []byte {
 	var buf [16]byte
-	binary.LittleEndian.PutUint64(buf[0:8], pr.Offset)
-	binary.LittleEndian.PutUint64(buf[8:16], pr.Size)
+	binary.LittleEndian.PutUint64(buf[0:], pr.Offset)
+	binary.LittleEndian.PutUint64(buf[8:], pr.Size)
 	return buf[:]
 }
 
@@ -442,23 +442,16 @@ func CheckFilename(name []byte) error {
 
 var slashBytes = []byte{'/'}
 
-// MarshalStatBytes serializes a Stat into a 40-byte slice.
-func MarshalStatBytes(s Stat) []byte {
-	var buf [40]byte
-	marshalStatInto(buf[:], s)
-	return buf[:]
-}
-
 // MarshalStatBytesInto writes the serialized Stat into buf (must be >= 40 bytes).
 func MarshalStatBytesInto(buf []byte, s Stat) {
 	marshalStatInto(buf, s)
 }
 
-// AppendStatBytes appends the serialized Stat to dst.
-func AppendStatBytes(dst []byte, s Stat) []byte {
-	var buf [40]byte
-	marshalStatInto(buf[:], s)
-	return append(dst, buf[:]...)
+// AppendStatBytesInto writes the serialized Stat into dst and returns the
+// extended slice. dst must have capacity for 40 additional bytes.
+func AppendStatBytesInto(dst []byte, s Stat) []byte {
+	marshalStatInto(dst[len(dst):len(dst)+40], s)
+	return dst[:len(dst)+40]
 }
 
 func marshalStatInto(buf []byte, s Stat) {
@@ -497,38 +490,38 @@ func UnmarshalStatV1Bytes(data []byte) StatV1 {
 
 // MarshalDeviceBytes serializes a Device into a 16-byte slice.
 func MarshalDeviceBytes(d Device) []byte {
-	buf := make([]byte, 16)
+	var buf [16]byte
 	binary.LittleEndian.PutUint64(buf[0:], d.Major)
 	binary.LittleEndian.PutUint64(buf[8:], d.Minor)
-	return buf
+	return buf[:]
 }
 
 // MarshalACLUserBytes serializes an ACLUser into a 16-byte slice.
 func MarshalACLUserBytes(u ACLUser) []byte {
-	buf := make([]byte, 16)
+	var buf [16]byte
 	binary.LittleEndian.PutUint64(buf[0:], u.UID)
 	binary.LittleEndian.PutUint64(buf[8:], uint64(u.Permissions))
-	return buf
+	return buf[:]
 }
 
 // MarshalACLGroupBytes serializes an ACLGroup into a 16-byte slice.
 func MarshalACLGroupBytes(g ACLGroup) []byte {
-	buf := make([]byte, 16)
+	var buf [16]byte
 	binary.LittleEndian.PutUint64(buf[0:], g.GID)
 	binary.LittleEndian.PutUint64(buf[8:], uint64(g.Permissions))
-	return buf
+	return buf[:]
 }
 
 // MarshalACLGroupObjectBytes serializes an ACLGroupObject into an 8-byte slice.
 func MarshalACLGroupObjectBytes(o ACLGroupObject) []byte {
-	buf := make([]byte, 8)
+	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[0:], uint64(o.Permissions))
-	return buf
+	return buf[:]
 }
 
-// UnmarshalACLDefaultBytes parses an ACLDefault from a 32-byte slice.
-func UnmarshalACLDefaultBytes(data []byte) *ACLDefault {
-	return &ACLDefault{
+// UnmarshalACLDefault parses an ACLDefault from a 32-byte slice.
+func UnmarshalACLDefault(data []byte) ACLDefault {
+	return ACLDefault{
 		UserObjPermissions:  ACLPermissions(binary.LittleEndian.Uint64(data[0:])),
 		GroupObjPermissions: ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
 		OtherPermissions:    ACLPermissions(binary.LittleEndian.Uint64(data[16:])),
@@ -538,12 +531,12 @@ func UnmarshalACLDefaultBytes(data []byte) *ACLDefault {
 
 // MarshalACLDefaultBytes serializes an ACLDefault into a 32-byte slice.
 func MarshalACLDefaultBytes(d ACLDefault) []byte {
-	buf := make([]byte, 32)
+	var buf [32]byte
 	binary.LittleEndian.PutUint64(buf[0:], uint64(d.UserObjPermissions))
 	binary.LittleEndian.PutUint64(buf[8:], uint64(d.GroupObjPermissions))
 	binary.LittleEndian.PutUint64(buf[16:], uint64(d.OtherPermissions))
 	binary.LittleEndian.PutUint64(buf[24:], uint64(d.MaskPermissions))
-	return buf
+	return buf[:]
 }
 
 // UnmarshalPayloadRefBytes parses a PayloadRef from a 16-byte slice.

@@ -483,19 +483,27 @@ func (a *Accessor) readGoodbyeTable(offset int64) ([]format.GoodbyeItem, error) 
 	return items, nil
 }
 
-// ReadEntryAtMinimal reads a pxar entry with minimal decoding. It skips
-// extended metadata (xattrs, fcaps, ACLs, quota project ID) and only
-// populates stat basics. Use for indexing/browsing where full metadata
-// is unnecessary.
+// ReadEntryAtMinimal reads a pxar entry with minimal decoding. It only
+// populates stat basics and structural fields. Use for indexing/browsing
+// where full metadata is unnecessary.
 func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 	a.metaMu.Lock()
 	defer a.metaMu.Unlock()
-	return a.readEntryAtMinimalLocked(offset)
+	return a.readEntryAtLocked(offset)
 }
 
-// readEntryAtMinimalLocked reads a pxar entry with minimal decoding
-// without acquiring metaMu.
-func (a *Accessor) readEntryAtMinimalLocked(offset int64) (*pxar.Entry, error) {
+// ReadEntryAt reads a pxar entry at the given archive offset.
+func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	return a.readEntryAtLocked(offset)
+}
+
+// readEntryAtLocked reads a pxar entry without acquiring metaMu.
+// Both ReadEntryAt and ReadEntryAtMinimal call this; they are identical because
+// full metadata decoding was removed in a previous refactor that made all
+// entry reads minimal.
+func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -555,7 +563,7 @@ func (a *Accessor) readEntryAtMinimalLocked(offset int64) (*pxar.Entry, error) {
 		FileOffset: uint64(offset),
 	}
 
-	// Scan for terminal item only — skip all extended metadata
+	// Scan for terminal item — skip all extended metadata
 	for {
 		posBefore, _ := a.reader.Seek(0, io.SeekCurrent)
 		h2, err := a.readHeader()
@@ -618,147 +626,7 @@ func (a *Accessor) readEntryAtMinimalLocked(offset int64) (*pxar.Entry, error) {
 			return entry, nil
 
 		default:
-			// Skip all extended metadata (xattrs, fcaps, ACLs, etc.)
-			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
-				return nil, err
-			}
-		}
-	}
-}
-
-// ReadEntryAt reads a pxar entry at the given archive offset.
-func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
-	a.metaMu.Lock()
-	defer a.metaMu.Unlock()
-	return a.readEntryAtLocked(offset)
-}
-
-// readEntryAtLocked reads a pxar entry without acquiring metaMu.
-func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
-	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	// Read FILENAME
-	h, err := a.readHeader()
-	if err != nil {
-		return nil, err
-	}
-	if h.Type != format.PXARFilename {
-		return nil, fmt.Errorf("expected FILENAME at %d, got %s", offset, h.String())
-	}
-
-	nameData := a.growBuf(int(h.ContentSize()))
-	if _, err := io.ReadFull(a.reader, nameData); err != nil {
-		return nil, err
-	}
-	// Remove null terminator
-	if len(nameData) > 0 && nameData[len(nameData)-1] == 0 {
-		nameData = nameData[:len(nameData)-1]
-	}
-	name := string(nameData)
-
-	// Read ENTRY
-	h, err = a.readHeader()
-	if err != nil {
-		return nil, err
-	}
-
-	if h.Type == format.PXARHardlink {
-		data := a.growBuf(int(h.ContentSize()))
-		if _, err := io.ReadFull(a.reader, data); err != nil {
-			return nil, err
-		}
-		target := data[8:]
-		if len(target) > 0 && target[len(target)-1] == 0 {
-			target = target[:len(target)-1]
-		}
-		return &pxar.Entry{
-			Kind:       pxar.KindHardlink,
-			Path:       name,
-			LinkTarget: string(target),
-		}, nil
-	}
-
-	if h.Type != format.PXAREntry {
-		return nil, fmt.Errorf("expected ENTRY, got %s", h.String())
-	}
-
-	stat, err := a.readStat()
-	if err != nil {
-		return nil, err
-	}
-
-	entry := &pxar.Entry{
-		Path:       name,
-		Metadata:   pxar.Metadata{Stat: stat},
-		FileOffset: uint64(offset),
-	}
-
-	// Read attributes
-	for {
-		posBefore, _ := a.reader.Seek(0, io.SeekCurrent)
-		h2, err := a.readHeader()
-		if err != nil {
-			return nil, err
-		}
-
-		switch h2.Type {
-		case format.PXARSymlink:
-			data := a.growBuf(int(h2.ContentSize()))
-			if _, err := io.ReadFull(a.reader, data); err != nil {
-				return nil, err
-			}
-			if len(data) > 0 && data[len(data)-1] == 0 {
-				data = data[:len(data)-1]
-			}
-			entry.Kind = pxar.KindSymlink
-			entry.LinkTarget = string(data)
-			return entry, nil
-
-		case format.PXARDevice:
-			data := a.growBuf(int(h2.ContentSize()))
-			if _, err := io.ReadFull(a.reader, data); err != nil {
-				return nil, err
-			}
-			entry.Kind = pxar.KindDevice
-			entry.DeviceInfo = format.Device{
-				Major: binary.LittleEndian.Uint64(data[0:]),
-				Minor: binary.LittleEndian.Uint64(data[8:]),
-			}
-			return entry, nil
-
-		case format.PXARPayload:
-			posAfter, _ := a.reader.Seek(0, io.SeekCurrent)
-			entry.Kind = pxar.KindFile
-			entry.FileSize = h2.ContentSize()
-			entry.ContentOffset = uint64(posAfter)
-			return entry, nil
-
-		case format.PXARPayloadRef:
-			data := a.growBuf(int(h2.ContentSize()))
-			if _, err := io.ReadFull(a.reader, data); err != nil {
-				return nil, err
-			}
-			entry.Kind = pxar.KindFile
-			entry.PayloadOffset = binary.LittleEndian.Uint64(data[0:])
-			entry.FileSize = binary.LittleEndian.Uint64(data[8:])
-			entry.ContentOffset = entry.PayloadOffset
-			return entry, nil
-
-		case format.PXARFilename, format.PXARGoodbye:
-			if stat.IsFIFO() {
-				entry.Kind = pxar.KindFifo
-			} else if stat.IsSocket() {
-				entry.Kind = pxar.KindSocket
-			} else {
-				entry.Kind = pxar.KindDirectory
-			}
-			entry.ContentOffset = uint64(posBefore)
-			return entry, nil
-
-		default:
-			// Skip attribute content
+			// Skip extended metadata (xattrs, fcaps, ACLs, etc.)
 			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
 				return nil, err
 			}

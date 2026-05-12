@@ -612,7 +612,7 @@ func runCp() error {
 	}
 	defer reader.Close()
 
-	var targetFormat format.FormatVersion = format.FormatVersion1
+	targetFormat := format.FormatVersion1
 	if *formatFlag == "v2" {
 		targetFormat = format.FormatVersion2
 	}
@@ -659,7 +659,7 @@ func runMerge() error {
 	}
 	defer reader.Close()
 
-	var targetFormat format.FormatVersion = format.FormatVersion1
+	targetFormat := format.FormatVersion1
 	if *formatFlag == "v2" {
 		targetFormat = format.FormatVersion2
 	}

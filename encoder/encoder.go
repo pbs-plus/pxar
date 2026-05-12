@@ -265,12 +265,13 @@ func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) 
 	if e.payloadOut != nil {
 		// Split archive: write payload ref + actual payload
 		payloadOffset := e.currentState().payloadWritePos
-		payloadRef := format.PayloadRef{Offset: payloadOffset, Size: uint64(len(content))}
-		prData := payloadRef.Bytes()
-		if e.err = e.writeHeader(format.PXARPayloadRef, uint64(len(prData))); e.err != nil {
+		var prBuf [16]byte
+		binary.LittleEndian.PutUint64(prBuf[0:], payloadOffset)
+		binary.LittleEndian.PutUint64(prBuf[8:], uint64(len(content)))
+		if e.err = e.writeHeader(format.PXARPayloadRef, 16); e.err != nil {
 			return 0, e.err
 		}
-		if e.err = e.writeAll(prData); e.err != nil {
+		if e.err = e.writeAll(prBuf[:]); e.err != nil {
 			return 0, e.err
 		}
 
@@ -321,12 +322,13 @@ func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) 
 
 	if e.payloadOut != nil {
 		payloadOffset := e.currentState().payloadWritePos
-		payloadRef := format.PayloadRef{Offset: payloadOffset, Size: size}
-		prData := payloadRef.Bytes()
-		if e.err = e.writeHeader(format.PXARPayloadRef, uint64(len(prData))); e.err != nil {
+		var prBuf [16]byte
+		binary.LittleEndian.PutUint64(prBuf[0:], payloadOffset)
+		binary.LittleEndian.PutUint64(prBuf[8:], size)
+		if e.err = e.writeHeader(format.PXARPayloadRef, 16); e.err != nil {
 			return nil, e.err
 		}
-		if e.err = e.writeAll(prData); e.err != nil {
+		if e.err = e.writeAll(prBuf[:]); e.err != nil {
 			return nil, e.err
 		}
 
@@ -748,12 +750,13 @@ func (e *Encoder) AddPayloadRef(metadata *pxar.Metadata, name string, fileSize u
 	}
 
 	// Write PXAR_PAYLOAD_REF pointing to the original payload offset
-	payloadRef := format.PayloadRef{Offset: payloadOffset, Size: fileSize}
-	prData := payloadRef.Bytes()
-	if e.err = e.writeHeader(format.PXARPayloadRef, uint64(len(prData))); e.err != nil {
+	var prBuf [16]byte
+	binary.LittleEndian.PutUint64(prBuf[0:], payloadOffset)
+	binary.LittleEndian.PutUint64(prBuf[8:], fileSize)
+	if e.err = e.writeHeader(format.PXARPayloadRef, 16); e.err != nil {
 		return 0, e.err
 	}
-	if e.err = e.writeAll(prData); e.err != nil {
+	if e.err = e.writeAll(prBuf[:]); e.err != nil {
 		return 0, e.err
 	}
 

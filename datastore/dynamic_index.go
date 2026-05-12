@@ -1,6 +1,7 @@
 package datastore
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -167,11 +168,10 @@ func (w *DynamicIndexWriter) Csum() [32]byte {
 func (w *DynamicIndexWriter) Finish() ([]byte, error) {
 	w.header.IndexCsum = w.Csum()
 
-	var uuidInput [16]byte
-	binary.LittleEndian.PutUint64(uuidInput[0:8], uint64(w.header.Ctime))
-	binary.LittleEndian.PutUint64(uuidInput[8:16], uint64(len(w.entries)))
-	uuidHash := sha256.Sum256(uuidInput[:])
-	copy(w.header.UUID[:], uuidHash[:16])
+	// Generate random UUID matching PBS's Uuid::generate() (v4 random).
+	if _, err := rand.Read(w.header.UUID[:]); err != nil {
+		return nil, fmt.Errorf("generate uuid: %w", err)
+	}
 
 	size := IndexHeaderSize + len(w.entries)*DynamicEntrySize
 	buf := make([]byte, IndexHeaderSize, size)

@@ -371,6 +371,7 @@ func (c *pbsH2Conn) doRaw(method, path string, params url.Values) ([]byte, error
 }
 
 // readRawResponse reads the response and returns raw bytes without JSON parsing.
+// Manages per-stream flow control for large responses (e.g. previous DIDX downloads).
 func (c *pbsH2Conn) readRawResponse(streamID uint32) ([]byte, error) {
 	var (
 		status  int
@@ -378,6 +379,12 @@ func (c *pbsH2Conn) readRawResponse(streamID uint32) ([]byte, error) {
 		gotEnd  bool
 		hdrBuf  bytes.Buffer
 	)
+
+	// Default H2 initial stream window is 65535. Track consumption and replenish
+	// below half to avoid stalling on large responses.
+	const initialStreamWindow = 65535
+	streamWin := int32(initialStreamWindow)
+	streamThreshold := int32(initialStreamWindow / 2)
 
 	for !gotEnd {
 		frame, err := c.framer.ReadFrame()
@@ -412,6 +419,12 @@ func (c *pbsH2Conn) readRawResponse(streamID uint32) ([]byte, error) {
 				continue
 			}
 			dataBuf.Write(f.Data())
+			streamWin -= int32(len(f.Data()))
+			if streamWin < streamThreshold {
+				incr := uint32(initialStreamWindow - streamWin)
+				_ = c.framer.WriteWindowUpdate(streamID, incr)
+				streamWin += int32(incr)
+			}
 			if f.StreamEnded() {
 				gotEnd = true
 			}

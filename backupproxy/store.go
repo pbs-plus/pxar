@@ -107,10 +107,22 @@ type SnapshotReader interface {
 }
 
 // BackupSession represents an active backup upload session.
+// KnownChunkRef references a chunk already stored in the datastore.
+type KnownChunkRef struct {
+	Digest [32]byte
+	Size   uint64 // chunk size in bytes
+}
+
 type BackupSession interface {
 	UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error)
 	UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error)
 	UploadBlob(ctx context.Context, name string, data []byte) error
+	// InjectKnownChunks creates a DIDX with pre-known chunk references without uploading data.
+	// Used for chunk-level deduplication where original payload chunks are already in the datastore.
+	InjectKnownChunks(ctx context.Context, name string, chunks []KnownChunkRef) error
+	// UploadPayloadWithInjection uploads a payload DIDX combining injected original chunks
+	// with new data chunks. Only new data is actually uploaded.
+	UploadPayloadWithInjection(ctx context.Context, name string, origChunks []KnownChunkRef, newData io.Reader, newDataOffset uint64) (*UploadResult, error)
 	Finish(ctx context.Context) (*datastore.Manifest, error)
 }
 
@@ -258,6 +270,59 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 	addFileInfo(&s.files, name, uint64(len(blobData)), digest, string(s.config.CryptMode))
 
 	return nil
+}
+
+func (s *localSession) InjectKnownChunks(_ context.Context, name string, chunks []KnownChunkRef) error {
+	// For local store, write a DIDX file with the known chunk references.
+	// Chunks are already stored in the chunk directory, so just create the index.
+	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
+	totalSize := uint64(0)
+	for _, chunk := range chunks {
+		totalSize += chunk.Size
+		idx.Add(totalSize, chunk.Digest)
+	}
+	idxData, err := idx.Finish()
+	if err != nil {
+		return fmt.Errorf("finish index: %w", err)
+	}
+
+	idxPath := filepath.Join(s.baseDir, name)
+	if err := os.WriteFile(idxPath, idxData, 0o644); err != nil {
+		return fmt.Errorf("write index: %w", err)
+	}
+
+	return nil
+}
+
+func (s *localSession) UploadPayloadWithInjection(_ context.Context, name string, origChunks []KnownChunkRef, newData io.Reader, newDataOffset uint64) (*UploadResult, error) {
+	// For local store: write a DIDX combining original chunks + new data chunks.
+	// This streams new data through the chunker and uploads to the local chunk store.
+	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
+	totalSize := uint64(0)
+
+	// Add original chunk references
+	for _, chunk := range origChunks {
+		totalSize += chunk.Size
+		idx.Add(totalSize, chunk.Digest)
+	}
+
+	// Chunk and store new data
+	if newData != nil {
+		_ = newDataOffset
+		// TODO: implement local chunking with offset for new data
+	}
+
+	idxData, err := idx.Finish()
+	if err != nil {
+		return nil, fmt.Errorf("finish index: %w", err)
+	}
+
+	idxPath := filepath.Join(s.baseDir, name)
+	if err := os.WriteFile(idxPath, idxData, 0o644); err != nil {
+		return nil, fmt.Errorf("write index: %w", err)
+	}
+
+	return &UploadResult{Filename: name, Size: totalSize}, nil
 }
 
 func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {

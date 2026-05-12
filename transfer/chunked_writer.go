@@ -10,6 +10,7 @@ import (
 	"github.com/pbs-plus/pxar/backupproxy"
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
+	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
 )
 
@@ -48,6 +49,10 @@ func (w *ChunkedArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOptions
 
 func (w *ChunkedArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
 	return w.inner.WriteEntry(entry, content)
+}
+
+func (w *ChunkedArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
+	return w.inner.WriteEntryRef(entry, payloadOffset)
 }
 
 func (w *ChunkedArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
@@ -164,6 +169,10 @@ func (w *SessionArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) err
 	return w.inner.WriteEntry(entry, content)
 }
 
+func (w *SessionArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
+	return w.inner.WriteEntryRef(entry, payloadOffset)
+}
+
 func (w *SessionArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
 	return w.inner.WriteEntryReader(entry, r, size)
 }
@@ -251,6 +260,10 @@ func (w *SplitSessionArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte
 	return w.inner.WriteEntry(entry, content)
 }
 
+func (w *SplitSessionArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
+	return w.inner.WriteEntryRef(entry, payloadOffset)
+}
+
 func (w *SplitSessionArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
 	return w.inner.WriteEntryReader(entry, r, size)
 }
@@ -294,6 +307,11 @@ func (w *SplitSessionArchiveWriter) Finish() error {
 
 	w.SplitResult = result
 	return nil
+}
+
+// Encoder returns the underlying encoder for advanced operations.
+func (w *SplitSessionArchiveWriter) Encoder() *encoder.Encoder {
+	return w.inner.Encoder()
 }
 
 func (w *SplitSessionArchiveWriter) Close() error {

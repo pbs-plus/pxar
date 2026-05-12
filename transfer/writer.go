@@ -24,6 +24,11 @@ type ArchiveWriter interface {
 	// For regular files, content is the file data. For other types, content may be nil.
 	WriteEntry(entry *pxar.Entry, content []byte) error
 
+	// WriteEntryRef writes an entry that references existing payload data
+	// without writing the payload itself. The payloadOffset is the byte offset
+	// in the original payload stream. Used for chunk-level deduplication.
+	WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error
+
 	// WriteEntryReader writes a file entry with content streamed from r.
 	// size is the total byte count. For non-file entries (symlink, device,
 	// fifo, socket), r and size are ignored and content is nil.
@@ -132,6 +137,28 @@ func (w *StreamArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, s
 			return err
 		}
 		return fw.Close()
+	case pxar.KindSymlink:
+		return w.enc.AddSymlink(&entry.Metadata, name, entry.LinkTarget)
+	case pxar.KindDevice:
+		return w.enc.AddDevice(&entry.Metadata, name, entry.DeviceInfo)
+	case pxar.KindFifo:
+		return w.enc.AddFIFO(&entry.Metadata, name)
+	case pxar.KindSocket:
+		return w.enc.AddSocket(&entry.Metadata, name)
+	default:
+		return fmt.Errorf("unsupported entry kind: %v", entry.Kind)
+	}
+}
+
+func (w *StreamArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
+	if w.enc == nil {
+		return fmt.Errorf("writer not initialized, call Begin first")
+	}
+	name := entry.FileName()
+	switch entry.Kind {
+	case pxar.KindFile:
+		_, err := w.enc.AddPayloadRef(&entry.Metadata, name, entry.FileSize, payloadOffset)
+		return err
 	case pxar.KindSymlink:
 		return w.enc.AddSymlink(&entry.Metadata, name, entry.LinkTarget)
 	case pxar.KindDevice:

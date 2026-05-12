@@ -289,6 +289,124 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 	return result, nil
 }
 
+// UploadPayloadWithInjection uploads a payload DIDX that combines original (injected)
+// chunks with new data chunks. The original chunks are already in the datastore,
+// so only their references are appended. The new data is chunked and uploaded.
+// newDataOffset is the byte offset where new data starts in the combined stream.
+func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string, origChunks []KnownChunkRef, newData io.Reader, newDataOffset uint64) (*UploadResult, error) {
+	if s.knownChunks == nil {
+		s.knownChunks = make(map[[32]byte]bool)
+	}
+
+	wid, err := s.proto.dynamicIndexCreate(name)
+	if err != nil {
+		return nil, err
+	}
+
+	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
+
+	digests := make([]string, 0, 64)
+	offsets := make([]uint64, 0, 64)
+	const appendBatchSize = 1024
+	var hexBuf [64]byte
+
+	// Phase 1: Append original chunk references (data already in datastore)
+	totalSize := uint64(0)
+	for _, chunk := range origChunks {
+		totalSize += chunk.Size
+		idx.Add(totalSize, chunk.Digest)
+
+		hex.Encode(hexBuf[:], chunk.Digest[:])
+		digests = append(digests, string(hexBuf[:]))
+		offsets = append(offsets, totalSize-chunk.Size)
+
+		s.knownChunks[chunk.Digest] = true
+
+		if len(digests) >= appendBatchSize {
+			if err := s.proto.dynamicIndexAppend(wid, digests, offsets); err != nil {
+				return nil, fmt.Errorf("append original chunks: %w", err)
+			}
+			digests = digests[:0]
+			offsets = offsets[:0]
+		}
+	}
+
+	// Phase 2: Chunk new data, upload, and append references
+	newChunkCount := 0
+	if newData != nil {
+		chunker := buzhash.NewChunker(newData, s.chunkCfg)
+		for {
+			chunk, err := chunker.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("chunk new data: %w", err)
+			}
+
+			digest := chunkDigest(chunk, s.config.CryptConfig)
+			chunkOffset := totalSize
+			totalSize += uint64(len(chunk))
+			idx.Add(totalSize, digest)
+
+			hex.Encode(hexBuf[:], digest[:])
+			hexDigest := string(hexBuf[:])
+
+			exists := s.knownChunks[digest]
+			if !exists {
+				blobData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
+				if err != nil {
+					return nil, err
+				}
+				if err := s.proto.dynamicChunkUpload(wid, hexDigest, len(chunk), len(blobData), blobData); err != nil {
+					return nil, err
+				}
+				s.knownChunks[digest] = true
+			}
+
+			newChunkCount++
+			digests = append(digests, hexDigest)
+			offsets = append(offsets, chunkOffset)
+
+			if len(digests) >= appendBatchSize {
+				if err := s.proto.dynamicIndexAppend(wid, digests, offsets); err != nil {
+					return nil, fmt.Errorf("append new chunks: %w", err)
+				}
+				digests = digests[:0]
+			offsets = offsets[:0]
+			}
+		}
+	}
+
+	if _, err := idx.Finish(); err != nil {
+		return nil, fmt.Errorf("finish index: %w", err)
+	}
+
+	// Flush remaining batch
+	if len(digests) > 0 {
+		if err := s.proto.dynamicIndexAppend(wid, digests, offsets); err != nil {
+			return nil, fmt.Errorf("append final batch: %w", err)
+		}
+	}
+
+	indexDigest := idx.Csum()
+	pbsChecksum := hex.EncodeToString(indexDigest[:])
+
+	if err := s.proto.dynamicIndexClose(wid, len(origChunks)+newChunkCount, totalSize, pbsChecksum); err != nil {
+		return nil, err
+	}
+
+	result := &UploadResult{
+		Filename: name,
+		Size:     totalSize,
+		Digest:   indexDigest,
+	}
+
+	addFileInfo(&s.files, name, totalSize, indexDigest, string(s.config.CryptMode))
+
+	return result, nil
+}
+
 func (s *pbsSession) UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error) {
 	metaResult, err := s.UploadArchive(ctx, metadataName, metadataData)
 	if err != nil {
@@ -328,6 +446,56 @@ func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) err
 
 	digest := sha256.Sum256(blobData)
 	addFileInfo(&s.files, name, uint64(len(blobData)), digest, string(s.config.CryptMode))
+
+	return nil
+}
+
+func (s *pbsSession) InjectKnownChunks(_ context.Context, name string, chunks []KnownChunkRef) error {
+	wid, err := s.proto.dynamicIndexCreate(name)
+	if err != nil {
+		return fmt.Errorf("create index for %s: %w", name, err)
+	}
+
+	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
+	totalSize := uint64(0)
+
+	// Build digest/offset lists for batch append
+	digests := make([]string, 0, len(chunks))
+	offsets := make([]uint64, 0, len(chunks))
+
+	for _, chunk := range chunks {
+		totalSize += chunk.Size
+		idx.Add(totalSize, chunk.Digest)
+
+		var hexBuf [64]byte
+		hex.Encode(hexBuf[:], chunk.Digest[:])
+		digests = append(digests, string(hexBuf[:]))
+		offsets = append(offsets, totalSize-chunk.Size)
+
+		// Register in known chunks cache so subsequent uploads dedup
+		if s.knownChunks != nil {
+			s.knownChunks[chunk.Digest] = true
+		}
+	}
+
+	if _, err := idx.Finish(); err != nil {
+		return fmt.Errorf("finish index: %w", err)
+	}
+
+	// Append all chunk references in one batch (data already exists in datastore)
+	if len(digests) > 0 {
+		if err := s.proto.dynamicIndexAppend(wid, digests, offsets); err != nil {
+			return fmt.Errorf("append known chunks: %w", err)
+		}
+	}
+
+	indexDigest := idx.Csum()
+	pbsChecksum := hex.EncodeToString(indexDigest[:])
+	if err := s.proto.dynamicIndexClose(wid, len(chunks), totalSize, pbsChecksum); err != nil {
+		return fmt.Errorf("close index: %w", err)
+	}
+
+	addFileInfo(&s.files, name, totalSize, indexDigest, string(s.config.CryptMode))
 
 	return nil
 }

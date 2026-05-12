@@ -356,6 +356,7 @@ func (c *pbsH2Conn) doRaw(method, path string, params url.Values) ([]byte, error
 	_ = c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
 	_ = c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
 	_ = c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":authority", Value: c.authority})
 
 	if err := c.framer.WriteHeaders(http2.HeadersFrameParam{
 		StreamID:      streamID,

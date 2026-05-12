@@ -182,20 +182,36 @@ type pbsSession struct {
 }
 
 func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error) {
-	// Populate deduplication cache from previous snapshot if available
+	// Register previous chunks on the server so dynamicIndexAppend can reference them.
+	// downloadPrevious both downloads the index AND registers all chunk digests in
+	// the server's session registry. Without this, skipped (cached) chunks would be
+	// rejected by dynamic_append as unknown.
 	if s.knownChunks == nil {
 		s.knownChunks = make(map[[32]byte]bool)
 
 		if s.config.PreviousBackup != nil {
 			prev := s.config.PreviousBackup
 
-			// Try to download previous index for this specific archive name
-			data, err := s.store.ReadPreviousArchive(ctx, prev.BackupType, prev.BackupID, prev.BackupTime, prev.Namespace, name)
-			if err == nil {
-				if idx, err := datastore.ReadDynamicIndex(data); err == nil {
+			// Register previous chunks server-side via the backup protocol.
+			if prevData, err := s.proto.downloadPrevious(name); err == nil {
+				if idx, err := datastore.ReadDynamicIndex(prevData); err == nil {
 					for i := 0; i < idx.Count(); i++ {
 						if info, ok := idx.ChunkInfo(i); ok {
 							s.knownChunks[info.Digest] = true
+						}
+					}
+				}
+			} else {
+				// Fallback: use reader protocol if backup protocol's previous
+				// endpoint is unavailable (e.g., first backup in new namespace).
+				// In this case all chunks will be uploaded fresh.
+				data, err := s.store.ReadPreviousArchive(ctx, prev.BackupType, prev.BackupID, prev.BackupTime, prev.Namespace, name)
+				if err == nil {
+					if idx, err := datastore.ReadDynamicIndex(data); err == nil {
+						for i := 0; i < idx.Count(); i++ {
+							if info, ok := idx.ChunkInfo(i); ok {
+								s.knownChunks[info.Digest] = true
+							}
 						}
 					}
 				}

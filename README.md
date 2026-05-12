@@ -317,9 +317,12 @@ type ArchiveWriter interface {
 Implementations:
 
 - **`StreamArchiveWriter`** — writes to `io.Writer` (v1 or v2)
-- **`DedupSplitArchiveWriter`** — same-datastore dedup with chunk reuse
 - **`RemoteDedupSplitArchiveWriter`** — PBS remote dedup with chunk injection
 - **`SplitSessionArchiveWriter`** — uploads via `BackupSession`
+
+**`DedupSplitArchiveWriter`** is not a full `ArchiveWriter` — it lacks `WriteEntryRef`
+since it handles dedup internally by reusing source payload chunks. Use it directly
+via its own `WriteEntry`/`WriteEntryReader` methods.
 
 #### Same-Datastore Dedup Transfer
 
@@ -599,7 +602,7 @@ type BackupSession interface {
 Built-in implementations:
 
 - **`LocalStore`** — local filesystem storage (testing, offline)
-- **`PBSRemoteStore`** — PBS H2 backup protocol with HTTP/2 multiplexing
+- **`PBSStore`** — PBS H2 backup protocol with HTTP/2 multiplexing
 
 #### PBS Reader Protocol
 
@@ -723,11 +726,21 @@ target, _ := sess.Readlink(symlinkInode)
   - `DeviceFromDevT(dev)` — decode from `dev_t`
 
 - **`PayloadRef`** — 16-byte reference to payload stream offset + file size
+  - `UnmarshalPayloadRefBytes(data)` — deserialize
+- **`GoodbyeItem`** — goodbye table entry (hash + offset) for BST directory lookup
+- **`QuotaProjectID`** — project quota identifier
 - **`XAttr`** — Extended attribute (name + value), created with `NewXAttr(name, value)`
+- **`ACLUser`**, **`ACLGroup`**, **`ACLGroupObject`**, **`ACLDefault`** — POSIX ACL entry types
+  - `MarshalACLUserBytes`, `MarshalACLGroupBytes`, `MarshalACLGroupObjectBytes`, `MarshalACLDefaultBytes`
+  - `UnmarshalACLDefault(data)` — deserialize ACL default entries
+- **`ACLPermissions`** — bitmask of ACL permission flags
 - **`FormatVersion`** — Archive format version with `Serialize()` and `DeserializeFormatVersion()`
 
+- `HeaderSize` = 16 — constant for header size
 - Mode constants: `ModeIFREG`, `ModeIFDIR`, `ModeIFLNK`, `ModeIFBLK`, `ModeIFCHR`, `ModeIFIFO`, `ModeIFSOCK`, etc.
 - Type constants: `PXAREntry`, `PXARFilename`, `PXARPayload`, `PXARPayloadRef`, `PXARGoodbye`, `PXARHardlink`, `PXARSymlink`, `PXARDevice`, `PXARACLUser`, `PXARACLGroup`, `PXARACLDefault`, `PXARFCaps`, `PXARXAttr`, `PXARFormatVersion`, `PXARPrelude`, `PXARPayloadTailMarker`
+- Serialization: `MarshalStatBytesInto(buf, stat)`, `AppendStatBytesInto(dst, stat)`, `UnmarshalStatBytes(data)`, `UnmarshalStatV1Bytes(data)`, `MarshalDeviceBytes(device)`
+- `CheckFilename(name)` — validate filename bytes
 - `HashFilename(name)` — SipHash24 filename hashing for goodbye tables (matches Rust key)
 
 ### `encoder` — Archive Writer
@@ -749,7 +762,9 @@ target, _ := sess.Readlink(symlinkInode)
 
 **`LinkOffset`** — opaque file position token returned by `AddFile`/`AddPayloadRef`, passed to `AddHardlink`
 
-**`FileWriter`** — `io.Writer` for streaming file content, call `Close()` to finalize entry
+**`FileWriter`** — `io.Writer` for streaming file content
+  - `Write(data)`, `WriteAll(data)`, `Close()` — finalize entry
+  - `FileOffset()` → `LinkOffset` — position token for hardlink targets
 
 ### `decoder` — Archive Reader
 
@@ -771,28 +786,50 @@ target, _ := sess.Readlink(symlinkInode)
 
 ### `transfer` — File Transfer Between Archives
 
-- **`ArchiveReader`** — unified read interface (ReadRoot, Lookup, ListDirectory, ReadFileContentReader, ReadCatalog)
+- **`ArchiveReader`** — unified read interface (ReadRoot, Lookup, ListDirectory, ReadFileContentReader, ReadCatalog, Close)
 - **`ArchiveWriter`** — unified write interface (Begin, WriteEntry, WriteEntryRef, WriteEntryReader, BeginDirectory, EndDirectory, Finish, Close)
 - **`FileArchiveReader`** — reads from standalone .pxar files
-- **`ChunkedArchiveReader`** — lazy on-demand chunk loading from .didx (eager variant available)
-- **`SplitArchiveReader`** — reads from .mpxar.didx + .ppxar.didx (eager/meta-only variants)
+  - `NewFileArchiveReader(reader)`, `NewSplitFileArchiveReader(metaReader, payloadReader)`
+- **`ChunkedArchiveReader`** — lazy on-demand chunk loading from .didx
+  - `NewChunkedArchiveReader(idxData, source)`, `NewChunkedArchiveReaderEager(idxData, source)`
+- **`SplitArchiveReader`** — reads from .mpxar.didx + .ppxar.didx
+  - `NewSplitArchiveReader(metaIdxData, payloadIdxData, source)` — lazy
+  - `NewSplitArchiveReaderEager(metaIdxData, payloadIdxData, source)` — eager
+  - `NewSplitArchiveReaderMetaOnly(metaIdxData, source)` — metadata only, no payload
 - **`PBSArchiveReader`** — reads from PBS remote via H2 reader protocol
-- **`DecryptingReader`** — wraps any ArchiveReader for encrypted archives
-- **`StreamArchiveWriter`** — writes to io.Writer (v1 or v2 split)
-- **`DedupSplitArchiveWriter`** — same-datastore dedup with chunk reuse, provides `DedupStats()`
+  - `NewPBSArchiveReader(ctx, cfg)` — `PBSArchiveConfig` holds backup ref + PBS config
+- **`DecryptingReader`** — wraps any ArchiveReader, delegates with optional decryption layer
+- **`StreamArchiveWriter`** — writes to io.Writer
+  - `NewStreamArchiveWriter(output)` — v1
+  - `NewSplitStreamArchiveWriter(output, payloadOut)` — v2 split
+- **`DedupSplitArchiveWriter`** — same-datastore dedup with chunk reuse
+  - `NewDedupSplitArchiveWriter(store, source, config, compress, sourcePayloadIdx)`
+  - `DedupStats()` → `(hits, total int)`, `ReferenceSourcePayloadChunks()`
+  - `MetaIndexData()`, `PayloadIndexData()` — index results
+  - Not a full `ArchiveWriter` — lacks `WriteEntryRef`
 - **`RemoteDedupSplitArchiveWriter`** — PBS remote dedup with chunk injection
+  - `NewRemoteDedupSplitArchiveWriter(ctx, session, metaName, payloadName, origDidxBytes)`
+  - `Encoder()`, `AdvancePayloadPosition(n)` — direct encoder access
 - **`SplitSessionArchiveWriter`** — uploads via BackupSession
+  - `NewSplitSessionArchiveWriter(ctx, session, metaName, payloadName)`
+  - `Encoder()` — direct encoder access
 - **`ChunkedReadSeeker`** — io.ReadSeeker over chunked data with configurable cache
+  - `NewChunkedReadSeeker(idx, source, maxCache)`, `ReadAt(p, offset)`, `Seek(offset, whence)`, `Close()`
 - **`DecryptingChunkSource`** — wraps ChunkSource for encrypted chunks
+  - `NewDecryptingChunkSource(inner, cc)`, `GetChunk(digest)`
+- **`TreeWalker`** — iterator-based archive walking
+  - `NewTreeWalker(reader, opts)`, `Next()`, `Entry()`, `Err()`
 - `Copy(src, dst, mappings, opts)` — copy specific paths between archives
 - `CopyTree(src, dst, srcPath, dstPath, opts)` — copy entire directory tree
 - `WalkTree(reader, path, fn)` — walk all entries with content reading
 - `WalkTreeWith(reader, path, opts, fn)` — walk with options (MetaOnly, Filter, SkipCount)
 - `WalkTreeMetadata(reader, path, filter, fn)` — metadata-only walk with type filter
 - `TryRecordStrictlyGreater(last, offset)` — monotonic offset guard for dedup writers
-- `MapFileToPayloadChunks(idx, offset, size)` — map file to payload chunk ranges
-- `ReadFileContentFromChunks(source, idx, offset, size)` — read from specific chunks
-- `ComputeContentDigest(source, idx, offset, size)` — SHA-256 without full reconstruction
+- `MapFileToPayloadChunks(idx, offset, size)` → `[]ChunkRange` — map file to payload chunk ranges
+- `ReadFileContentFromChunks(source, idx, offset, size)` → `([]byte, error)` — read from specific chunks
+- `ComputeContentDigest(source, idx, offset, size)` → `([32]byte, error)` — SHA-256 without full reconstruction
+
+**Types**: `PathMapping{Src, Dst}`, `TransferOption{}`, `WriterOptions{Format}`, `WalkOption{MetaOnly, Filter, SkipCount}`, `WalkFilter` bitmask (`WalkFiles`, `WalkDirs`, etc.), `WalkFunc`, `MetadataWalkFunc`, `CatalogEntry{Path, ParentPath, Kind, FileSize}`, `ChunkRange{StartChunk, EndChunk, StartOffset, EndOffset}`
 
 ### `buzhash` — Content-Defined Chunking
 
@@ -809,28 +846,59 @@ target, _ := sess.Readlink(symlinkInode)
   - `LoadChunk(digest)`, `TouchChunk(digest)`, `ChunkPath(digest)`
 
 - **`DataBlob`** — chunk envelope with magic + CRC32
-  - `EncodeBlob(data)`, `EncodeCompressedBlob(data)` (zstd)
-  - `EncodeEncryptedBlob(data, cryptConfig, compress)`
-  - `DecodeBlob(raw)`, `DecodeEncryptedBlob(raw, cryptConfig)`
+  - `EncodeBlob(data)`, `EncodeBlobTo(dst, data)` — encode with CRC32
+  - `EncodeCompressedBlob(data)`, `EncodeCompressedBlobTo(dst, data)` — zstd + CRC32
+  - `EncodeEncryptedBlob(data, cryptConfig, compress)`, `EncodeEncryptedBlobTo(dst, data, cc, compress)` — AES-256-GCM + optional zstd
+  - `DecodeBlob(raw)`, `DecodeBlobInto(dst, raw)` — decode (handles compressed)
+  - `DecodeEncryptedBlob(raw, cryptConfig)` — decrypt + decode
+  - `Bytes()`, `IsCompressed()`, `IsEncrypted()`, `Magic()`, `Csum()`, `ComputeCsum()`
 
 - **`DynamicIndexWriter`** / **`DynamicIndexReader`** — variable-size chunk index (.didx)
-  - `Add(offset, digest)`, `Finish()`, `ParseDynamicIndex(data)`
-  - `Count()`, `IndexBytes()`, `ChunkInfo(i)`, `ChunkFromOffset(offset)`
+  - `NewDynamicIndexWriter(ctime)`, `Add(offset, digest)`, `Finish()`
+  - `ParseDynamicIndex(data)` → `*DynamicIndexReader`
+  - `Count()`, `IndexBytes()`, `CTime()`, `ChunkInfo(i)`, `ChunkFromOffset(offset)`, `IndexDigest(pos)`
+  - `Entry(i)` → `DynamicEntry`, `ComputeDigest(data)`
 
 - **`FixedIndexWriter`** / **`FixedIndexReader`** — fixed-size chunk index (.fidx)
+  - `NewFixedIndexWriter(ctime, size, chunkSize)`, `Add(offset, digest)`, `Finish()`
+  - `ParseFixedIndex(data)` → `*FixedIndexReader`
+  - `Count()`, `IndexBytes()`, `CTime()`, `ChunkInfo(i)`, `ChunkFromOffset(offset)`, `IndexDigest(pos)`
+
+- **`StoreChunker`** — chunking with store integration
+  - `NewStoreChunker(store, config, compress)`
+  - `ChunkStream(r, fn)` → `([]ChunkResult, *DynamicIndexWriter, error)` — chunk a stream, store each chunk
+  - `ChunkResult` holds `Digest`, `Size`, `Offset`
 
 - **`Restorer`** — reconstruct files from chunks
   - `NewRestorer(chunkSource)`, `RestoreFile(idx, writer)`, `RestoreRange(idx, offset, length, writer)`
+  - `ChunkStoreSource` wraps `ChunkStore` as a `ChunkSource`
 
-- **`ChunkSource`** — interface for loading chunks by digest
-  - Implemented by `ChunkStore`, `PBSReader.AsChunkSource()`, `DecryptingChunkSource`
+- **`ChunkSource`** — interface: `GetChunk(digest [32]byte) ([]byte, error)`
+  - Implemented by `ChunkStoreSource`, `PBSReader.AsChunkSource()`, `DecryptingChunkSource`
 
-- **`BuildCatalogFast`** — parallel catalog extraction from DIDX
-- **`BuildDirIndex`** — build directory index from goodbye table entries
-- **`OnDemandCatalog`** — lazy catalog with on-demand chunk loading
-- **`Manifest`** / **`FileInfo`** — backup snapshot manifest (JSON)
-- **`BackupType`** (`BackupHost`, `BackupVM`), **`BackupGroup`**, **`BackupDir`**, **`BackupInfo`** — namespace hierarchy
 - **`CryptConfig`** — encryption key configuration (PBKDF2 + AES-256-GCM)
+  - `NewCryptConfig(encKey [32]byte)` → `(*CryptConfig, error)`
+  - `Encrypt(plaintext)`, `Decrypt(ciphertext)`, `AuthTag(data)`
+  - `Fingerprint()` → `[32]byte`, `FormatFingerprint(fp)` → `string`
+  - `KeyConfig`, `KeyDerivationConfig`, `UnprotectedInfo` — key file structures
+  - `CreateRandomKey()`, `GenerateKeyFile(password)`, `LoadKeyFile(data, password)`, `LoadKeyFileNoPassword(data)`
+  - `SignManifest(manifest, cc)`, `VerifyManifestSignature(manifest, cc)`
+  - `CryptMode` constants: `CryptModeNone`, `CryptModeEncrypt`, `CryptModeSignOnly`
+  - `IsEncryptedMagic(magic)`, `IsCompressedMagic(magic)`, `BlobHeaderSizeFor(magic)`
+
+- **Backup Catalogs**
+  - `BuildCatalogFast(payloadIdx, metaIdx, source, opts)` → `(*Catalog, *DirIndex, error)` — parallel extraction
+  - `BuildDirIndex(metaIdx, source, opts)` → `(*DirIndex, error)` — directory index
+  - `OnDemandCatalog` — lazy catalog with `HasDir`, `DirPaths`, `NumDirs`, `ListDir`
+  - `CatalogChild` — lightweight entry (name, type, size, mtime)
+  - `CatalogWriter` / `CatalogReader` — pcat1 binary catalog serialization
+  - `ReadCatalogTree(data)` → `(*CatalogTreeEntry, error)` — read entire catalog tree
+
+- **`Manifest`** / **`FileInfo`** — backup snapshot manifest (JSON)
+  - `Marshal()`, `UnmarshalManifest(data)`, `VerifyFile(filename, csum, size)`
+
+- **`BackupType`** (`BackupHost`, `BackupVM`), **`BackupGroup`**, **`BackupDir`**, **`BackupInfo`** — namespace hierarchy
+  - `ParseBackupType(s)`, `BackupType.String()`
 
 ### `binarytree` — BST Permutation
 
@@ -839,30 +907,55 @@ target, _ := sess.Readlink(symlinkInode)
 
 ### `fusefs` — FUSE Filesystem
 
+- **`FileSystem`** — interface implemented by Session
 - **`Session`** — read-only filesystem session over a pxar archive
-- `NewSession(reader, size)` → `(*Session, error)`
-- `Lookup(parentInode, name)`, `Getattr(inode)`, `Readdir(inode, offset)`
-- `Read(inode, buf, offset)`, `Readlink(inode)`, `ListXAttr(inode)`
+  - `NewSession(reader, size)` → `(*Session, error)`, `Close()`
+  - `Lookup(parentInode, name)` → `(inode, Attr, error)`
+  - `Getattr(inode)` → `(Attr, error)`, `Open(inode, flags)`, `Release(inode)`
+  - `Readdir(inode, offset)` → `([]DirEntryIndex, error)`
+  - `Read(inode, buf, offset)` → `(int, error)`, `Readlink(inode)` → `(string, error)`
+  - `ListXAttr(inode)` → `([]string, error)`, `GetXAttr(inode, attr)` → `([]byte, error)`
+  - `Forget(inode, count)`, `Access(inode, mask)`, `Statfs()` → `(syscall.Statfs_t, error)`
+- **`Node`** — cached inode with parent, content range, entry range info
+- **`Attr`** — file attributes (Inode, Mode, UID, GID, Size, Atime/Mtime/Ctime, Blocks, Nlink, Rdev)
+- **`DirEntryIndex`** — directory entry (Inode + Name)
+- **`EntryRangeInfo`** — entry byte range in archive (Start + End offset)
+- **`ContentRange`** — file content byte range (Offset + Size)
 - `RootInode` constant, `IsDirInode(inode)` helper
+- `StatToAttr(inode, stat, fileSize)` — convert format.Stat to Attr
 
 ### `backupproxy` — Pull-Mode Backup
 
 - **`Server`** — backup orchestrator (walk → encode → chunk → upload)
+  - `NewServer(client, store)`, `RunBackup(ctx, root, config)`, `RunBackupWithMode(ctx, root, config)`, `RunSplitBackup(ctx, root, config)`, `RunMetadataBackup(ctx, root, config)`
 - **`ClientProvider`** — interface for accessing client filesystem data
+  - `Stat`, `ReadDir`, `OpenFile`, `ReadLink`, `GetXAttrs`, `GetACL`, `GetFCaps`
+- **`FileOpener`** — optional interface for streaming file reads (`OpenFile`)
 - **`FileSystemAccessor`** — client-side local filesystem access (no context)
 - **`LocalClient`** — adapts FileSystemAccessor to ClientProvider
+- **`NoExtendedAttrs`** — FileSystemAccessor stub that returns empty xattrs/ACL/fcaps
 - **`RemoteStore`** — storage backend interface (session + snapshot reader)
-- **`BackupSession`** — upload session interface (archive, split, blob, injection, finish)
+  - `RemoteStoreBase` (StartSession), `SnapshotReader` (ReadPreviousArchive, NewPreviousSnapshotSource)
+- **`BackupSession`** — upload session interface
+  - `UploadArchive`, `UploadSplitArchive`, `UploadBlob`, `UploadPayloadWithInjection`, `Finish`
+- **`KnownChunkRef`** — reference to a chunk already in the datastore (Digest + Size)
+- **`UploadResult`** — upload outcome (Filename, Size, Digest)
+- **`SplitArchiveResult`** — split upload outcome (Meta + Payload UploadResult)
 - **`LocalStore`** — local filesystem storage backend
-- **`PBSRemoteStore`** — PBS H2 backup protocol backend
+- **`PBSStore`** — PBS H2 backup protocol backend
 - **`PBSReader`** — PBS reader protocol client for restore
-- **`PBSConfig`** — PBS connection configuration (URL, datastore, auth, TLS)
-- **`BackupConfig`** — backup configuration (type, id, time, mode, encryption, previous backup)
-- **`BackupResult`** — backup outcome (manifest, file count, dir count, bytes, duration)
+  - `Connect(ctx)`, `DownloadFile(name)`, `DownloadChunk(digest)`, `AsChunkSource()`, `RestoreFile(idx, w)`, `RestoreFileRange(idx, offset, length, w)`
+- **`PBSConfig`** — PBS connection configuration (BaseURL, Datastore, AuthToken, Namespace, SkipTLSVerify)
+- **`BackupConfig`** — backup configuration (BackupType, BackupID, BackupTime, DetectionMode, CryptConfig, ChunkConfig, Compress, PreviousBackup)
+- **`BackupResult`** — backup outcome (Manifest, TotalBytes, FileCount, DirCount, Duration, CatalogUploaded)
 - **`DetectionMode`** — `DetectionLegacy`, `DetectionData`, `DetectionMetadata`
 - **`PreviousBackupRef`** — reference to previous snapshot for metadata mode
-- **`DirEntry`** — directory entry with Stat, Size, XAttrs, ACL, FCaps
 - **`PreviousSnapshotSource`** — interface for reading previous backup data
+  - `NewPreviousSnapshotSourceFromDir(dir)` — local filesystem implementation
+- **`DirEntry`** — directory entry with Stat, Size, XAttrs, ACL, FCaps
+- **`SnapshotCatalog`** / **`SnapshotEntry`** — catalog of previous snapshot entries
+  - `BuildCatalog(metaIdx, source)` — build catalog from DIDX
+  - `EntryMatches(current, metadata, prev)` — compare metadata for change detection
 
 ## Architecture
 
@@ -898,7 +991,7 @@ Backup Data Flow:
                                               │
                                        RemoteStore
                                        ├── LocalStore (testing)
-                                       └── PBSRemoteStore (PBS H2 Protocol)
+                                       └── PBSStore (PBS H2 Protocol)
 ```
 
 ## Verification

@@ -199,6 +199,12 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 	return nil
 }
 
-// Ensure archive interfaces are used.
-var _ ArchiveReader
-var _ ArchiveWriter
+// Ensure archive interfaces are satisfied.
+var _ ArchiveReader = (*FileArchiveReader)(nil)
+var _ ArchiveReader = (*ChunkedArchiveReader)(nil)
+var _ ArchiveReader = (*SplitArchiveReader)(nil)
+var _ ArchiveReader = (*DecryptingReader)(nil)
+var _ ArchiveReader = (*PBSArchiveReader)(nil)
+var _ ArchiveWriter = (*StreamArchiveWriter)(nil)
+var _ ArchiveWriter = (*RemoteDedupSplitArchiveWriter)(nil)
+var _ ArchiveWriter = (*SplitSessionArchiveWriter)(nil)

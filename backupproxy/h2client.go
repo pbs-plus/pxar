@@ -24,6 +24,7 @@ type pbsH2Conn struct {
 	enc          *hpack.Encoder
 	dec          *hpack.Decoder
 	hdrBuf       *bytes.Buffer
+	authority    string
 	nextID       uint32
 	maxFrameSize uint32
 }
@@ -161,6 +162,7 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 		enc:          hpack.NewEncoder(hdrBuf),
 		dec:          dec,
 		hdrBuf:       hdrBuf,
+		authority:    u.Host,
 		nextID:       1,
 		maxFrameSize: maxFrame,
 	}, nil
@@ -189,6 +191,7 @@ func (c *pbsH2Conn) do(method, path string, params url.Values, body []byte, cont
 	_ = c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
 	_ = c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
 	_ = c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":authority", Value: c.authority})
 	if contentType != "" {
 		_ = c.enc.WriteField(hpack.HeaderField{Name: "content-type", Value: contentType})
 	}

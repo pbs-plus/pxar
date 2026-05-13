@@ -24,17 +24,18 @@ import (
 // Only metadata and new file content are buffered in memory. Unchanged file
 // content is never read — the original payload chunks are referenced directly.
 type RemoteDedupSplitArchiveWriter struct {
-	session     backupproxy.BackupSession
-	ctx         context.Context
-	inner       *StreamArchiveWriter
-	metaName    string
-	payloadName string
-	origChunks  []backupproxy.KnownChunkRef
-	metaBuf     bytes.Buffer
-	payloadBuf  bytes.Buffer
-	dirDepth    int
-	origSize    uint64
-	lastRefOff  *uint64 // monotonic offset tracker for WriteEntryRef (nil = no offset yet)
+	session      backupproxy.BackupSession
+	ctx          context.Context
+	inner        *StreamArchiveWriter
+	metaName     string
+	payloadName  string
+	origChunks   []backupproxy.KnownChunkRef
+	metaBuf      bytes.Buffer
+	payloadBuf   bytes.Buffer
+	dirDepth     int
+	origSize     uint64
+	lastRefOff   *uint64 // monotonic offset tracker for WriteEntryRef (nil = no offset yet)
+	payloadAlign bool    // true once payloadWritePos has been aligned to origSize
 }
 
 // NewRemoteDedupSplitArchiveWriter creates a dedup writer for PBS uploads.
@@ -83,11 +84,43 @@ func (w *RemoteDedupSplitArchiveWriter) Begin(rootMeta *pxar.Metadata, opts Writ
 	return w.inner.Begin(rootMeta, opts)
 }
 
+// alignPayload advances the encoder's payloadWritePos so that new file offsets
+// match their actual positions in the combined payload stream.
+//
+// Combined stream: [0, origSize) = original chunks, [origSize, ...) = new data.
+// The encoder tracks a virtual payloadWritePos. After all AddPayloadRef calls,
+// payloadWritePos = 16 + sum(16+fileSize for ref'd files), which may be less
+// than origSize (missing the original stream's TAIL_MARKER and any skipped files).
+// We advance by the difference so that CreateFile generates correct offsets.
+func (w *RemoteDedupSplitArchiveWriter) alignPayload() error {
+	if w.payloadAlign {
+		return nil
+	}
+	w.payloadAlign = true
+	enc := w.inner.Encoder()
+	if enc == nil || w.origSize == 0 {
+		return nil
+	}
+	curPos := enc.PayloadPosition()
+	if w.origSize > curPos {
+		if err := enc.Advance(w.origSize - curPos); err != nil {
+			return fmt.Errorf("align payload position: %w", err)
+		}
+	}
+	return nil
+}
+
 func (w *RemoteDedupSplitArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
+	if err := w.alignPayload(); err != nil {
+		return err
+	}
 	return w.inner.WriteEntry(entry, content)
 }
 
 func (w *RemoteDedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+	if err := w.alignPayload(); err != nil {
+		return err
+	}
 	return w.inner.WriteEntryReader(entry, r, size)
 }
 
@@ -137,14 +170,13 @@ func (w *RemoteDedupSplitArchiveWriter) Finish() error {
 
 // uploadPayload builds the combined payload DIDX.
 //
-// The encoder's payloadWritePos after all AddPayloadRef calls is at
-// origSize - HeaderSize (missing the original stream's TAIL_MARKER).
-// We call Advance(HeaderSize) to account for it, making new file data
-// start at origSize in the combined stream.
+// alignPayload (called before the first WriteEntry/WriteEntryReader) advances
+// the encoder's virtual payloadWritePos to origSize so that PAYLOAD_REF offsets
+// for new files match their actual positions in the combined stream.
 //
 // Combined DIDX layout:
 //
-//	[0, origSize)                — original chunks (injected)
+//	[0, origSize)                  — original chunks (injected)
 //	[origSize, origSize + newData) — new file data (uploaded)
 func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
 	enc := w.inner.Encoder()

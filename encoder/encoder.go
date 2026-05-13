@@ -32,11 +32,13 @@ type Encoder struct {
 }
 
 type encoderState struct {
-	items           []format.GoodbyeItem
-	entryOffset     uint64
-	writePosition   uint64
-	payloadWritePos uint64
-	parentItemIdx   int // index in parent's items slice, -1 for root
+	items                  []format.GoodbyeItem
+	entryOffset            uint64
+	writePosition          uint64
+	payloadWritePos        uint64
+	previousPayloadOffset  uint64 // last PAYLOAD_REF offset seen (0 = none)
+	hasPrevPayloadOffset   bool   // true once a PAYLOAD_REF has been written
+	parentItemIdx          int    // index in parent's items slice, -1 for root
 }
 
 // NewEncoder creates a new pxar encoder writing to the given writers.
@@ -273,7 +275,10 @@ func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) 
 
 	if e.payloadOut != nil {
 		// Split archive: write payload ref + actual payload
-		payloadOffset := e.currentState().payloadWritePos
+		s := e.currentState()
+		payloadOffset := s.payloadWritePos
+		s.previousPayloadOffset = payloadOffset
+		s.hasPrevPayloadOffset = true
 		var prBuf [16]byte
 		binary.LittleEndian.PutUint64(prBuf[0:], payloadOffset)
 		binary.LittleEndian.PutUint64(prBuf[8:], uint64(len(content)))
@@ -331,7 +336,10 @@ func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) 
 	}
 
 	if e.payloadOut != nil {
-		payloadOffset := e.currentState().payloadWritePos
+		s := e.currentState()
+		payloadOffset := s.payloadWritePos
+		s.previousPayloadOffset = payloadOffset
+		s.hasPrevPayloadOffset = true
 		var prBuf [16]byte
 		binary.LittleEndian.PutUint64(prBuf[0:], payloadOffset)
 		binary.LittleEndian.PutUint64(prBuf[8:], size)
@@ -635,9 +643,13 @@ func (e *Encoder) CreateDirectory(name string, metadata *pxar.Metadata) error {
 	// Push new state for the child directory
 	childPos := e.currentState().writePosition
 	childPayloadPos := e.currentState().payloadWritePos
+	prevOff := e.currentState().previousPayloadOffset
+	hasPrev := e.currentState().hasPrevPayloadOffset
 	e.pushState(childPos, parentItemIdx)
 	e.currentState().entryOffset = entryOffset
 	e.currentState().payloadWritePos = childPayloadPos
+	e.currentState().previousPayloadOffset = prevOff
+	e.currentState().hasPrevPayloadOffset = hasPrev
 
 	return nil
 }
@@ -751,7 +763,18 @@ func (e *Encoder) AddPayloadRef(metadata *pxar.Metadata, name string, fileSize u
 		return 0, fmt.Errorf("AddPayloadRef requires split archive (v2 format)")
 	}
 
-	fileOffset := e.currentState().writePosition
+	// Monotonic offset check — mirrors Rust encoder's payload_ref_from:
+	// payload_offset must be strictly larger than the previously seen PAYLOAD_REF
+	// offset for the sequential decoder to correctly restore contents.
+	s := e.currentState()
+	if s.hasPrevPayloadOffset && payloadOffset <= s.previousPayloadOffset {
+		return 0, fmt.Errorf("unexpected payload offset %d not larger than previous offset %d",
+			payloadOffset, s.previousPayloadOffset)
+	}
+	s.previousPayloadOffset = payloadOffset
+	s.hasPrevPayloadOffset = true
+
+	fileOffset := s.writePosition
 
 	if err := e.encodeFilename([]byte(name)); err != nil {
 		return 0, err
@@ -791,7 +814,7 @@ func (e *Encoder) AddPayloadRef(metadata *pxar.Metadata, name string, fileSize u
 	e.currentState().payloadWritePos += format.HeaderSize + fileSize
 
 	endOffset := e.currentState().writePosition
-	s := e.currentState()
+	s = e.currentState()
 	s.items = append(s.items, format.GoodbyeItem{
 		Hash:   format.HashFilename([]byte(name)),
 		Offset: fileOffset,

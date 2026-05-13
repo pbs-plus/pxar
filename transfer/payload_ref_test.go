@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	pxar "github.com/pbs-plus/pxar"
@@ -83,6 +84,11 @@ func TestSplitArchivePayloadRefRoundTrip(t *testing.T) {
 	var dstMeta, dstPayload bytes.Buffer
 	dstRootMeta := pxar.DirMetadata(0o755).Build()
 	dstEnc := encoder.NewEncoder(&dstMeta, &dstPayload, &dstRootMeta, nil)
+
+	// Sort entries by payload offset — AddPayloadRef requires strictly increasing offsets
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].payloadOffset < entries[j].payloadOffset
+	})
 
 	for _, e := range entries {
 		_, err := dstEnc.AddPayloadRef(&e.meta, e.name, e.fileSize, e.payloadOffset)
@@ -267,6 +273,8 @@ func TestLocalStoreSplitArchiveWithPayloadRef(t *testing.T) {
 	}
 
 	// Write original file via PayloadRef (no payload data written)
+	// All PayloadRef entries must come before WriteEntry calls to maintain
+	// strictly increasing payload offsets (mirrors Rust's cache-flush-then-encode pattern).
 	for _, f := range originalFiles {
 		entry := &pxar.Entry{
 			Path:     f.name,
@@ -279,19 +287,7 @@ func TestLocalStoreSplitArchiveWithPayloadRef(t *testing.T) {
 		}
 	}
 
-	// Write new file with actual content
-	newContent := []byte("this is a brand new file added during commit")
-	newFileMeta := pxar.FileMetadata(0o644).Build()
-	if err := dstWriter.WriteEntry(&pxar.Entry{
-		Path:     "newfile.txt",
-		Kind:     pxar.KindFile,
-		Metadata: newFileMeta,
-		FileSize: uint64(len(newContent)),
-	}, newContent); err != nil {
-		t.Fatal(err)
-	}
-
-	// Write subdir via PayloadRef
+	// Write subdir via PayloadRef (before any new-file WriteEntry)
 	if err := dstWriter.BeginDirectory("subdir", &dirMeta); err != nil {
 		t.Fatal(err)
 	}
@@ -307,6 +303,18 @@ func TestLocalStoreSplitArchiveWithPayloadRef(t *testing.T) {
 		}
 	}
 	if err := dstWriter.EndDirectory(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write new file with actual content (after all PayloadRef entries)
+	newContent := []byte("this is a brand new file added during commit")
+	newFileMeta := pxar.FileMetadata(0o644).Build()
+	if err := dstWriter.WriteEntry(&pxar.Entry{
+		Path:     "newfile.txt",
+		Kind:     pxar.KindFile,
+		Metadata: newFileMeta,
+		FileSize: uint64(len(newContent)),
+	}, newContent); err != nil {
 		t.Fatal(err)
 	}
 

@@ -24,7 +24,6 @@ type ArchiveReader interface {
 	// If fn returns a non-nil error, iteration stops.
 	ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error
 
-
 	// ReadFileContentReader returns a streaming reader for file content.
 	// The caller must close the reader. Use this for large files to avoid
 	// buffering the entire content in memory.
@@ -73,8 +72,6 @@ func (r *FileArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 func (r *FileArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.accessor.ListDirectory(dirOffset, opts, fn)
 }
-
-
 
 // ReadEntryAt reads a full pxar entry at the given archive byte offset.
 
@@ -160,6 +157,17 @@ func NewChunkedArchiveReaderEager(idxData []byte, source datastore.ChunkSource) 
 	}, nil
 }
 
+// ReaderAt returns the underlying io.ReaderAt for the archive stream.
+// Returns nil for eager readers backed by bytes.Reader (use the
+// FileArchiveReader directly if you need ReaderAt on those).
+// The returned ReaderAt is safe for concurrent use.
+func (r *ChunkedArchiveReader) ReaderAt() io.ReaderAt {
+	if r.lazy != nil {
+		return r.lazy
+	}
+	return nil
+}
+
 func (r *ChunkedArchiveReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
 }
@@ -171,9 +179,6 @@ func (r *ChunkedArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 func (r *ChunkedArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
-
-
-
 
 func (r *ChunkedArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
@@ -310,6 +315,16 @@ func NewSplitArchiveReaderEager(metaIdxData, payloadIdxData []byte, source datas
 	}, nil
 }
 
+// PayloadReaderAt returns the underlying io.ReaderAt for the payload stream.
+// Returns nil for meta-only or eager readers that don't use a ChunkedReadSeeker.
+// The returned ReaderAt is safe for concurrent use.
+func (r *SplitArchiveReader) PayloadReaderAt() io.ReaderAt {
+	if r.payloadLazy != nil {
+		return r.payloadLazy
+	}
+	return nil
+}
+
 func (r *SplitArchiveReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
 }
@@ -321,9 +336,6 @@ func (r *SplitArchiveReader) Lookup(path string) (*pxar.Entry, error) {
 func (r *SplitArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
-
-
-
 
 func (r *SplitArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)

@@ -96,7 +96,7 @@ func (w *RemoteDedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io
 // offset (mirrors Rust's try_record_strictly_greater validation).
 func (w *RemoteDedupSplitArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
 	if !TryRecordStrictlyGreater(&w.lastRefOff, payloadOffset) {
-		return fmt.Errorf("payload offset %d is not strictly greater than last accepted offset %v", payloadOffset, w.lastRefOff)
+		return fmt.Errorf("payload offset %d is not strictly greater than last accepted offset %d", payloadOffset, *w.lastRefOff)
 	}
 	return w.inner.WriteEntryRef(entry, payloadOffset)
 }

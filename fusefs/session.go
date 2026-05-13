@@ -13,11 +13,12 @@ import (
 // Session implements FileSystem over a pxar archive, providing FUSE-compatible
 // operations without importing go-fuse directly.
 type Session struct {
-	reader io.ReadSeeker
-	acc    *accessor.Accessor
-	nodes  map[uint64]*Node
-	size   int64
-	mu     sync.Mutex
+	reader   io.ReadSeeker
+	readerAt io.ReaderAt // non-nil when reader supports concurrent ReadAt
+	acc      *accessor.Accessor
+	nodes    map[uint64]*Node
+	size     int64
+	mu       sync.Mutex // protects nodes map and reader seek position (ReaderAt path)
 }
 
 // NewSession creates a new FUSE filesystem session over a pxar archive.
@@ -25,10 +26,14 @@ func NewSession(r io.ReadSeeker, size int64) (*Session, error) {
 	acc := accessor.NewAccessor(r)
 
 	s := &Session{
-		acc:    acc,
-		reader: r,
-		size:   size,
-		nodes:  make(map[uint64]*Node),
+		acc:      acc,
+		reader:   r,
+		readerAt: nil,
+		size:     size,
+		nodes:    make(map[uint64]*Node),
+	}
+	if ra, ok := r.(io.ReaderAt); ok {
+		s.readerAt = ra
 	}
 
 	// Read root entry to initialize
@@ -196,23 +201,36 @@ func (s *Session) Open(inode uint64, flags uint32) error {
 }
 
 // Read reads data from a file. FUSE requires no short reads except at EOF.
+//
+// Fast path: when the underlying reader implements io.ReaderAt, Read snapshots
+// the content range under s.mu and then calls ReadAt without holding the lock,
+// allowing concurrent FUSE reads to proceed in parallel.
+//
+// Slow path: for plain io.ReadSeeker, falls back to locked Seek+ReadFull.
 func (s *Session) Read(inode uint64, dest []byte, offset int64) (int, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	node, ok := s.nodes[inode]
 	if !ok {
+		s.mu.Unlock()
 		return 0, syscall.ENOENT
 	}
 
 	if IsDirInode(inode) {
+		s.mu.Unlock()
 		return 0, syscall.EISDIR
 	}
 
 	contentOff, contentSz, hasContent := node.Content()
 	if !hasContent {
+		s.mu.Unlock()
 		return 0, syscall.EBADF
 	}
+
+	// Snapshot the values we need, then release the lock.
+	// contentOff and contentSz are immutable once set on a node.
+	ra := s.readerAt
+	s.mu.Unlock()
 
 	if offset >= int64(contentSz) {
 		return 0, nil
@@ -221,10 +239,21 @@ func (s *Session) Read(inode uint64, dest []byte, offset int64) (int, error) {
 	remaining := int64(contentSz) - offset
 	toRead := min(int64(len(dest)), remaining)
 
+	// Fast path: concurrent-safe ReadAt — no lock needed.
+	if ra != nil {
+		n, err := ra.ReadAt(dest[:toRead], int64(contentOff)+offset)
+		if err != nil && err != io.EOF {
+			return n, err
+		}
+		return n, nil
+	}
+
+	// Slow path: serialise through the shared seekable reader.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, err := s.reader.Seek(int64(contentOff)+offset, io.SeekStart); err != nil {
 		return 0, err
 	}
-
 	n, err := io.ReadFull(s.reader, dest[:toRead])
 	if err != nil && err != io.ErrUnexpectedEOF {
 		return n, err

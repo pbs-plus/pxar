@@ -186,11 +186,14 @@ func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
 	}
 
 	// The encoder wrote payloadBuf = [START_MARKER] [new file entries] [TAIL_MARKER]
-	// Strip the START_MARKER (first 16 bytes) — combined stream already has one.
+	// When there are original chunks, strip the START_MARKER (first 16 bytes)
+	// because the combined stream already has one from the original.
+	// When there are no original chunks (init mode), keep the START_MARKER
+	// because it IS the start of the combined stream.
 	newData := w.payloadBuf.Bytes()
-	if len(newData) > int(format.HeaderSize) {
+	if len(w.origChunks) > 0 && len(newData) > int(format.HeaderSize) {
 		newData = newData[format.HeaderSize:]
-	} else {
+	} else if len(w.origChunks) > 0 {
 		newData = nil
 	}
 

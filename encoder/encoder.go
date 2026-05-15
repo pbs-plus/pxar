@@ -32,13 +32,13 @@ type Encoder struct {
 }
 
 type encoderState struct {
-	items                  []format.GoodbyeItem
-	entryOffset            uint64
-	writePosition          uint64
-	payloadWritePos        uint64
-	previousPayloadOffset  uint64 // last PAYLOAD_REF offset seen (0 = none)
-	hasPrevPayloadOffset   bool   // true once a PAYLOAD_REF has been written
-	parentItemIdx          int    // index in parent's items slice, -1 for root
+	items                 []format.GoodbyeItem
+	entryOffset           uint64
+	writePosition         uint64
+	payloadWritePos       uint64
+	previousPayloadOffset uint64 // last PAYLOAD_REF offset seen (0 = none)
+	hasPrevPayloadOffset  bool   // true once a PAYLOAD_REF has been written
+	parentItemIdx         int    // index in parent's items slice, -1 for root
 }
 
 // NewEncoder creates a new pxar encoder writing to the given writers.
@@ -805,13 +805,11 @@ func (e *Encoder) AddPayloadRef(metadata *pxar.Metadata, name string, fileSize u
 	// The correct approach: write the payload data as-is from the original.
 	// But we don't have the original data here — that's the whole point.
 	//
-	// For the "all reused" case, we don't need to write any payload data at all.
-	// We inject the original chunks directly into the DIDX.
-	// For the mixed case, we need to build the DIDX in two parts.
-	//
-	// So here we just track the virtual position. The caller handles payload
-	// construction at a higher level.
-	e.currentState().payloadWritePos += format.HeaderSize + fileSize
+	// For the "all reused" case, we don't need to write any payload data at
+	// all. We inject the original chunks directly into the DIDX. For the mixed
+	// case, we build the DIDX in two parts. Do NOT advance payloadWritePos
+	// here — the dedup writer calls alignPayload to set the correct position
+	// before writing new data.
 
 	endOffset := e.currentState().writePosition
 	s = e.currentState()

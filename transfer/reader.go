@@ -29,6 +29,10 @@ type ArchiveReader interface {
 	// buffering the entire content in memory.
 	ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error)
 
+	// ReadEntryAt reads a full pxar entry at the given archive byte offset.
+	// Used for re-reading entries with full metadata after a minimal ListDirectory.
+	ReadEntryAt(offset int64) (*pxar.Entry, error)
+
 	// ReadCatalog streams the full directory tree via a callback with
 	// minimal decoding. For each entry, fn is called. If fn returns a
 	// non-nil error, iteration stops and the error is returned.

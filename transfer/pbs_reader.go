@@ -104,10 +104,12 @@ func (r *PBSArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOpti
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
-
-
 func (r *PBSArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
+}
+
+func (r *PBSArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+	return r.inner.ReadEntryAt(offset)
 }
 
 func (r *PBSArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {

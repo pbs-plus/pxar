@@ -93,6 +93,10 @@ func (r *DecryptingReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadClos
 	return r.inner.ReadFileContentReader(entry)
 }
 
+func (r *DecryptingReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+	return r.inner.ReadEntryAt(offset)
+}
+
 func (r *DecryptingReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return r.inner.ReadCatalog(fn)
 }

@@ -16,6 +16,7 @@ type Decoder struct {
 	input    io.Reader
 	version  format.FormatVersion
 	state    decoderState
+	fixedBuf []byte // heap buffer for fixed-size reads (header/stat), avoids interface escape
 	header   format.Header
 	pathLens []int
 	path     string
@@ -55,10 +56,11 @@ func (lr *limitedReader) Read(p []byte) (int, error) {
 // NewDecoder creates a new pxar decoder.
 func NewDecoder(input io.Reader, payloadReader io.Reader) *Decoder {
 	return &Decoder{
-		input:   input,
-		state:   stateBegin,
-		version: format.FormatVersion1,
-		path:    "/",
+		input:    input,
+		state:    stateBegin,
+		version:  format.FormatVersion1,
+		path:     "/",
+		fixedBuf: make([]byte, 64),
 	}
 }
 
@@ -539,8 +541,8 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 }
 
 func (d *Decoder) readHeader() (format.Header, error) {
-	var buf [16]byte
-	if _, err := io.ReadFull(d.input, buf[:]); err != nil {
+	buf := d.fixedBuf[:16]
+	if _, err := io.ReadFull(d.input, buf); err != nil {
 		return format.Header{}, err
 	}
 	h := format.Header{

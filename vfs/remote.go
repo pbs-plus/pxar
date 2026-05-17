@@ -305,6 +305,9 @@ func (fs *RemoteFileSystem) getCached(path string) *entryAndInfo {
 func (fs *RemoteFileSystem) put(path string, e *pxar.Entry, fi *pxar.FileInfo) *entryAndInfo {
 	combined := newEntryAndInfo(e, fi)
 	fs.mu.Lock()
+	if old, ok := fs.cache[path]; ok {
+		releaseEntryAndInfo(old)
+	}
 	fs.cache[path] = combined
 	fs.mu.Unlock()
 	return combined
@@ -312,11 +315,13 @@ func (fs *RemoteFileSystem) put(path string, e *pxar.Entry, fi *pxar.FileInfo) *
 
 func (fs *RemoteFileSystem) putInfo(path string, kind pxar.EntryKind, size uint64, fi *pxar.FileInfo) {
 	combined := newEntryAndInfo(nil, fi)
-	// Create entry lazily only if LookupEntry is called.
 	combined._kind = kind
 	combined._size = size
 	combined._path = path
 	fs.mu.Lock()
+	if old, ok := fs.cache[path]; ok {
+		releaseEntryAndInfo(old)
+	}
 	fs.cache[path] = combined
 	fs.mu.Unlock()
 }

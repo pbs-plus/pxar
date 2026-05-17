@@ -131,6 +131,17 @@ func newEntryAndInfo(entry *pxar.Entry, info *pxar.FileInfo) *entryAndInfo {
 	return combined
 }
 
+// releaseEntryAndInfo resets and returns an entryAndInfo to its pool.
+// This should only be called when the entry is being evicted from cache.
+func releaseEntryAndInfo(ei *entryAndInfo) {
+	ei.entry = nil
+	ei.info = nil
+	ei._path = ""
+	ei._kind = 0
+	ei._size = 0
+	entryAndInfoPool.Put(ei)
+}
+
 // NewLocalFS creates a FileSystem backed by an ArchiveReader.
 func NewLocalFS(reader transfer.ArchiveReader) *LocalFileSystem {
 	return &LocalFileSystem{
@@ -171,7 +182,10 @@ func (fs *LocalFileSystem) ReadDir(path string) ([]DirEntry, error) {
 	}
 	fs.put(p, dirEntry)
 
-	var entries []DirEntry
+	// Pre-allocate entries slice. We don't know the exact count, but
+	// the goodbye table size gives a reasonable upper bound. Start
+	// with a reasonable default to avoid repeated growslice.
+	entries := make([]DirEntry, 0, 128)
 	err = fs.reader.ListDirectory(int64(dirEntry.ContentOffset), accessor.ListOption{Minimal: true}, func(e *pxar.Entry) error {
 		childPath := joinPath(p, e.FileName())
 		info := pxar.EntryToFileInfo(e)
@@ -304,6 +318,9 @@ func (fs *LocalFileSystem) getCached(path string) *entryAndInfo {
 func (fs *LocalFileSystem) put(path string, e *pxar.Entry) *entryAndInfo {
 	combined := newEntryAndInfo(e, pxar.EntryToFileInfo(e))
 	fs.mu.Lock()
+	if old, ok := fs.cache[path]; ok {
+		releaseEntryAndInfo(old)
+	}
 	fs.cache[path] = combined
 	fs.mu.Unlock()
 	return combined

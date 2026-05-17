@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -34,6 +35,12 @@ type Accessor struct {
 	payloadReader io.ReadSeeker // optional, for split archives (v2 format)
 	readBuf       []byte        // reusable buffer for variable-size reads
 
+	// fixedBuf is a heap-allocated scratch buffer for fixed-size reads
+	// (headers, stat, goodbye items). Using a heap buffer avoids the
+	// per-call heap allocation caused by stack arrays escaping through
+	// the io.ReadSeeker interface.
+	fixedBuf []byte // at least 40 bytes
+
 	// metaMu serializes access to the metadata stream reader.
 	// io.ReadSeeker implementations like bytes.Reader and ChunkedReadSeeker
 	// are not safe for concurrent Seek+Read (only ReadAt is safe).
@@ -57,6 +64,7 @@ func NewAccessor(reader io.ReadSeeker, payloadReader ...io.ReadSeeker) *Accessor
 	a := &Accessor{
 		reader:       reader,
 		readBuf:      make([]byte, 0, 4096),
+		fixedBuf:     make([]byte, 64), // enough for header (16) + stat (40) + padding
 		goodbyeCache: make(map[int64]int64),
 	}
 	if len(payloadReader) > 0 {
@@ -258,12 +266,17 @@ func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error)
 	}
 
 	name := parts[0]
-	rest := ""
+	var rest string
 	if len(parts) > 1 {
-		rest = parts[1]
+		// Build remainder path without per-component allocations.
+		var sb strings.Builder
+		sb.Grow(len(path) - len(name))
+		sb.WriteString(parts[1])
 		for _, p := range parts[2:] {
-			rest = rest + "/" + p
+			sb.WriteByte('/')
+			sb.WriteString(p)
 		}
+		rest = sb.String()
 	}
 
 	// Find goodbye table
@@ -323,8 +336,8 @@ func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error)
 }
 
 func (a *Accessor) readHeader() (format.Header, error) {
-	var buf [16]byte
-	if _, err := io.ReadFull(a.reader, buf[:]); err != nil {
+	buf := a.fixedBuf[:16]
+	if _, err := io.ReadFull(a.reader, buf); err != nil {
 		return format.Header{}, err
 	}
 	h := format.Header{
@@ -338,11 +351,11 @@ func (a *Accessor) readHeader() (format.Header, error) {
 }
 
 func (a *Accessor) readStat() (format.Stat, error) {
-	var data [40]byte
-	if _, err := io.ReadFull(a.reader, data[:]); err != nil {
+	data := a.fixedBuf[:40]
+	if _, err := io.ReadFull(a.reader, data); err != nil {
 		return format.Stat{}, err
 	}
-	return format.UnmarshalStatBytes(data[:]), nil
+	return format.UnmarshalStatBytes(data), nil
 }
 
 func (a *Accessor) findGoodbyeOffset(dirOffset int64) (int64, error) {
@@ -500,15 +513,15 @@ func (a *Accessor) readGoodbyeTableInto(offset int64, into []format.GoodbyeItem)
 	} else {
 		items = make([]format.GoodbyeItem, nItems)
 	}
+	buf24 := a.fixedBuf[:24]
 	for i := range items {
-		var data [24]byte
-		if _, err := io.ReadFull(a.reader, data[:]); err != nil {
+		if _, err := io.ReadFull(a.reader, buf24); err != nil {
 			return nil, err
 		}
 		items[i] = format.GoodbyeItem{
-			Hash:   binary.LittleEndian.Uint64(data[0:]),
-			Offset: binary.LittleEndian.Uint64(data[8:]),
-			Size:   binary.LittleEndian.Uint64(data[16:]),
+			Hash:   binary.LittleEndian.Uint64(buf24[0:]),
+			Offset: binary.LittleEndian.Uint64(buf24[8:]),
+			Size:   binary.LittleEndian.Uint64(buf24[16:]),
 		}
 	}
 

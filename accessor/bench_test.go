@@ -432,3 +432,49 @@ func BenchmarkListDirectory100_Allocs(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkListDirectory100K_Minimal(b *testing.B) {
+	archive := buildDirArchive(b, 100000)
+	r := bytes.NewReader(archive)
+	acc := NewAccessor(r)
+
+	root, err := acc.ReadRoot()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count := 0
+		err := acc.ListDirectory(int64(root.ContentOffset), ListOption{Minimal: true}, func(e *pxar.Entry) error {
+			count++
+			return nil
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if count != 100000 {
+			b.Fatalf("expected 100000, got %d", count)
+		}
+	}
+}
+
+func BenchmarkListDirectory100K_Allocs(b *testing.B) {
+	archive := buildDirArchive(b, 100000)
+	r := bytes.NewReader(archive)
+	acc := NewAccessor(r)
+
+	root, err := acc.ReadRoot()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count := 0
+		acc.ListDirectory(int64(root.ContentOffset), ListOption{Minimal: true}, func(e *pxar.Entry) error {
+			count++
+			return nil
+		})
+	}
+}

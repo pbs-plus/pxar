@@ -496,13 +496,262 @@ func (a *Accessor) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 func (a *Accessor) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	a.metaMu.Lock()
 	defer a.metaMu.Unlock()
-	return a.readEntryAtLocked(offset)
+	return a.readEntryAtFullLocked(offset)
+}
+
+// readEntryAtFullLocked reads a pxar entry including all extended metadata
+// (xattrs, fcaps, ACLs). It is the same as readEntryAtLocked except that
+// the default case decodes instead of skipping.
+func (a *Accessor) readEntryAtFullLocked(offset int64) (*pxar.Entry, error) {
+	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	// Read FILENAME
+	h, err := a.readHeader()
+	if err != nil {
+		return nil, err
+	}
+	if h.Type != format.PXARFilename {
+		return nil, fmt.Errorf("expected FILENAME at %d, got %s", offset, h.String())
+	}
+
+	nameData := a.growBuf(int(h.ContentSize()))
+	if _, err := io.ReadFull(a.reader, nameData); err != nil {
+		return nil, err
+	}
+	if len(nameData) > 0 && nameData[len(nameData)-1] == 0 {
+		nameData = nameData[:len(nameData)-1]
+	}
+	name := string(nameData)
+
+	// Read ENTRY header
+	h, err = a.readHeader()
+	if err != nil {
+		return nil, err
+	}
+
+	if h.Type == format.PXARHardlink {
+		data := a.growBuf(int(h.ContentSize()))
+		if _, err := io.ReadFull(a.reader, data); err != nil {
+			return nil, err
+		}
+		if len(data) < 8 {
+			return nil, fmt.Errorf("hardlink entry too small")
+		}
+		relOffset := binary.LittleEndian.Uint64(data[:8])
+		target := data[8:]
+		if len(target) > 0 && target[len(target)-1] == 0 {
+			target = target[:len(target)-1]
+		}
+		return &pxar.Entry{
+			Kind:       pxar.KindHardlink,
+			Path:       name,
+			LinkTarget: string(target),
+			LinkOffset: relOffset,
+			FileOffset: uint64(offset),
+		}, nil
+	}
+
+	if h.Type != format.PXAREntry {
+		return nil, fmt.Errorf("expected ENTRY, got %s", h.String())
+	}
+
+	stat, err := a.readStat()
+	if err != nil {
+		return nil, err
+	}
+
+	entry := &pxar.Entry{
+		Path:       name,
+		Metadata:   pxar.Metadata{Stat: stat},
+		FileOffset: uint64(offset),
+	}
+
+	// Scan for terminal item — decode extended metadata
+	for {
+		posBefore, _ := a.reader.Seek(0, io.SeekCurrent)
+		h2, err := a.readHeader()
+		if err != nil {
+			return nil, err
+		}
+
+		switch h2.Type {
+		case format.PXARSymlink:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) > 0 && data[len(data)-1] == 0 {
+				data = data[:len(data)-1]
+			}
+			entry.Kind = pxar.KindSymlink
+			entry.LinkTarget = string(data)
+			return entry, nil
+
+		case format.PXARDevice:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			entry.Kind = pxar.KindDevice
+			entry.DeviceInfo = format.Device{
+				Major: binary.LittleEndian.Uint64(data[0:]),
+				Minor: binary.LittleEndian.Uint64(data[8:]),
+			}
+			return entry, nil
+
+		case format.PXARPayload:
+			posAfter, _ := a.reader.Seek(0, io.SeekCurrent)
+			entry.Kind = pxar.KindFile
+			entry.FileSize = h2.ContentSize()
+			entry.ContentOffset = uint64(posAfter)
+			return entry, nil
+
+		case format.PXARPayloadRef:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			entry.Kind = pxar.KindFile
+			entry.PayloadOffset = binary.LittleEndian.Uint64(data[0:])
+			entry.FileSize = binary.LittleEndian.Uint64(data[8:])
+			entry.ContentOffset = entry.PayloadOffset
+			return entry, nil
+
+		case format.PXARFilename, format.PXARGoodbye:
+			if stat.IsFIFO() {
+				entry.Kind = pxar.KindFIFO
+			} else if stat.IsSocket() {
+				entry.Kind = pxar.KindSocket
+			} else {
+				entry.Kind = pxar.KindDirectory
+			}
+			entry.ContentOffset = uint64(posBefore)
+			return entry, nil
+
+		case format.PXARXAttr:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			cp := make([]byte, len(data))
+			copy(cp, data)
+			data = cp
+			nameLen := 0
+			for i, b := range data {
+				if b == 0 {
+					nameLen = i
+					break
+				}
+			}
+			entry.Metadata.XAttrs = append(entry.Metadata.XAttrs, format.XAttr{Data: data, NameLen: nameLen})
+
+		case format.PXARFCaps:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			cp := make([]byte, len(data))
+			copy(cp, data)
+			entry.Metadata.FCaps = cp
+
+		case format.PXARACLUser:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 16 {
+				entry.Metadata.ACL.Users = append(entry.Metadata.ACL.Users, format.ACLUser{
+					UID:         binary.LittleEndian.Uint64(data[0:]),
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+				})
+			}
+
+		case format.PXARACLGroup:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 16 {
+				entry.Metadata.ACL.Groups = append(entry.Metadata.ACL.Groups, format.ACLGroup{
+					GID:         binary.LittleEndian.Uint64(data[0:]),
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+				})
+			}
+
+		case format.PXARACLGroupObj:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 8 {
+				obj := format.ACLGroupObject{
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[0:])),
+				}
+				entry.Metadata.ACL.GroupObj = &obj
+			}
+
+		case format.PXARACLDefault:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 32 {
+				def := format.ACLDefault{
+					UserObjPermissions:  format.ACLPermissions(binary.LittleEndian.Uint64(data[0:])),
+					GroupObjPermissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+					OtherPermissions:    format.ACLPermissions(binary.LittleEndian.Uint64(data[16:])),
+					MaskPermissions:     format.ACLPermissions(binary.LittleEndian.Uint64(data[24:])),
+				}
+				entry.Metadata.ACL.Default = &def
+			}
+
+		case format.PXARACLDefaultUser:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 16 {
+				entry.Metadata.ACL.DefaultUsers = append(entry.Metadata.ACL.DefaultUsers, format.ACLUser{
+					UID:         binary.LittleEndian.Uint64(data[0:]),
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+				})
+			}
+
+		case format.PXARACLDefaultGroup:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 16 {
+				entry.Metadata.ACL.DefaultGroups = append(entry.Metadata.ACL.DefaultGroups, format.ACLGroup{
+					GID:         binary.LittleEndian.Uint64(data[0:]),
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+				})
+			}
+
+		case format.PXARQuotaProjID:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 8 {
+				v := binary.LittleEndian.Uint64(data[0:])
+				entry.Metadata.QuotaProjectID = &v
+			}
+
+		default:
+			// Unknown metadata — skip
+			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
+				return nil, err
+			}
+		}
+	}
 }
 
 // readEntryAtLocked reads a pxar entry without acquiring metaMu.
-// Both ReadEntryAt and ReadEntryAtMinimal call this; they are identical because
-// full metadata decoding was removed in a previous refactor that made all
-// entry reads minimal.
+// ReadEntryAtMinimal calls this; it returns minimal metadata (no xattrs/ACLs).
 func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
 		return nil, err

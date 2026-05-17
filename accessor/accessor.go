@@ -6,11 +6,20 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"unsafe"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/binarytree"
 	"github.com/pbs-plus/pxar/format"
 )
+
+// goodbyeItemPool reuses GoodbyeItem slices across ListDirectory calls.
+var goodbyeItemPool = sync.Pool{
+	New: func() any {
+		s := make([]format.GoodbyeItem, 0, 64)
+		return &s
+	},
+}
 
 // Accessor provides random access to entries in a pxar archive.
 //
@@ -180,9 +189,12 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 		a.goodbyeMu.Unlock()
 	}
 
-	items, err := a.readGoodbyeTable(goodbyeOffset)
+	itemsPtr := goodbyeItemPool.Get().(*[]format.GoodbyeItem)
+	items, err := a.readGoodbyeTableInto(goodbyeOffset, (*itemsPtr)[:0])
 	a.metaMu.Unlock()
 	if err != nil {
+		*itemsPtr = items
+		goodbyeItemPool.Put(itemsPtr)
 		return err
 	}
 
@@ -191,7 +203,6 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 			continue
 		}
 
-		// item.Offset is relative to goodbye table start
 		entryOffset := goodbyeOffset - int64(item.Offset)
 
 		var entry *pxar.Entry
@@ -201,13 +212,19 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 			entry, err = a.ReadEntryAt(entryOffset)
 		}
 		if err != nil {
+			*itemsPtr = items
+			goodbyeItemPool.Put(itemsPtr)
 			return fmt.Errorf("reading entry at %d: %w", entryOffset, err)
 		}
 		if err := fn(entry); err != nil {
+			*itemsPtr = items
+			goodbyeItemPool.Put(itemsPtr)
 			return err
 		}
 	}
 
+	*itemsPtr = items
+	goodbyeItemPool.Put(itemsPtr)
 	return nil
 }
 
@@ -255,13 +272,16 @@ func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error)
 		return nil, err
 	}
 
-	items, err := a.readGoodbyeTable(goodbyeOffset)
+	itemsPtr := goodbyeItemPool.Get().(*[]format.GoodbyeItem)
+	items, err := a.readGoodbyeTableInto(goodbyeOffset, (*itemsPtr)[:0])
 	if err != nil {
+		goodbyeItemPool.Put(itemsPtr)
 		return nil, err
 	}
 
 	// Search for the name
-	hash := format.HashFilename([]byte(name))
+	// Search for the name
+	hash := format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name)))
 	idx, found := binarytree.SearchBy(items, 0, 0, func(item format.GoodbyeItem) int {
 		if hash < item.Hash {
 			return -1
@@ -271,11 +291,15 @@ func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error)
 		return 0
 	})
 	if !found {
+		*itemsPtr = items
+		goodbyeItemPool.Put(itemsPtr)
 		return nil, fmt.Errorf("entry %q not found", name)
 	}
 
 	// Resolve entry
 	entryOffset := goodbyeOffset - int64(items[idx].Offset)
+	*itemsPtr = items
+	goodbyeItemPool.Put(itemsPtr)
 	entry, err := a.readEntryAtLocked(entryOffset)
 	if err != nil {
 		return nil, err
@@ -448,7 +472,7 @@ func (a *Accessor) skipEntryItems(isDir bool) error {
 	}
 }
 
-func (a *Accessor) readGoodbyeTable(offset int64) ([]format.GoodbyeItem, error) {
+func (a *Accessor) readGoodbyeTableInto(offset int64, into []format.GoodbyeItem) ([]format.GoodbyeItem, error) {
 	if _, err := a.reader.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -470,7 +494,12 @@ func (a *Accessor) readGoodbyeTable(offset int64) ([]format.GoodbyeItem, error) 
 	if nItems == 0 {
 		return nil, nil
 	}
-	items := make([]format.GoodbyeItem, nItems)
+	var items []format.GoodbyeItem
+	if cap(into) >= int(nItems) {
+		items = into[:nItems]
+	} else {
+		items = make([]format.GoodbyeItem, nItems)
+	}
 	for i := range items {
 		var data [24]byte
 		if _, err := io.ReadFull(a.reader, data[:]); err != nil {

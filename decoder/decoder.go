@@ -539,10 +539,13 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 }
 
 func (d *Decoder) readHeader() (format.Header, error) {
-	var h format.Header
-	err := binary.Read(d.input, binary.LittleEndian, &h)
-	if err != nil {
-		return h, err
+	var buf [16]byte
+	if _, err := io.ReadFull(d.input, buf[:]); err != nil {
+		return format.Header{}, err
+	}
+	h := format.Header{
+		Type: binary.LittleEndian.Uint64(buf[0:]),
+		Size: binary.LittleEndian.Uint64(buf[8:]),
 	}
 	if err := h.CheckHeaderSize(); err != nil {
 		return h, err

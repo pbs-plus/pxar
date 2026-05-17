@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"unsafe"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/binarytree"
@@ -240,18 +241,19 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 	return nil
 }
 
-func (e *Encoder) encodeFilename(name []byte) error {
+func (e *Encoder) encodeFilename(name string) error {
 	if e.err != nil {
 		return e.err
 	}
-	if err := format.CheckFilename(name); err != nil {
+	nameBytes := unsafe.Slice(unsafe.StringData(name), len(name))
+	if err := format.CheckFilename(nameBytes); err != nil {
 		return err
 	}
-	contentSize := uint64(len(name) + 1)
+	contentSize := uint64(len(nameBytes) + 1)
 	if e.err = e.writeHeader(format.PXARFilename, contentSize); e.err != nil {
 		return e.err
 	}
-	if e.err = e.writeAll(name); e.err != nil {
+	if e.err = e.writeAll(nameBytes); e.err != nil {
 		return e.err
 	}
 	var zero [1]byte
@@ -266,7 +268,7 @@ func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) 
 	}
 	fileOffset := e.currentState().writePosition
 
-	if err := e.encodeFilename([]byte(name)); err != nil {
+	if err := e.encodeFilename(name); err != nil {
 		return 0, err
 	}
 	if err := e.encodeMetadata(metadata); err != nil {
@@ -313,7 +315,7 @@ func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) 
 
 	s := e.currentState()
 	s.items = append(s.items, format.GoodbyeItem{
-		Hash:   format.HashFilename([]byte(name)),
+		Hash:   format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))),
 		Offset: fileOffset,
 		Size:   endOffset - fileOffset,
 	})
@@ -328,7 +330,7 @@ func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) 
 	}
 	fileOffset := e.currentState().writePosition
 
-	if err := e.encodeFilename([]byte(name)); err != nil {
+	if err := e.encodeFilename(name); err != nil {
 		return nil, err
 	}
 	if err := e.encodeMetadata(metadata); err != nil {
@@ -365,7 +367,7 @@ func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) 
 
 	return &FileWriter{
 		enc:         e,
-		goodbyeItem: format.GoodbyeItem{Hash: format.HashFilename([]byte(name)), Offset: fileOffset},
+		goodbyeItem: format.GoodbyeItem{Hash: format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))), Offset: fileOffset},
 		remaining:   size,
 	}, nil
 }
@@ -457,7 +459,7 @@ func (e *Encoder) AddSymlink(metadata *pxar.Metadata, name string, target string
 	}
 	fileOffset := e.currentState().writePosition
 
-	if err := e.encodeFilename([]byte(name)); err != nil {
+	if err := e.encodeFilename(name); err != nil {
 		return err
 	}
 	if err := e.encodeMetadata(metadata); err != nil {
@@ -482,7 +484,7 @@ func (e *Encoder) AddSymlink(metadata *pxar.Metadata, name string, target string
 	endOffset := e.currentState().writePosition
 	s := e.currentState()
 	s.items = append(s.items, format.GoodbyeItem{
-		Hash:   format.HashFilename([]byte(name)),
+		Hash:   format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))),
 		Offset: fileOffset,
 		Size:   endOffset - fileOffset,
 	})
@@ -500,7 +502,7 @@ func (e *Encoder) AddHardlink(name string, target string, targetOffset LinkOffse
 	}
 
 	// Write FILENAME
-	if err := e.encodeFilename([]byte(name)); err != nil {
+	if err := e.encodeFilename(name); err != nil {
 		return err
 	}
 
@@ -528,7 +530,7 @@ func (e *Encoder) AddHardlink(name string, target string, targetOffset LinkOffse
 	endOffset := e.currentState().writePosition
 	s := e.currentState()
 	s.items = append(s.items, format.GoodbyeItem{
-		Hash:   format.HashFilename([]byte(name)),
+		Hash:   format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))),
 		Offset: currentOffset,
 		Size:   endOffset - currentOffset,
 	})
@@ -545,7 +547,7 @@ func (e *Encoder) AddDevice(metadata *pxar.Metadata, name string, device format.
 	}
 
 	fileOffset := e.currentState().writePosition
-	if err := e.encodeFilename([]byte(name)); err != nil {
+	if err := e.encodeFilename(name); err != nil {
 		return err
 	}
 	if err := e.encodeMetadata(metadata); err != nil {
@@ -564,7 +566,7 @@ func (e *Encoder) AddDevice(metadata *pxar.Metadata, name string, device format.
 	endOffset := e.currentState().writePosition
 	s := e.currentState()
 	s.items = append(s.items, format.GoodbyeItem{
-		Hash:   format.HashFilename([]byte(name)),
+		Hash:   format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))),
 		Offset: fileOffset,
 		Size:   endOffset - fileOffset,
 	})
@@ -595,7 +597,7 @@ func (e *Encoder) AddSocket(metadata *pxar.Metadata, name string) error {
 
 func (e *Encoder) addSimpleEntry(metadata *pxar.Metadata, name string) error {
 	fileOffset := e.currentState().writePosition
-	if err := e.encodeFilename([]byte(name)); err != nil {
+	if err := e.encodeFilename(name); err != nil {
 		return err
 	}
 	if err := e.encodeMetadata(metadata); err != nil {
@@ -605,7 +607,7 @@ func (e *Encoder) addSimpleEntry(metadata *pxar.Metadata, name string) error {
 	endOffset := e.currentState().writePosition
 	s := e.currentState()
 	s.items = append(s.items, format.GoodbyeItem{
-		Hash:   format.HashFilename([]byte(name)),
+		Hash:   format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))),
 		Offset: fileOffset,
 		Size:   endOffset - fileOffset,
 	})
@@ -624,7 +626,7 @@ func (e *Encoder) CreateDirectory(name string, metadata *pxar.Metadata) error {
 	parentState := e.currentState()
 
 	fileOffset := parentState.writePosition
-	if err := e.encodeFilename([]byte(name)); err != nil {
+	if err := e.encodeFilename(name); err != nil {
 		return err
 	}
 
@@ -635,7 +637,7 @@ func (e *Encoder) CreateDirectory(name string, metadata *pxar.Metadata) error {
 
 	// Add a placeholder goodbye item to the parent
 	parentState.items = append(parentState.items, format.GoodbyeItem{
-		Hash:   format.HashFilename([]byte(name)),
+		Hash:   format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))),
 		Offset: fileOffset,
 	})
 	parentItemIdx := len(parentState.items) - 1
@@ -776,7 +778,7 @@ func (e *Encoder) AddPayloadRef(metadata *pxar.Metadata, name string, fileSize u
 
 	fileOffset := s.writePosition
 
-	if err := e.encodeFilename([]byte(name)); err != nil {
+	if err := e.encodeFilename(name); err != nil {
 		return 0, err
 	}
 	if err := e.encodeMetadata(metadata); err != nil {
@@ -814,7 +816,7 @@ func (e *Encoder) AddPayloadRef(metadata *pxar.Metadata, name string, fileSize u
 	endOffset := e.currentState().writePosition
 	s = e.currentState()
 	s.items = append(s.items, format.GoodbyeItem{
-		Hash:   format.HashFilename([]byte(name)),
+		Hash:   format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))),
 		Offset: fileOffset,
 		Size:   endOffset - fileOffset,
 	})

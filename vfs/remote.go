@@ -177,7 +177,7 @@ func (fs *RemoteFileSystem) ReadDir(path string) ([]DirEntry, error) {
 	for i, re := range resp.Entries {
 		fi := dirEntryRespToFileInfo(&re)
 		childPath := joinPath(p, re.Name)
-		fs.put(childPath, &pxar.Entry{Path: childPath, Kind: re.Kind, FileSize: re.Size}, fi)
+		fs.putInfo(childPath, re.Kind, re.Size, fi)
 		entries[i] = DirEntry{
 			Name: re.Name,
 			Type: re.Kind,
@@ -206,7 +206,23 @@ func (fs *RemoteFileSystem) Open(path string) (FileHandle, error) {
 func (fs *RemoteFileSystem) ReadFile(path string) ([]byte, error) {
 	p := cleanPath(path)
 
-	// Stat first to get the size and validate it's a file
+	// Try cache first to avoid extra RPC
+	if cached := fs.getCached(p); cached != nil {
+		if cached.info.IsDir() || cached.info.IsSymlink() {
+			return nil, fmt.Errorf("pxar: %q is not a regular file", p)
+		}
+		if cached.info.Size() == 0 {
+			return nil, nil
+		}
+		req := &ReadRequest{Path: p, Size: uint(cached.info.Size())}
+		dst := make([]byte, cached.info.Size())
+		n, err := fs.transport.CallBinary(context.Background(), MethodRead, req, dst)
+		if err != nil {
+			return nil, fmt.Errorf("pxar: readfile %q: %w", p, err)
+		}
+		return dst[:n], nil
+	}
+
 	resp, err := fs.stat(p)
 	if err != nil {
 		return nil, err
@@ -214,7 +230,6 @@ func (fs *RemoteFileSystem) ReadFile(path string) ([]byte, error) {
 	if resp.IsDir || resp.IsLink {
 		return nil, fmt.Errorf("pxar: %q is not a regular file", p)
 	}
-
 	if resp.Size == 0 {
 		return nil, nil
 	}
@@ -288,11 +303,22 @@ func (fs *RemoteFileSystem) getCached(path string) *entryAndInfo {
 }
 
 func (fs *RemoteFileSystem) put(path string, e *pxar.Entry, fi *pxar.FileInfo) *entryAndInfo {
-	combined := &entryAndInfo{entry: e, info: fi}
+	combined := newEntryAndInfo(e, fi)
 	fs.mu.Lock()
 	fs.cache[path] = combined
 	fs.mu.Unlock()
 	return combined
+}
+
+func (fs *RemoteFileSystem) putInfo(path string, kind pxar.EntryKind, size uint64, fi *pxar.FileInfo) {
+	combined := newEntryAndInfo(nil, fi)
+	// Create entry lazily only if LookupEntry is called.
+	combined._kind = kind
+	combined._size = size
+	combined._path = path
+	fs.mu.Lock()
+	fs.cache[path] = combined
+	fs.mu.Unlock()
 }
 
 // --- remoteFileHandle ---
@@ -324,8 +350,7 @@ func (h *remoteFileHandle) Read(p []byte) (int, error) {
 		Size:   uint(toRead),
 	}
 
-	dst := make([]byte, toRead)
-	n, err := h.fs.transport.CallBinary(context.Background(), MethodRead, req, dst)
+	n, err := h.fs.transport.CallBinary(context.Background(), MethodRead, req, p[:toRead])
 	if err != nil {
 		return 0, err
 	}
@@ -333,9 +358,8 @@ func (h *remoteFileHandle) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	copied := copy(p, dst[:n])
-	h.offset += int64(copied)
-	return copied, nil
+	h.offset += int64(n)
+	return n, nil
 }
 
 func (h *remoteFileHandle) ReadAt(p []byte, off int64) (int, error) {
@@ -358,12 +382,7 @@ func (h *remoteFileHandle) ReadAt(p []byte, off int64) (int, error) {
 		Size:   uint(toRead),
 	}
 
-	dst := make([]byte, toRead)
-	n, err := h.fs.transport.CallBinary(context.Background(), MethodRead, req, dst)
-	if err != nil {
-		return 0, err
-	}
-	return copy(p, dst[:n]), nil
+	return h.fs.transport.CallBinary(context.Background(), MethodRead, req, p[:toRead])
 }
 
 func (h *remoteFileHandle) Seek(offset int64, whence int) (int64, error) {
@@ -425,12 +444,8 @@ func (s *RemoteServer) HandleReadDir(req *ReadDirRequest) (*ReadDirResponse, err
 
 	resp := &ReadDirResponse{Entries: make([]ReadDirResponseEntry, len(entries))}
 	for i, e := range entries {
-		fi := e.Info
-		if fi == nil {
-			fi, _ = s.fs.Stat(joinPath(req.Path, e.Name))
-		}
-		if fi != nil {
-			resp.Entries[i] = dirEntryToResp(e.Name, fi)
+		if e.Info != nil {
+			resp.Entries[i] = dirEntryToResp(e.Name, e.Info)
 			resp.Entries[i].Kind = e.Type
 		} else {
 			resp.Entries[i] = ReadDirResponseEntry{Name: e.Name, Kind: e.Type}
@@ -464,12 +479,28 @@ func (s *RemoteServer) HandleRead(req *ReadRequest) ([]byte, error) {
 		size = uint(fh.Size())
 	}
 
-	buf := make([]byte, size)
+	bufp := readBufPool.Get().(*[]byte)
+	if cap(*bufp) < int(size) {
+		readBufPool.Put(bufp) // return small buffer
+		b := make([]byte, size)
+		bufp = &b
+	} else {
+		*bufp = (*bufp)[:size]
+	}
+	buf := *bufp
+
 	n, err := io.ReadFull(fh, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		*bufp = buf[:cap(buf)]
+		readBufPool.Put(bufp)
 		return nil, err
 	}
-	return buf[:n], nil
+
+	result := make([]byte, n)
+	copy(result, buf[:n])
+	*bufp = buf[:cap(buf)]
+	readBufPool.Put(bufp)
+	return result, nil
 }
 
 // HandleReadlink returns the symlink target.
@@ -495,6 +526,13 @@ func (s *RemoteServer) HandleError(req *ErrorRequest) error {
 // HandleDone signals session completion.
 func (s *RemoteServer) HandleDone() error {
 	return nil
+}
+
+var readBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 4096)
+		return &b
+	},
 }
 
 // --- Conversion helpers ---

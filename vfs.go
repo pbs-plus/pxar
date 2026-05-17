@@ -2,6 +2,7 @@ package pxar
 
 import (
 	"os"
+	"sync"
 	"time"
 )
 
@@ -21,33 +22,26 @@ type FileInfo struct {
 	isSocket  bool
 }
 
+var fileInfoPool = sync.Pool{
+	New: func() any { return &FileInfo{} },
+}
+
 // NewFileInfo constructs a FileInfo from explicit fields.
 // The type flags (isDir, isSymlink, etc.) are derived from mode bits
 // if they haven't been set via the typed methods.
 func NewFileInfo(name string, size int64, mode os.FileMode, modTime time.Time, uid, gid uint32) *FileInfo {
-	fi := &FileInfo{
-		name:    name,
-		size:    size,
-		mode:    mode,
-		modTime: modTime,
-		uid:     uid,
-		gid:     gid,
-	}
-	if mode&os.ModeDir != 0 {
-		fi.isDir = true
-	}
-	if mode&os.ModeSymlink != 0 {
-		fi.isSymlink = true
-	}
-	if mode&os.ModeDevice != 0 {
-		fi.isDevice = true
-	}
-	if mode&os.ModeNamedPipe != 0 {
-		fi.isFifo = true
-	}
-	if mode&os.ModeSocket != 0 {
-		fi.isSocket = true
-	}
+	fi := fileInfoPool.Get().(*FileInfo)
+	fi.name = name
+	fi.size = size
+	fi.mode = mode
+	fi.modTime = modTime
+	fi.uid = uid
+	fi.gid = gid
+	fi.isDir = mode&os.ModeDir != 0
+	fi.isSymlink = mode&os.ModeSymlink != 0
+	fi.isDevice = mode&os.ModeDevice != 0
+	fi.isFifo = mode&os.ModeNamedPipe != 0
+	fi.isSocket = mode&os.ModeSocket != 0
 	return fi
 }
 
@@ -70,14 +64,18 @@ func (fi *FileInfo) IsSocket() bool     { return fi.isSocket }
 func EntryToFileInfo(e *Entry) *FileInfo {
 	mode := os.FileMode(e.Metadata.Stat.Mode & 0o7777)
 
-	fi := &FileInfo{
-		name:    e.FileName(),
-		size:    int64(e.FileSize),
-		mode:    mode,
-		modTime: time.Unix(e.Metadata.Stat.Mtime.Secs, int64(e.Metadata.Stat.Mtime.Nanos)),
-		uid:     e.Metadata.Stat.UID,
-		gid:     e.Metadata.Stat.GID,
-	}
+	fi := fileInfoPool.Get().(*FileInfo)
+	fi.name = e.FileName()
+	fi.size = int64(e.FileSize)
+	fi.mode = mode
+	fi.modTime = time.Unix(e.Metadata.Stat.Mtime.Secs, int64(e.Metadata.Stat.Mtime.Nanos))
+	fi.uid = e.Metadata.Stat.UID
+	fi.gid = e.Metadata.Stat.GID
+	fi.isDir = false
+	fi.isSymlink = false
+	fi.isDevice = false
+	fi.isFifo = false
+	fi.isSocket = false
 
 	switch e.Kind {
 	case KindDirectory:

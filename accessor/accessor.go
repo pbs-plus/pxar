@@ -299,10 +299,13 @@ func (a *Accessor) lookupPath(dirOffset int64, path string) (*pxar.Entry, error)
 }
 
 func (a *Accessor) readHeader() (format.Header, error) {
-	var h format.Header
-	err := binary.Read(a.reader, binary.LittleEndian, &h)
-	if err != nil {
-		return h, err
+	var buf [16]byte
+	if _, err := io.ReadFull(a.reader, buf[:]); err != nil {
+		return format.Header{}, err
+	}
+	h := format.Header{
+		Type: binary.LittleEndian.Uint64(buf[0:]),
+		Size: binary.LittleEndian.Uint64(buf[8:]),
 	}
 	if err := h.CheckHeaderSize(); err != nil {
 		return h, err

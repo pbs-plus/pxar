@@ -93,6 +93,42 @@ type LocalFileSystem struct {
 type entryAndInfo struct {
 	entry *pxar.Entry
 	info  *pxar.FileInfo
+
+	// Deferred entry fields — populated when entry is nil
+	// to avoid allocating a full pxar.Entry for cache-only entries.
+	_path string
+	_kind pxar.EntryKind
+	_size uint64
+}
+
+// ensureEntry materializes the pxar.Entry on demand.
+// Used when LookupEntry is called on a cache-only entry.
+func (ei *entryAndInfo) ensureEntry() *pxar.Entry {
+	if ei.entry != nil {
+		return ei.entry
+	}
+	ei.entry = &pxar.Entry{
+		Path:     ei._path,
+		Kind:     ei._kind,
+		FileSize: ei._size,
+	}
+	return ei.entry
+}
+
+// Compile-time check that ensureEntry is available.
+var _ = (*entryAndInfo)(nil).ensureEntry
+
+var entryAndInfoPool = sync.Pool{
+	New: func() any {
+		return &entryAndInfo{}
+	},
+}
+
+func newEntryAndInfo(entry *pxar.Entry, info *pxar.FileInfo) *entryAndInfo {
+	combined := entryAndInfoPool.Get().(*entryAndInfo)
+	combined.entry = entry
+	combined.info = info
+	return combined
 }
 
 // NewLocalFS creates a FileSystem backed by an ArchiveReader.
@@ -266,7 +302,7 @@ func (fs *LocalFileSystem) getCached(path string) *entryAndInfo {
 }
 
 func (fs *LocalFileSystem) put(path string, e *pxar.Entry) *entryAndInfo {
-	combined := &entryAndInfo{entry: e, info: pxar.EntryToFileInfo(e)}
+	combined := newEntryAndInfo(e, pxar.EntryToFileInfo(e))
 	fs.mu.Lock()
 	fs.cache[path] = combined
 	fs.mu.Unlock()

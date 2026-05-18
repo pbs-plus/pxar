@@ -145,6 +145,7 @@ func (fs *LocalOffsetFS) ReadDir(offset uint64) ([]pxar.FileInfo, error) {
 	err := fs.reader.ListDirectory(int64(offset), accessor.ListOption{Minimal: true}, func(e *pxar.Entry) error {
 		info := pxar.EntryToFileInfo(e)
 		entries = append(entries, *info)
+		pxar.ReleaseFileInfo(info)
 		fs.cacheEntry(e)
 		fs.incCount(e)
 		return nil

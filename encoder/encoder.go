@@ -78,9 +78,13 @@ func NewEncoder(output, payloadOut io.Writer, metadata *pxar.Metadata, prelude [
 }
 
 func (e *Encoder) pushState(pos uint64, parentIdx int) {
+	// Pre-allocate items slice with reasonable capacity to avoid
+	// repeated growslice. Most directories have at least 32 entries.
+	items := make([]format.GoodbyeItem, 0, 32)
 	e.state = append(e.state, encoderState{
 		writePosition: pos,
 		parentItemIdx: parentIdx,
+		items:         items,
 	})
 }
 

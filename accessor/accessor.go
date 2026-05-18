@@ -612,6 +612,7 @@ func (a *Accessor) readEntryAtFullLocked(offset int64) (*pxar.Entry, error) {
 		Metadata:   pxar.Metadata{Stat: stat},
 		FileOffset: uint64(offset),
 	}
+	entry.SetFileName(name)
 
 	// Scan for terminal item — decode extended metadata
 	for {
@@ -862,6 +863,7 @@ func (a *Accessor) readEntryAtLocked(offset int64) (*pxar.Entry, error) {
 		Metadata:   pxar.Metadata{Stat: stat},
 		FileOffset: uint64(offset),
 	}
+	entry.SetFileName(name)
 
 	// Scan for terminal item — skip all extended metadata
 	for {

@@ -75,7 +75,8 @@ const (
 // Entry represents an item in a pxar archive.
 type Entry struct {
 	Metadata      Metadata
-	Path          string
+	Path          string // full path (e.g. "/backup/etc/file.txt")
+	name          string // base name, set directly by accessor/decoder to avoid filepath.Base
 	LinkTarget    string
 	DeviceInfo    format.Device
 	Kind          EntryKind
@@ -108,8 +109,18 @@ func (e *Entry) IsFIFO() bool { return e.Kind == KindFIFO }
 func (e *Entry) IsSocket() bool { return e.Kind == KindSocket }
 
 // FileName returns just the file name portion of the entry's path.
+// Uses cached name when available, avoiding allocation from filepath.Base.
 func (e *Entry) FileName() string {
+	if e.name != "" {
+		return e.name
+	}
 	return filepath.Base(e.Path)
+}
+
+// SetFileName caches the base name of the entry. Used internally by the
+// accessor and decoder to avoid filepath.Base allocations on repeated calls.
+func (e *Entry) SetFileName(name string) {
+	e.name = name
 }
 
 // PathBytes returns the entry's full path as a []byte without allocating.
@@ -119,10 +130,10 @@ func (e *Entry) PathBytes() []byte {
 }
 
 // FileNameBytes returns the entry's base name as a []byte without allocating.
-// The returned slice must not be modified.
+// Uses cached name when available.
 func (e *Entry) FileNameBytes() []byte {
-	name := filepath.Base(e.Path)
-	return unsafe.Slice(unsafe.StringData(name), len(name))
+	n := e.FileName()
+	return unsafe.Slice(unsafe.StringData(n), len(n))
 }
 
 // Metadata holds file metadata found in pxar archives.

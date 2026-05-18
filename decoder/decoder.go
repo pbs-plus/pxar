@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	pxar "github.com/pbs-plus/pxar"
@@ -338,6 +339,13 @@ func (d *Decoder) finishEntry(stat format.Stat, isV1 bool) (*pxar.Entry, error) 
 		Path:     d.path,
 		Metadata: pxar.Metadata{Stat: stat},
 	}
+	// Cache base name from path to avoid filepath.Base allocations
+	// when FileName() is called by consumers (e.g., VFS ReadDir).
+	if idx := strings.LastIndexByte(d.path, '/'); idx >= 0 {
+		entry.SetFileName(d.path[idx+1:])
+	} else {
+		entry.SetFileName(d.path)
+	}
 
 	for {
 		h, err := d.readHeader()
@@ -569,7 +577,18 @@ func (d *Decoder) readContent() ([]byte, error) {
 	if size == 0 {
 		return nil, nil
 	}
-	// Use pool for small allocations (<64KB). Large payloads go to heap.
+	// For small content that fits in fixedBuf (stat=40, device=16, payload_ref=16, etc.),
+	// read directly and copy out — avoids pool overhead entirely.
+	if size <= 64 {
+		buf := d.fixedBuf[:size]
+		if _, err := io.ReadFull(d.input, buf); err != nil {
+			return nil, fmt.Errorf("reading content: %w", err)
+		}
+		out := make([]byte, size)
+		copy(out, buf)
+		return out, nil
+	}
+	// Use pool for medium allocations (64B–64KB). Large payloads go to heap.
 	if size <= 65536 {
 		bp := decoderBufPool.Get().(*[]byte)
 		buf := *bp

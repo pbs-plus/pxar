@@ -302,6 +302,68 @@ func BenchmarkWriteTree_Nested10x50(b *testing.B) {
 	}
 }
 
+// ---------- Large directory benchmarks ----------
+
+func BenchmarkLocalFS_ReadDir10K(b *testing.B) {
+	r := buildVFSArchiveBench(b, 10000)
+	fs := vfs.NewLocalFS(r)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		entries, err := fs.ReadDir("/")
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(entries) != 10000 {
+			b.Fatalf("expected 10000, got %d", len(entries))
+		}
+	}
+}
+
+func BenchmarkLocalFS_ReadDir100K(b *testing.B) {
+	r := buildVFSArchiveBench(b, 100000)
+	fs := vfs.NewLocalFS(r)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		entries, err := fs.ReadDir("/")
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(entries) != 100000 {
+			b.Fatalf("expected 100000, got %d", len(entries))
+		}
+	}
+}
+
+func BenchmarkRemoteFS_ReadDir10K(b *testing.B) {
+	remoteFS := newBenchRemoteFS(b, 10000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		entries, err := remoteFS.ReadDir("/")
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(entries) != 10000 {
+			b.Fatalf("expected 10000, got %d", len(entries))
+		}
+	}
+}
+
+func BenchmarkServerHandleReadDir10K(b *testing.B) {
+	r := buildVFSArchiveBench(b, 10000)
+	localFS := vfs.NewLocalFS(r)
+	server := vfs.NewRemoteServer(localFS)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp, err := server.HandleReadDir(&vfs.ReadDirRequest{Path: "/"})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(resp.Entries) != 10000 {
+			b.Fatalf("expected 10000, got %d", len(resp.Entries))
+		}
+	}
+}
+
 // Compile-time check
 var _ vfs.RPCTransport = (*directTransport)(nil)
 var _ context.Context

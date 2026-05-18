@@ -4,6 +4,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 // FileType identifies the kind of file system entry, matching
@@ -61,7 +62,7 @@ var fileInfoPool = sync.Pool{
 // NewFileInfo constructs a FileInfo from explicit fields.
 func NewFileInfo(name string, size int64, mode os.FileMode, modTime time.Time, uid, gid uint32) *FileInfo {
 	fi := fileInfoPool.Get().(*FileInfo)
-	fi.FileName = []byte(name)
+	fi.FileName = unsafe.Slice(unsafe.StringData(name), len(name))
 	fi.RawSize = uint64(size)
 	fi.mode = mode
 	fi.modTime = modTime
@@ -109,7 +110,8 @@ func ReleaseFileInfo(fi *FileInfo) {
 // of reimplementing it.
 func EntryToFileInfo(e *Entry) *FileInfo {
 	fi := fileInfoPool.Get().(*FileInfo)
-	fi.FileName = []byte(e.FileName())
+	baseName := e.FileName()
+	fi.FileName = unsafe.Slice(unsafe.StringData(baseName), len(baseName))
 	fi.RawSize = e.FileSize
 	fi.EntryRangeStart = e.FileOffset
 	fi.EntryRangeEnd = e.FileOffset + e.FileSize

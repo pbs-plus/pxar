@@ -5,10 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"syscall"
+
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
-	pxar "github.com/pbs-plus/pxar"
-	"syscall"
 )
 
 func dirMeta(mode uint64) *pxar.Metadata {
@@ -47,10 +48,11 @@ func symlinkMeta(mode uint64, uid, gid uint32) *pxar.Metadata {
 
 // createTestArchive builds a pxar archive with a known structure:
 // root/
-//   hello.txt      (11 bytes)
-//   subdir/
-//     nested.txt   (14 bytes)
-//   link           -> hello.txt
+//
+//	hello.txt      (11 bytes)
+//	subdir/
+//	  nested.txt   (14 bytes)
+//	link           -> hello.txt
 func createTestArchive(t *testing.T) (*bytes.Reader, int64) {
 	t.Helper()
 

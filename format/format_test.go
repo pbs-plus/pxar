@@ -329,7 +329,7 @@ func TestStatxTimestampNegativeDuration(t *testing.T) {
 	// Rust's from_duration_before_epoch for non-zero nanos:
 	// secs = -(as_secs) - 1 = -305112601
 	// nanos = 1_000_000_000 - subsec_nanos = 999_000_000
-	secs := -int64(beforeEpoch / time.Second) - 1
+	secs := -int64(beforeEpoch/time.Second) - 1
 	nanos := uint32(1_000_000_000 - (beforeEpoch % time.Second))
 	ts := StatxTimestamp{Secs: secs, Nanos: nanos}
 
@@ -448,7 +448,7 @@ func TestDeviceFromDevTToDevTRoundTrip(t *testing.T) {
 func makeDevT(major, minor uint64) uint64 {
 	return (major&0x00000fff)<<8 |
 		(major&0xfffff000)<<32 |
-		(minor&0x000000ff) |
+		(minor & 0x000000ff) |
 		(minor&0xffffff00)<<12
 }
 

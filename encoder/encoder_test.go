@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pbs-plus/pxar/format"
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/format"
 )
 
 func TestEncodeSimpleFile(t *testing.T) {

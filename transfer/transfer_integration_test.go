@@ -187,12 +187,12 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 
 	// --- Phase 3: Read from both snapshots and build a new merged snapshot ---
 	snap1Reader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
-		Config:       pbsCfg,
-		BackupType:   "host",
-		BackupID:     snap1Cfg.BackupID,
-		BackupTime:   snap1Cfg.BackupTime,
-		MetaName:     "root.mpxar.didx",
-		PayloadName:  "root.ppxar.didx",
+		Config:      pbsCfg,
+		BackupType:  "host",
+		BackupID:    snap1Cfg.BackupID,
+		BackupTime:  snap1Cfg.BackupTime,
+		MetaName:    "root.mpxar.didx",
+		PayloadName: "root.ppxar.didx",
 	})
 	if err != nil {
 		t.Fatalf("Open snap1 reader: %v", err)
@@ -200,12 +200,12 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 	defer snap1Reader.Close()
 
 	snap2Reader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
-		Config:       pbsCfg,
-		BackupType:   "host",
-		BackupID:     snap2Cfg.BackupID,
-		BackupTime:   snap2Cfg.BackupTime,
-		MetaName:     "root.mpxar.didx",
-		PayloadName:  "root.ppxar.didx",
+		Config:      pbsCfg,
+		BackupType:  "host",
+		BackupID:    snap2Cfg.BackupID,
+		BackupTime:  snap2Cfg.BackupTime,
+		MetaName:    "root.mpxar.didx",
+		PayloadName: "root.ppxar.didx",
 	})
 	if err != nil {
 		t.Fatalf("Open snap2 reader: %v", err)
@@ -252,12 +252,12 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 
 	// --- Phase 4: Read back the merged snapshot and verify content ---
 	mergedReader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
-		Config:       pbsCfg,
-		BackupType:   "host",
-		BackupID:     mergedCfg.BackupID,
-		BackupTime:   mergedCfg.BackupTime,
-		MetaName:     "root.mpxar.didx",
-		PayloadName:  "root.ppxar.didx",
+		Config:      pbsCfg,
+		BackupType:  "host",
+		BackupID:    mergedCfg.BackupID,
+		BackupTime:  mergedCfg.BackupTime,
+		MetaName:    "root.mpxar.didx",
+		PayloadName: "root.ppxar.didx",
 	})
 	if err != nil {
 		t.Fatalf("Open merged reader: %v", err)

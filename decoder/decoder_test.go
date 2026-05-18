@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
-	pxar "github.com/pbs-plus/pxar"
 )
 
 func TestDecodeSimpleFile(t *testing.T) {
@@ -402,11 +402,11 @@ func TestDecodeManualV1Archive(t *testing.T) {
 	// Root directory ENTRY
 	stat := make([]byte, 40)
 	binary.LittleEndian.PutUint64(stat[0:], format.ModeIFDIR|0o755)
-	binary.LittleEndian.PutUint64(stat[8:], 0) // flags
-	binary.LittleEndian.PutUint32(stat[16:], 0) // uid
-	binary.LittleEndian.PutUint32(stat[20:], 0) // gid
+	binary.LittleEndian.PutUint64(stat[8:], 0)                   // flags
+	binary.LittleEndian.PutUint32(stat[16:], 0)                  // uid
+	binary.LittleEndian.PutUint32(stat[20:], 0)                  // gid
 	binary.LittleEndian.PutUint64(stat[24:], uint64(1430487000)) // mtime secs
-	binary.LittleEndian.PutUint32(stat[32:], 0) // mtime nanos
+	binary.LittleEndian.PutUint32(stat[32:], 0)                  // mtime nanos
 
 	_ = w(&buf, binary.LittleEndian, &format.Header{Type: format.PXAREntry, Size: uint64(16 + len(stat))})
 	buf.Write(stat)
@@ -436,7 +436,7 @@ func TestDecodeManualV1Archive(t *testing.T) {
 	// GOODBYE (empty: just tail marker)
 	tailItem := make([]byte, 24)
 	binary.LittleEndian.PutUint64(tailItem[0:], format.PXARGoodbyeTailMarker)
-	binary.LittleEndian.PutUint64(tailItem[8:], 0) // offset to root entry
+	binary.LittleEndian.PutUint64(tailItem[8:], 0)              // offset to root entry
 	binary.LittleEndian.PutUint64(tailItem[16:], uint64(16+24)) // goodbye size
 	_ = w(&buf, binary.LittleEndian, &format.Header{Type: format.PXARGoodbye, Size: uint64(16 + len(tailItem))})
 	buf.Write(tailItem)

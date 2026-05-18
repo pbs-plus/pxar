@@ -78,9 +78,10 @@ func TestFlowControlReplenishment(t *testing.T) {
 				errChan <- fmt.Errorf("expected WINDOW_UPDATE, got %T", frame)
 				return
 			}
-			if wu.StreamID == 0 {
+			switch wu.StreamID {
+			case 0:
 				gotConnUpdate = true
-			} else if wu.StreamID == 1 {
+			case 1:
 				gotStreamUpdate = true
 			}
 			if wu.Increment != sendSize {

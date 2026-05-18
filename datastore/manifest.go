@@ -24,13 +24,13 @@ type BackupFileInfo struct {
 
 // Manifest represents a backup manifest (index.json).
 type Manifest struct {
-	BackupType  string          `json:"backup-type"`
-	BackupID    string          `json:"backup-id"`
-	CryptMode   string          `json:"crypt-mode,omitempty"`
-	Signature   string          `json:"signature,omitempty"`
-	Files       []BackupFileInfo      `json:"files"`
-	Unprotected json.RawMessage `json:"unprotected,omitempty"`
-	BackupTime  int64           `json:"backup-time"`
+	BackupType  string           `json:"backup-type"`
+	BackupID    string           `json:"backup-id"`
+	CryptMode   string           `json:"crypt-mode,omitempty"`
+	Signature   string           `json:"signature,omitempty"`
+	Files       []BackupFileInfo `json:"files"`
+	Unprotected json.RawMessage  `json:"unprotected,omitempty"`
+	BackupTime  int64            `json:"backup-time"`
 }
 
 // Marshal serializes the manifest to JSON.

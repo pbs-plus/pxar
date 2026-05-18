@@ -55,9 +55,9 @@ func TestACLEmpty(t *testing.T) {
 
 func TestEntryKindChecks(t *testing.T) {
 	tests := []struct {
-		kind     pxar.EntryKind
-		isDir    bool
-		isFile   bool
+		kind      pxar.EntryKind
+		isDir     bool
+		isFile    bool
 		isSymlink bool
 	}{
 		{pxar.KindDirectory, true, false, false},
@@ -663,25 +663,26 @@ func collectAll(t *testing.T, dec *decoder.Decoder) []pxar.Entry {
 // and verifies via accessor that all entries are correctly accessible.
 //
 // The filesystem structure matches Rust's test_fs():
-//   / (dir, 0o755)
-//     home/ (dir, 0o755)
-//       user/ (dir, 0o700, uid=1000, gid=1000)
-//         .profile (file, 0o644, uid=1000, gid=1000, content="#umask 022")
-//         data (file, 0o644, uid=1000, gid=1000, content="a file from a user")
-//     bin -> usr/bin (symlink, 0o777)
-//     usr/ (dir, 0o755)
-//       bin/ (dir, 0o755)
-//         bzip2 (file, 0o755, content="This is the bzip2 executable")
-//         cat (file, 0o755, content="This is another executable")
-//         bunzip2 (hardlink -> bzip2)
-//     dev/ (dir, 0o755)
-//       null (chardev, 0o666, major=1, minor=3)
-//       zero (chardev, 0o666, major=1, minor=5)
-//       loop0 (blkdev, 0o666, major=7, minor=0)
-//       loop1 (blkdev, 0o666, major=7, minor=1, acl_user uid=1000 perm=6, acl_group gid=1000 perm=6)
-//     run/ (dir, 0o755, default_acl)
-//       fifo0 (fifo, 0o666)
-//       sock0 (socket, 0o600)
+//
+//	/ (dir, 0o755)
+//	  home/ (dir, 0o755)
+//	    user/ (dir, 0o700, uid=1000, gid=1000)
+//	      .profile (file, 0o644, uid=1000, gid=1000, content="#umask 022")
+//	      data (file, 0o644, uid=1000, gid=1000, content="a file from a user")
+//	  bin -> usr/bin (symlink, 0o777)
+//	  usr/ (dir, 0o755)
+//	    bin/ (dir, 0o755)
+//	      bzip2 (file, 0o755, content="This is the bzip2 executable")
+//	      cat (file, 0o755, content="This is another executable")
+//	      bunzip2 (hardlink -> bzip2)
+//	  dev/ (dir, 0o755)
+//	    null (chardev, 0o666, major=1, minor=3)
+//	    zero (chardev, 0o666, major=1, minor=5)
+//	    loop0 (blkdev, 0o666, major=7, minor=0)
+//	    loop1 (blkdev, 0o666, major=7, minor=1, acl_user uid=1000 perm=6, acl_group gid=1000 perm=6)
+//	  run/ (dir, 0o755, default_acl)
+//	    fifo0 (fifo, 0o666)
+//	    sock0 (socket, 0o600)
 func TestRustParityFullFilesystemRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	ts := format.NewStatxTimestampFromDuration(1430487000 * time.Second)
@@ -767,8 +768,8 @@ func TestRustParityFullFilesystemRoundTrip(t *testing.T) {
 		ACL: pxar.ACL{
 			Default: &format.ACLDefault{
 				UserObjPermissions:  format.ACLPermissions(4 | 2), // READ|WRITE
-				GroupObjPermissions: format.ACLPermissions(4),   // READ
-				OtherPermissions:    format.ACLPermissions(4),   // READ
+				GroupObjPermissions: format.ACLPermissions(4),     // READ
+				OtherPermissions:    format.ACLPermissions(4),     // READ
 				MaskPermissions:     format.ACLPermissions(format.ACLNoMask),
 			},
 			DefaultUsers: []format.ACLUser{{UID: 1001, Permissions: 4}}, // READ

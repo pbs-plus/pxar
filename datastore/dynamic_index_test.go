@@ -64,9 +64,9 @@ func TestDynamicIndexChunkFromOffset(t *testing.T) {
 	r, _ := ParseDynamicIndex(raw)
 
 	tests := []struct {
-		offset   uint64
-		wantIdx  int
-		wantOK   bool
+		offset  uint64
+		wantIdx int
+		wantOK  bool
 	}{
 		{0, 0, true},
 		{999, 0, true},

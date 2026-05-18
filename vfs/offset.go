@@ -12,9 +12,9 @@ import (
 )
 
 // FileSystem provides offset-based access to a pxar archive.
-// Unlike the path-based FileSystem, operations use byte offsets from
-// the archive structure (entry offsets, content offsets). This mirrors
-// the wire protocol used by PBS agents for restore operations.
+// Operations use byte offsets from the archive structure
+// (entry offsets, content offsets). This mirrors the wire protocol
+// used by PBS agents for restore operations.
 //
 // Thread safety: all methods are safe for concurrent use.
 type FileSystem interface {

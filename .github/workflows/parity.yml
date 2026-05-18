@@ -39,6 +39,6 @@ jobs:
         with:
           go-version: "1.26"
       - run: go vet ./...
-      - name: Install golangci-lint from source (Go 1.26 compatible)
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - name: Install golangci-lint v2
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
       - run: golangci-lint run --timeout=5m

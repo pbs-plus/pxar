@@ -87,7 +87,7 @@ func TestManifestSigning(t *testing.T) {
 		BackupType: "host",
 		BackupID:   "test",
 		BackupTime: 1234567890,
-		Files: []FileInfo{
+		Files: []BackupFileInfo{
 			{Filename: "root.pxar.didx", Size: 1000, CSum: "abc123"},
 		},
 		CryptMode: "encrypt",
@@ -128,7 +128,7 @@ func TestManifestTamperDetection(t *testing.T) {
 		BackupType: "host",
 		BackupID:   "test",
 		BackupTime: 1234567890,
-		Files: []FileInfo{
+		Files: []BackupFileInfo{
 			{Filename: "root.pxar.didx", Size: 1000, CSum: "abc123"},
 		},
 		CryptMode: "encrypt",

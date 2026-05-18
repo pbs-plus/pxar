@@ -14,8 +14,8 @@ const (
 	CryptModeSign    CryptMode = "sign-only" // Sign only (no encryption)
 )
 
-// FileInfo describes a file in a backup manifest.
-type FileInfo struct {
+// BackupFileInfo describes a file in a backup manifest.
+type BackupFileInfo struct {
 	Filename  string `json:"filename"`
 	CryptMode string `json:"crypt-mode,omitempty"`
 	CSum      string `json:"csum"`
@@ -28,7 +28,7 @@ type Manifest struct {
 	BackupID    string          `json:"backup-id"`
 	CryptMode   string          `json:"crypt-mode,omitempty"`
 	Signature   string          `json:"signature,omitempty"`
-	Files       []FileInfo      `json:"files"`
+	Files       []BackupFileInfo      `json:"files"`
 	Unprotected json.RawMessage `json:"unprotected,omitempty"`
 	BackupTime  int64           `json:"backup-time"`
 }

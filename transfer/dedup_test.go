@@ -111,9 +111,9 @@ func createSplitChunkedArchive(t *testing.T, files map[string]string) (*datastor
 	return store, metaIdxData, payloadIdxData
 }
 
-// --- ChunkedReadSeeker tests ---
+// --- ReadSeeker tests ---
 
-func TestChunkedReadSeekerBasicRead(t *testing.T) {
+func TestReadSeekerBasicRead(t *testing.T) {
 	store, idxData := createChunkedArchive(t, map[string]string{
 		"hello.txt": "hello world",
 	})
@@ -124,7 +124,7 @@ func TestChunkedReadSeekerBasicRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader := transfer.NewChunkedReadSeeker(idx, source, 0)
+	reader := transfer.NewReadSeeker(idx, source, 0)
 	defer reader.Close()
 
 	// Read all data
@@ -134,11 +134,11 @@ func TestChunkedReadSeekerBasicRead(t *testing.T) {
 	}
 
 	if buf.Len() == 0 {
-		t.Error("expected non-empty data from ChunkedReadSeeker")
+		t.Error("expected non-empty data from ReadSeeker")
 	}
 }
 
-func TestChunkedReadSeekerSeekAndRead(t *testing.T) {
+func TestReadSeekerSeekAndRead(t *testing.T) {
 	store, idxData := createChunkedArchive(t, map[string]string{
 		"file.txt": "some content here",
 	})
@@ -149,7 +149,7 @@ func TestChunkedReadSeekerSeekAndRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader := transfer.NewChunkedReadSeeker(idx, source, 0)
+	reader := transfer.NewReadSeeker(idx, source, 0)
 	defer reader.Close()
 
 	// Seek to start
@@ -172,7 +172,7 @@ func TestChunkedReadSeekerSeekAndRead(t *testing.T) {
 	}
 }
 
-func TestChunkedReadSeekerCaching(t *testing.T) {
+func TestReadSeekerCaching(t *testing.T) {
 	store, idxData := createChunkedArchive(t, map[string]string{
 		"file.txt": "cached content test",
 	})
@@ -183,7 +183,7 @@ func TestChunkedReadSeekerCaching(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader := transfer.NewChunkedReadSeeker(idx, source, 4)
+	reader := transfer.NewReadSeeker(idx, source, 4)
 	defer reader.Close()
 
 	// Read entire stream twice; second pass should hit cache
@@ -207,7 +207,7 @@ func TestChunkedReadSeekerCaching(t *testing.T) {
 	}
 }
 
-func TestChunkedReadSeekerMatchesEager(t *testing.T) {
+func TestReadSeekerMatchesEager(t *testing.T) {
 	store, idxData := createChunkedArchive(t, map[string]string{
 		"file1.txt": "content one",
 		"file2.txt": "content two",
@@ -215,14 +215,14 @@ func TestChunkedReadSeekerMatchesEager(t *testing.T) {
 	source := datastore.NewChunkStoreSource(store)
 
 	// Eager reconstruction
-	eagerReader, err := transfer.NewChunkedArchiveReaderEager(idxData, source)
+	eagerReader, err := transfer.NewChunkedReaderEager(idxData, source)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer eagerReader.Close()
 
 	// Lazy reconstruction
-	lazyReader, err := transfer.NewChunkedArchiveReader(idxData, source)
+	lazyReader, err := transfer.NewChunkedReader(idxData, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,21 +265,21 @@ func TestChunkedReadSeekerMatchesEager(t *testing.T) {
 	}
 }
 
-// --- SplitArchiveReader lazy tests ---
+// --- SplitReader lazy tests ---
 
-func TestSplitArchiveReaderLazyMatchesEager(t *testing.T) {
+func TestSplitReaderLazyMatchesEager(t *testing.T) {
 	store, metaIdxData, payloadIdxData := createSplitChunkedArchive(t, map[string]string{
 		"data.bin": "payload data",
 	})
 	source := datastore.NewChunkStoreSource(store)
 
-	eagerReader, err := transfer.NewSplitArchiveReaderEager(metaIdxData, payloadIdxData, source)
+	eagerReader, err := transfer.NewSplitReaderEager(metaIdxData, payloadIdxData, source)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer eagerReader.Close()
 
-	lazyReader, err := transfer.NewSplitArchiveReader(metaIdxData, payloadIdxData, source)
+	lazyReader, err := transfer.NewSplitReader(metaIdxData, payloadIdxData, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,9 +321,9 @@ func TestSplitArchiveReaderLazyMatchesEager(t *testing.T) {
 	}
 }
 
-// --- DedupSplitArchiveWriter tests ---
+// --- DedupWriter tests ---
 
-func TestDedupSplitArchiveWriterRoundTrip(t *testing.T) {
+func TestDedupWriterRoundTrip(t *testing.T) {
 	store, _, payloadIdxData := createSplitChunkedArchive(t, map[string]string{
 		"file.txt": "original content",
 	})
@@ -338,9 +338,9 @@ func TestDedupSplitArchiveWriterRoundTrip(t *testing.T) {
 	config, _ := buzhash.NewConfig(64 << 10)
 
 	// Write a new archive with the same data (dedup should kick in)
-	writer := transfer.NewDedupSplitArchiveWriter(store, source, config, false, payloadIdx)
+	writer := transfer.NewDedupWriter(store, source, config, false, payloadIdx)
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := writer.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	if err := writer.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -362,7 +362,7 @@ func TestDedupSplitArchiveWriterRoundTrip(t *testing.T) {
 	newMetaIdxData := writer.MetaIndexData()
 	newPayloadIdxData := writer.PayloadIndexData()
 
-	newReader, err := transfer.NewSplitArchiveReader(newMetaIdxData, newPayloadIdxData, source)
+	newReader, err := transfer.NewSplitReader(newMetaIdxData, newPayloadIdxData, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestComputeContentDigestCorrectness(t *testing.T) {
 		"file.txt": "hello world",
 	})
 
-	reader, err := transfer.NewSplitArchiveReaderEager(metaIdxData, payloadIdxData, source)
+	reader, err := transfer.NewSplitReaderEager(metaIdxData, payloadIdxData, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +600,7 @@ func TestReferenceSourcePayloadChunks(t *testing.T) {
 	config, _ := buzhash.NewConfig(64 << 10)
 	source := datastore.NewChunkStoreSource(store)
 
-	writer := transfer.NewDedupSplitArchiveWriter(store, source, config, false, payloadIdx)
+	writer := transfer.NewDedupWriter(store, source, config, false, payloadIdx)
 	// Before Begin, calling ReferenceSourcePayloadChunks should be safe
 	writer.ReferenceSourcePayloadChunks()
 }
@@ -748,15 +748,15 @@ func TestLookupDynamicEntriesPinsChunkIdentity(t *testing.T) {
 	}
 }
 
-func TestTryRecordStrictlyGreaterAcceptsIncreasing(t *testing.T) {
+func TestRecordMaxAcceptsIncreasing(t *testing.T) {
 	var last *uint64
-	if !transfer.TryRecordStrictlyGreater(&last, 100) {
+	if !transfer.RecordMax(&last, 100) {
 		t.Error("first call should accept 100")
 	}
 	if last == nil || *last != 100 {
 		t.Errorf("last = %v, want 100", last)
 	}
-	if !transfer.TryRecordStrictlyGreater(&last, 200) {
+	if !transfer.RecordMax(&last, 200) {
 		t.Error("second call should accept 200")
 	}
 	if last == nil || *last != 200 {
@@ -764,18 +764,18 @@ func TestTryRecordStrictlyGreaterAcceptsIncreasing(t *testing.T) {
 	}
 }
 
-func TestTryRecordStrictlyGreaterRejectsEqualAndBackwards(t *testing.T) {
+func TestRecordMaxRejectsEqualAndBackwards(t *testing.T) {
 	v := uint64(200)
 	last := &v
 	// duplicate offset
-	if transfer.TryRecordStrictlyGreater(&last, 200) {
+	if transfer.RecordMax(&last, 200) {
 		t.Error("should reject equal offset")
 	}
 	if *last != 200 {
 		t.Errorf("rejected offset must not update state: last = %d, want 200", *last)
 	}
 	// backwards offset
-	if transfer.TryRecordStrictlyGreater(&last, 150) {
+	if transfer.RecordMax(&last, 150) {
 		t.Error("should reject backwards offset")
 	}
 	if *last != 200 {
@@ -783,9 +783,9 @@ func TestTryRecordStrictlyGreaterRejectsEqualAndBackwards(t *testing.T) {
 	}
 }
 
-func TestTryRecordStrictlyGreaterFirstCallAcceptsZero(t *testing.T) {
+func TestRecordMaxFirstCallAcceptsZero(t *testing.T) {
 	var last *uint64
-	if !transfer.TryRecordStrictlyGreater(&last, 0) {
+	if !transfer.RecordMax(&last, 0) {
 		t.Error("first call should accept 0")
 	}
 	if last == nil || *last != 0 {
@@ -793,19 +793,19 @@ func TestTryRecordStrictlyGreaterFirstCallAcceptsZero(t *testing.T) {
 	}
 }
 
-func TestTryRecordStrictlyGreaterPersistsAcrossResets(t *testing.T) {
+func TestRecordMaxPersistsAcrossResets(t *testing.T) {
 	var last *uint64
-	if !transfer.TryRecordStrictlyGreater(&last, 1000) {
+	if !transfer.RecordMax(&last, 1000) {
 		t.Error("should accept 1000")
 	}
 	// a per-range implementation would clear here on cache flush
-	if transfer.TryRecordStrictlyGreater(&last, 500) {
+	if transfer.RecordMax(&last, 500) {
 		t.Error("should reject 500 after 1000")
 	}
 	if last == nil || *last != 1000 {
 		t.Errorf("last = %v, want 1000", last)
 	}
-	if !transfer.TryRecordStrictlyGreater(&last, 1500) {
+	if !transfer.RecordMax(&last, 1500) {
 		t.Error("should accept 1500")
 	}
 	if last == nil || *last != 1500 {

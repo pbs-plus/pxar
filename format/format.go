@@ -21,7 +21,7 @@ const (
 
 // Pxar format type constants.
 const (
-	PXARFormatVersion      uint64 = 0x730f6c75df16a40d
+	Version      uint64 = 0x730f6c75df16a40d
 	PXAREntry              uint64 = 0xd5956474e588acef
 	PXAREntryV1            uint64 = 0x11da850a1c1cceff
 	PXARPrelude            uint64 = 0xe309d79d9f7b771b
@@ -152,7 +152,7 @@ func (h Header) CheckHeaderSize() error {
 func (h Header) String() string {
 	var name string
 	switch h.Type {
-	case PXARFormatVersion:
+	case Version:
 		name = "FORMAT_VERSION"
 	case PXARPrelude:
 		name = "PRELUDE"

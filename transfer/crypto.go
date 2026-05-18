@@ -9,28 +9,28 @@ import (
 	"github.com/pbs-plus/pxar/datastore"
 )
 
-// DecryptingChunkSource wraps a ChunkSource and decrypts/decompresses chunks
+// DecryptSource wraps a ChunkSource and decrypts/decompresses chunks
 // on the fly. This is used when reading from an encrypted archive where the raw
 // chunks are encrypted blobs that need to be decoded before restoration.
 //
 // When a CryptConfig is provided, encrypted blobs are decrypted. All blobs are
 // decoded (uncompressed/decrypted) before being returned, producing the raw
 // chunk data that the Restorer expects.
-type DecryptingChunkSource struct {
+type DecryptSource struct {
 	inner datastore.ChunkSource
 	cc    *datastore.CryptConfig
 }
 
-// NewDecryptingChunkSource creates a chunk source that decrypts chunks after retrieval.
+// NewDecryptSource creates a chunk source that decrypts chunks after retrieval.
 // Pass nil for cc if the archive is not encrypted (only decompression is needed).
-func NewDecryptingChunkSource(inner datastore.ChunkSource, cc *datastore.CryptConfig) *DecryptingChunkSource {
-	return &DecryptingChunkSource{
+func NewDecryptSource(inner datastore.ChunkSource, cc *datastore.CryptConfig) *DecryptSource {
+	return &DecryptSource{
 		inner: inner,
 		cc:    cc,
 	}
 }
 
-func (d *DecryptingChunkSource) GetChunk(digest [32]byte) ([]byte, error) {
+func (d *DecryptSource) GetChunk(digest [32]byte) ([]byte, error) {
 	raw, err := d.inner.GetChunk(digest)
 	if err != nil {
 		return nil, fmt.Errorf("get chunk %x: %w", digest[:8], err)
@@ -62,8 +62,8 @@ func (d *DecryptingChunkSource) GetChunk(digest [32]byte) ([]byte, error) {
 }
 
 // DecryptingReader is a placeholder for per-file decryption support.
-// For most cases, using DecryptingChunkSource when constructing the underlying
-// reader (ChunkedArchiveReader/SplitArchiveReader) is preferred since it
+// For most cases, using DecryptSource when constructing the underlying
+// reader (ChunkedReader/SplitReader) is preferred since it
 // handles decryption at the chunk level before stream reconstruction.
 // This type simply delegates to the inner reader.
 type DecryptingReader struct {
@@ -71,7 +71,7 @@ type DecryptingReader struct {
 }
 
 // NewDecryptingReader wraps an ArchiveReader for transparent access.
-// The underlying reader should already be configured with a DecryptingChunkSource
+// The underlying reader should already be configured with a DecryptSource
 // if decryption is needed.
 func NewDecryptingReader(inner ArchiveReader) *DecryptingReader {
 	return &DecryptingReader{inner: inner}

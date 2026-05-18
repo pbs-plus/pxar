@@ -43,59 +43,59 @@ type ArchiveReader interface {
 	Close() error
 }
 
-// FileArchiveReader reads from a standalone .pxar file using an io.ReadSeeker.
+// FileReader reads from a standalone .pxar file using an io.ReadSeeker.
 // For split archives (v2), provide both the metadata and payload readers.
-type FileArchiveReader struct {
+type FileReader struct {
 	accessor *accessor.Accessor
 	closers  []io.Closer
 }
 
-// NewFileArchiveReader creates a reader for a standalone .pxar file.
-func NewFileArchiveReader(reader io.ReadSeeker) *FileArchiveReader {
-	return &FileArchiveReader{
+// NewFileReader creates a reader for a standalone .pxar file.
+func NewFileReader(reader io.ReadSeeker) *FileReader {
+	return &FileReader{
 		accessor: accessor.NewAccessor(reader),
 	}
 }
 
-// NewSplitFileArchiveReader creates a reader for a split (v2) archive
+// NewSplitFileReader creates a reader for a split (v2) archive
 // with separate metadata and payload streams.
-func NewSplitFileArchiveReader(metaReader, payloadReader io.ReadSeeker) *FileArchiveReader {
-	return &FileArchiveReader{
+func NewSplitFileReader(metaReader, payloadReader io.ReadSeeker) *FileReader {
+	return &FileReader{
 		accessor: accessor.NewAccessor(metaReader, payloadReader),
 	}
 }
 
-func (r *FileArchiveReader) ReadRoot() (*pxar.Entry, error) {
+func (r *FileReader) ReadRoot() (*pxar.Entry, error) {
 	return r.accessor.ReadRoot()
 }
 
-func (r *FileArchiveReader) Lookup(path string) (*pxar.Entry, error) {
+func (r *FileReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.accessor.Lookup(path)
 }
 
-func (r *FileArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
+func (r *FileReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.accessor.ListDirectory(dirOffset, opts, fn)
 }
 
 // ReadEntryAt reads a full pxar entry at the given archive byte offset.
 
-func (r *FileArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+func (r *FileReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.accessor.ReadFileContentReader(entry)
 }
-func (r *FileArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+func (r *FileReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	return r.accessor.ReadEntryAt(offset)
 }
 
 // ReadEntryAtMinimal reads a pxar entry with minimal decoding (stat only).
-func (r *FileArchiveReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+func (r *FileReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 	return r.accessor.ReadEntryAtMinimal(offset)
 }
 
-func (r *FileArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
+func (r *FileReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return readCatalog(r, fn)
 }
 
-func (r *FileArchiveReader) Close() error {
+func (r *FileReader) Close() error {
 	var err error
 	for _, c := range r.closers {
 		if closeErr := c.Close(); closeErr != nil && err == nil {
@@ -105,42 +105,42 @@ func (r *FileArchiveReader) Close() error {
 	return err
 }
 
-// ChunkedArchiveReader reads from a chunked archive (.pxar.didx).
-// It lazily loads chunks on demand using a ChunkedReadSeeker, avoiding
+// ChunkedReader reads from a chunked archive (.pxar.didx).
+// It lazily loads chunks on demand using a ReadSeeker, avoiding
 // full-stream-in-memory reconstruction. For small archives where full
-// reconstruction is acceptable, use NewChunkedArchiveReaderEager.
-type ChunkedArchiveReader struct {
+// reconstruction is acceptable, use NewChunkedReaderEager.
+type ChunkedReader struct {
 	source  datastore.ChunkSource
-	inner   *FileArchiveReader
+	inner   *FileReader
 	idx     *datastore.DynamicIndexReader
-	lazy    *ChunkedReadSeeker
+	lazy    *ReadSeeker
 	closers []io.Closer
 }
 
-// NewChunkedArchiveReader creates a reader for a chunked .pxar.didx archive
+// NewChunkedReader creates a reader for a chunked .pxar.didx archive
 // using lazy on-demand chunk loading. This avoids reconstructing the entire
 // stream into memory — only chunks needed for Lookups and ReadFileContent
 // calls are loaded.
-func NewChunkedArchiveReader(idxData []byte, source datastore.ChunkSource) (*ChunkedArchiveReader, error) {
+func NewChunkedReader(idxData []byte, source datastore.ChunkSource) (*ChunkedReader, error) {
 	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		return nil, fmt.Errorf("read dynamic index: %w", err)
 	}
 
 	// Use lazy read-seeker instead of full reconstruction
-	lazyReader := NewChunkedReadSeeker(idx, source, 64)
-	return &ChunkedArchiveReader{
-		inner:  NewFileArchiveReader(lazyReader),
+	lazyReader := NewReadSeeker(idx, source, 64)
+	return &ChunkedReader{
+		inner:  NewFileReader(lazyReader),
 		idx:    idx,
 		source: source,
 		lazy:   lazyReader,
 	}, nil
 }
 
-// NewChunkedArchiveReaderEager creates a reader that reconstructs the entire
+// NewChunkedReaderEager creates a reader that reconstructs the entire
 // stream into memory upfront. Use this for small archives or when you need
 // guaranteed sequential access performance.
-func NewChunkedArchiveReaderEager(idxData []byte, source datastore.ChunkSource) (*ChunkedArchiveReader, error) {
+func NewChunkedReaderEager(idxData []byte, source datastore.ChunkSource) (*ChunkedReader, error) {
 	idx, err := datastore.ParseDynamicIndex(idxData)
 	if err != nil {
 		return nil, fmt.Errorf("read dynamic index: %w", err)
@@ -154,8 +154,8 @@ func NewChunkedArchiveReaderEager(idxData []byte, source datastore.ChunkSource) 
 	}
 
 	reader := bytes.NewReader(buf.Bytes())
-	return &ChunkedArchiveReader{
-		inner:  NewFileArchiveReader(reader),
+	return &ChunkedReader{
+		inner:  NewFileReader(reader),
 		idx:    idx,
 		source: source,
 	}, nil
@@ -163,43 +163,43 @@ func NewChunkedArchiveReaderEager(idxData []byte, source datastore.ChunkSource) 
 
 // ReaderAt returns the underlying io.ReaderAt for the archive stream.
 // Returns nil for eager readers backed by bytes.Reader (use the
-// FileArchiveReader directly if you need ReaderAt on those).
+// FileReader directly if you need ReaderAt on those).
 // The returned ReaderAt is safe for concurrent use.
-func (r *ChunkedArchiveReader) ReaderAt() io.ReaderAt {
+func (r *ChunkedReader) ReaderAt() io.ReaderAt {
 	if r.lazy != nil {
 		return r.lazy
 	}
 	return nil
 }
 
-func (r *ChunkedArchiveReader) ReadRoot() (*pxar.Entry, error) {
+func (r *ChunkedReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
 }
 
-func (r *ChunkedArchiveReader) Lookup(path string) (*pxar.Entry, error) {
+func (r *ChunkedReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
-func (r *ChunkedArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
+func (r *ChunkedReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
-func (r *ChunkedArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+func (r *ChunkedReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
 }
-func (r *ChunkedArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+func (r *ChunkedReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	return r.inner.ReadEntryAt(offset)
 }
 
-func (r *ChunkedArchiveReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+func (r *ChunkedReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 	return r.inner.ReadEntryAtMinimal(offset)
 }
 
-func (r *ChunkedArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
+func (r *ChunkedReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return readCatalog(r.inner, fn)
 }
 
-func (r *ChunkedArchiveReader) Close() error {
+func (r *ChunkedReader) Close() error {
 	var err error
 	if r.lazy != nil {
 		if closeErr := r.lazy.Close(); closeErr != nil && err == nil {
@@ -217,25 +217,25 @@ func (r *ChunkedArchiveReader) Close() error {
 	return err
 }
 
-// SplitArchiveReader reads from a split chunked archive (.mpxar.didx + .ppxar.didx).
+// SplitReader reads from a split chunked archive (.mpxar.didx + .ppxar.didx).
 // It uses lazy on-demand chunk loading for both metadata and payload streams,
 // avoiding full-stream-in-memory reconstruction. For small archives, use
-// NewSplitArchiveReaderEager.
-type SplitArchiveReader struct {
+// NewSplitReaderEager.
+type SplitReader struct {
 	source      datastore.ChunkSource
-	inner       *FileArchiveReader
+	inner       *FileReader
 	metaIdx     *datastore.DynamicIndexReader
 	payloadIdx  *datastore.DynamicIndexReader
-	metaLazy    *ChunkedReadSeeker
-	payloadLazy *ChunkedReadSeeker
+	metaLazy    *ReadSeeker
+	payloadLazy *ReadSeeker
 	closers     []io.Closer
 }
 
-// NewSplitArchiveReader creates a reader for a split chunked archive using
+// NewSplitReader creates a reader for a split chunked archive using
 // lazy on-demand chunk loading. Only chunks needed for Lookups and
 // ReadFileContent calls are loaded, which is critical for same-datastore
 // PBS transfers where downloading the entire payload stream is expensive.
-func NewSplitArchiveReader(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
+func NewSplitReader(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitReader, error) {
 	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read metadata index: %w", err)
@@ -247,11 +247,11 @@ func NewSplitArchiveReader(metaIdxData, payloadIdxData []byte, source datastore.
 	}
 
 	// Use lazy read-seekers for both streams
-	metaLazy := NewChunkedReadSeeker(metaIdx, source, 32)
-	payloadLazy := NewChunkedReadSeeker(payloadIdx, source, 64)
+	metaLazy := NewReadSeeker(metaIdx, source, 32)
+	payloadLazy := NewReadSeeker(payloadIdx, source, 64)
 
-	return &SplitArchiveReader{
-		inner:       NewSplitFileArchiveReader(metaLazy, payloadLazy),
+	return &SplitReader{
+		inner:       NewSplitFileReader(metaLazy, payloadLazy),
 		metaIdx:     metaIdx,
 		payloadIdx:  payloadIdx,
 		source:      source,
@@ -260,30 +260,30 @@ func NewSplitArchiveReader(metaIdxData, payloadIdxData []byte, source datastore.
 	}, nil
 }
 
-// NewSplitArchiveReaderMetaOnly creates a reader for a split archive that
+// NewSplitReaderMetaOnly creates a reader for a split archive that
 // only downloads and uses the metadata stream. The payload stream is never
 // fetched. ReadFileContent/ReadFileContentReader will return errors for files
 // stored in the payload stream (PayloadOffset > 0).
-func NewSplitArchiveReaderMetaOnly(metaIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
+func NewSplitReaderMetaOnly(metaIdxData []byte, source datastore.ChunkSource) (*SplitReader, error) {
 	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read metadata index: %w", err)
 	}
 
-	metaLazy := NewChunkedReadSeeker(metaIdx, source, 32)
+	metaLazy := NewReadSeeker(metaIdx, source, 32)
 
-	return &SplitArchiveReader{
-		inner:    NewFileArchiveReader(metaLazy),
+	return &SplitReader{
+		inner:    NewFileReader(metaLazy),
 		metaIdx:  metaIdx,
 		source:   source,
 		metaLazy: metaLazy,
 	}, nil
 }
 
-// NewSplitArchiveReaderEager creates a reader that reconstructs both streams
+// NewSplitReaderEager creates a reader that reconstructs both streams
 // into memory upfront. Use for small archives or when you need guaranteed
 // sequential access performance.
-func NewSplitArchiveReaderEager(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitArchiveReader, error) {
+func NewSplitReaderEager(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitReader, error) {
 	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
 	if err != nil {
 		return nil, fmt.Errorf("read metadata index: %w", err)
@@ -311,8 +311,8 @@ func NewSplitArchiveReaderEager(metaIdxData, payloadIdxData []byte, source datas
 	metaReader := bytes.NewReader(metaBuf.Bytes())
 	payloadReader := bytes.NewReader(payloadBuf.Bytes())
 
-	return &SplitArchiveReader{
-		inner:      NewSplitFileArchiveReader(metaReader, payloadReader),
+	return &SplitReader{
+		inner:      NewSplitFileReader(metaReader, payloadReader),
 		metaIdx:    metaIdx,
 		payloadIdx: payloadIdx,
 		source:     source,
@@ -320,51 +320,51 @@ func NewSplitArchiveReaderEager(metaIdxData, payloadIdxData []byte, source datas
 }
 
 // PayloadReaderAt returns the underlying io.ReaderAt for the payload stream.
-// Returns nil for meta-only or eager readers that don't use a ChunkedReadSeeker.
+// Returns nil for meta-only or eager readers that don't use a ReadSeeker.
 // The returned ReaderAt is safe for concurrent use.
-func (r *SplitArchiveReader) PayloadReaderAt() io.ReaderAt {
+func (r *SplitReader) PayloadReaderAt() io.ReaderAt {
 	if r.payloadLazy != nil {
 		return r.payloadLazy
 	}
 	return nil
 }
 
-func (r *SplitArchiveReader) ReadRoot() (*pxar.Entry, error) {
+func (r *SplitReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
 }
 
-func (r *SplitArchiveReader) Lookup(path string) (*pxar.Entry, error) {
+func (r *SplitReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
-func (r *SplitArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
+func (r *SplitReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
-func (r *SplitArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+func (r *SplitReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
 }
-func (r *SplitArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+func (r *SplitReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	return r.inner.ReadEntryAt(offset)
 }
 
-func (r *SplitArchiveReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
+func (r *SplitReader) ReadEntryAtMinimal(offset int64) (*pxar.Entry, error) {
 	return r.inner.ReadEntryAtMinimal(offset)
 }
 
-func (r *SplitArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
+func (r *SplitReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return readCatalog(r.inner, fn)
 }
 
 // SetPayloadCacheSize adjusts the payload chunk cache size. See
-// ChunkedReadSeeker.SetCacheSize for details.
-func (r *SplitArchiveReader) SetPayloadCacheSize(n int) {
+// ReadSeeker.SetCacheSize for details.
+func (r *SplitReader) SetPayloadCacheSize(n int) {
 	if r.payloadLazy != nil {
 		r.payloadLazy.SetCacheSize(n)
 	}
 }
 
-func (r *SplitArchiveReader) Close() error {
+func (r *SplitReader) Close() error {
 	var err error
 	if r.metaLazy != nil {
 		if closeErr := r.metaLazy.Close(); closeErr != nil && err == nil {

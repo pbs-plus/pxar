@@ -98,9 +98,9 @@ func (fi *FileInfo) IsFile() bool {
 	return !fi.isDir && !fi.isSymlink && !fi.isDevice && !fi.isFifo && !fi.isSocket
 }
 
-// ReleaseFileInfo returns a FileInfo to the pool.
-// Callers must not use fi after calling ReleaseFileInfo.
-func ReleaseFileInfo(fi *FileInfo) {
+// PutFileInfo returns a FileInfo to the pool.
+// Callers must not use fi after calling PutFileInfo.
+func PutFileInfo(fi *FileInfo) {
 	*fi = FileInfo{}
 	fileInfoPool.Put(fi)
 }
@@ -166,14 +166,14 @@ func EntryToFileInfo(e *Entry) *FileInfo {
 	}
 
 	// Xattrs
-	fi.Xattrs = EntryToXAttrs(e)
+	fi.Xattrs = EntryXAttrs(e)
 
 	return fi
 }
 
-// EntryToXAttrs extracts extended attributes from an entry into a map.
+// EntryXAttrs extracts extended attributes from an entry into a map.
 // Returns nil if the entry has no xattrs or fcaps.
-func EntryToXAttrs(e *Entry) map[string][]byte {
+func EntryXAttrs(e *Entry) map[string][]byte {
 	nx := len(e.Metadata.XAttrs)
 	if nx == 0 && e.Metadata.FCaps == nil {
 		return nil

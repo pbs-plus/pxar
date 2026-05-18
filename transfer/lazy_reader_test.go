@@ -10,8 +10,8 @@ import (
 	"github.com/pbs-plus/pxar/transfer"
 )
 
-func TestChunkedReadSeekerReadAtConcurrent(t *testing.T) {
-	// Build a chunked archive to get a ChunkedReadSeeker with real data.
+func TestReadSeekerReadAtConcurrent(t *testing.T) {
+	// Build a chunked archive to get a ReadSeeker with real data.
 	store, idxData := createChunkedArchive(t, map[string]string{
 		"a.txt": string(make([]byte, 4096)), // large enough for multiple chunks
 	})
@@ -22,7 +22,7 @@ func TestChunkedReadSeekerReadAtConcurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seeker := transfer.NewChunkedReadSeeker(idx, source, 4)
+	seeker := transfer.NewReadSeeker(idx, source, 4)
 
 	// Read full content via sequential Read to get ground truth.
 	seeker.Seek(0, io.SeekStart)
@@ -71,7 +71,7 @@ func TestChunkedReadSeekerReadAtConcurrent(t *testing.T) {
 	}
 }
 
-func TestChunkedReadSeekerReadAtSeekIndependent(t *testing.T) {
+func TestReadSeekerReadAtSeekIndependent(t *testing.T) {
 	store, idxData := createChunkedArchive(t, map[string]string{
 		"a.txt": string(make([]byte, 4096)),
 	})
@@ -82,7 +82,7 @@ func TestChunkedReadSeekerReadAtSeekIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	seeker := transfer.NewChunkedReadSeeker(idx, source, 0)
+	seeker := transfer.NewReadSeeker(idx, source, 0)
 
 	// Read full content for ground truth.
 	seeker.Seek(0, io.SeekStart)

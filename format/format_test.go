@@ -301,7 +301,7 @@ func TestHeaderString(t *testing.T) {
 		want  string
 		htype uint64
 	}{
-		{"FORMAT_VERSION", PXARFormatVersion},
+		{"FORMAT_VERSION", Version},
 		{"ENTRY", PXAREntry},
 		{"FILENAME", PXARFilename},
 		{"SYMLINK", PXARSymlink},

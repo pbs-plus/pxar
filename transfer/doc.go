@@ -7,19 +7,19 @@
 // # Readers
 //
 // All source formats implement ArchiveReader:
-//   - FileArchiveReader: standalone .pxar files via io.ReadSeeker
-//   - ChunkedArchiveReader: lazy on-demand chunk loading from .didx indexes
-//   - SplitArchiveReader: v2 split archives (.mpxar.didx + .ppxar.didx)
-//   - PBSArchiveReader: PBS remote stores via H2 reader protocol
+//   - FileReader: standalone .pxar files via io.ReadSeeker
+//   - ChunkedReader: lazy on-demand chunk loading from .didx indexes
+//   - SplitReader: v2 split archives (.mpxar.didx + .ppxar.didx)
+//   - PBSReader: PBS remote stores via H2 reader protocol
 //   - DecryptingReader: wraps any ArchiveReader for encrypted archives
 //
 // # Writers
 //
 // All target formats implement ArchiveWriter:
-//   - StreamArchiveWriter: encodes to io.Writer (v1 or v2 split)
-//   - DedupSplitArchiveWriter: same-datastore dedup with chunk reuse
-//   - RemoteDedupSplitArchiveWriter: PBS remote dedup with chunk injection
-//   - SplitSessionArchiveWriter: uploads via BackupSession
+//   - StreamWriter: encodes to io.Writer (v1 or v2 split)
+//   - DedupWriter: same-datastore dedup with chunk reuse
+//   - RemoteDedupWriter: PBS remote dedup with chunk injection
+//   - SessionWriter: uploads via BackupSession
 //
 // # Transfer Functions
 //
@@ -34,13 +34,13 @@
 //
 // # Dedup Utilities
 //
-// TryRecordStrictlyGreater provides monotonic offset validation for dedup writers.
+// RecordMax provides monotonic offset validation for dedup writers.
 // MapFileToPayloadChunks maps file content to payload chunk ranges.
-// ReadFileContentFromChunks reads file content from specific chunks.
+// ReadChunkedFile reads file content from specific chunks.
 // ComputeContentDigest computes SHA-256 without full stream reconstruction.
 //
 // # Lazy Chunk Loading
 //
-// ChunkedReadSeeker implements io.ReadSeeker over chunked data with configurable
-// chunk cache. DecryptingChunkSource wraps ChunkSource for encrypted chunks.
+// ReadSeeker implements io.ReadSeeker over chunked data with configurable
+// chunk cache. DecryptSource wraps ChunkSource for encrypted chunks.
 package transfer

@@ -53,7 +53,7 @@ func BenchmarkAddFileInfo(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		var files []datastore.FileInfo
+		var files []datastore.BackupFileInfo
 		addFileInfo(&files, "root.pxar.didx", 65536, digest, string(datastore.CryptModeNone))
 	}
 }

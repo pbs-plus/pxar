@@ -364,7 +364,7 @@ func TestRoundTripV2SplitArchive(t *testing.T) {
 
 	data := archiveBuf.Bytes()
 	htype := binary.LittleEndian.Uint64(data[0:8])
-	if htype != format.PXARFormatVersion {
+	if htype != format.Version {
 		t.Errorf("archive first header = %x, want FORMAT_VERSION", htype)
 	}
 

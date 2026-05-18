@@ -6,8 +6,8 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
-// TransferOption configures a file transfer operation.
-type TransferOption struct {
+// CopyOption configures a file transfer operation.
+type CopyOption struct {
 	SourceCryptConfig *datastore.CryptConfig
 	TargetCryptConfig *datastore.CryptConfig
 	OnProgress        func(path string, bytes uint64)

@@ -32,10 +32,10 @@ func TestSplitArchiveFullRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writer := transfer.NewSplitSessionArchiveWriter(context.TODO(), sess, "root.mpxar.didx", "root.ppxar.didx")
+	writer := transfer.NewSessionWriter(context.TODO(), sess, "root.mpxar.didx", "root.ppxar.didx")
 
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := writer.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	if err := writer.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,9 +91,9 @@ func TestSplitArchiveFullRoundTrip(t *testing.T) {
 	}
 	source := datastore.NewChunkStoreSource(store)
 
-	reader, err := transfer.NewSplitArchiveReader(metaData, payloadData, source)
+	reader, err := transfer.NewSplitReader(metaData, payloadData, source)
 	if err != nil {
-		t.Fatalf("NewSplitArchiveReader: %v", err)
+		t.Fatalf("NewSplitReader: %v", err)
 	}
 	defer reader.Close()
 

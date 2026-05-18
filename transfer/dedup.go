@@ -12,7 +12,7 @@ import (
 	"github.com/pbs-plus/pxar/encoder"
 )
 
-// DedupSplitArchiveWriter writes a v2 split archive into the same chunk store
+// DedupWriter writes a v2 split archive into the same chunk store
 // as the source, reusing existing payload chunks instead of re-uploading them.
 //
 // For same-datastore transfers, this avoids:
@@ -27,7 +27,7 @@ import (
 // The writer assumes the source's payload chunks exist in the chunk store.
 // For files not present in the source (new content), it falls back to normal
 // encoding and chunking.
-type DedupSplitArchiveWriter struct {
+type DedupWriter struct {
 	source           datastore.ChunkSource
 	referencedChunks map[[32]byte]bool
 	enc              *encoder.Encoder
@@ -45,17 +45,17 @@ type DedupSplitArchiveWriter struct {
 	compress         bool
 }
 
-// NewDedupSplitArchiveWriter creates a writer that reuses source payload chunks.
+// NewDedupWriter creates a writer that reuses source payload chunks.
 // sourcePayloadIdx is the source archive's .ppxar.didx index.
 // source is the ChunkSource for reading source chunks (same store as target).
-func NewDedupSplitArchiveWriter(
+func NewDedupWriter(
 	store *datastore.ChunkStore,
 	source datastore.ChunkSource,
 	config buzhash.Config,
 	compress bool,
 	sourcePayloadIdx *datastore.DynamicIndexReader,
-) *DedupSplitArchiveWriter {
-	return &DedupSplitArchiveWriter{
+) *DedupWriter {
+	return &DedupWriter{
 		store:            store,
 		source:           source,
 		config:           config,
@@ -65,7 +65,7 @@ func NewDedupSplitArchiveWriter(
 	}
 }
 
-func (w *DedupSplitArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOptions) error {
+func (w *DedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.metaBuf.Reset()
 	w.payloadBuf.Reset()
 	w.payloadOffset = 0
@@ -78,7 +78,7 @@ func (w *DedupSplitArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOpti
 	return nil
 }
 
-func (w *DedupSplitArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
+func (w *DedupWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -114,7 +114,7 @@ func (w *DedupSplitArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) 
 	}
 }
 
-func (w *DedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+func (w *DedupWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
 	name := entry.FileName()
 	switch entry.Kind {
 	case pxar.KindFile:
@@ -140,7 +140,7 @@ func (w *DedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reade
 	}
 }
 
-func (w *DedupSplitArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
+func (w *DedupWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -148,7 +148,7 @@ func (w *DedupSplitArchiveWriter) BeginDirectory(name string, meta *pxar.Metadat
 	return w.enc.CreateDirectory(name, meta)
 }
 
-func (w *DedupSplitArchiveWriter) EndDirectory() error {
+func (w *DedupWriter) EndDirectory() error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -159,7 +159,7 @@ func (w *DedupSplitArchiveWriter) EndDirectory() error {
 	return w.enc.Finish()
 }
 
-func (w *DedupSplitArchiveWriter) Finish() error {
+func (w *DedupWriter) Finish() error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -224,21 +224,21 @@ func (w *DedupSplitArchiveWriter) Finish() error {
 // Results after Finish
 
 // MetaIndexData returns the .mpxar.didx index data after Finish.
-func (w *DedupSplitArchiveWriter) MetaIndexData() []byte {
+func (w *DedupWriter) MetaIndexData() []byte {
 	return w.metaIdxData
 }
 
 // PayloadIndexData returns the .ppxar.didx index data after Finish.
-func (w *DedupSplitArchiveWriter) PayloadIndexData() []byte {
+func (w *DedupWriter) PayloadIndexData() []byte {
 	return w.payloadIdxData
 }
 
 // DedupStats returns (already_existed, total) payload chunk counts.
-func (w *DedupSplitArchiveWriter) DedupStats() (hits, total int) {
+func (w *DedupWriter) DedupStats() (hits, total int) {
 	return w.dedupHits, w.dedupTotal
 }
 
-func (w *DedupSplitArchiveWriter) Close() error {
+func (w *DedupWriter) Close() error {
 	return nil
 }
 
@@ -249,7 +249,7 @@ func (w *DedupSplitArchiveWriter) Close() error {
 //
 // This is mainly useful for reporting — the actual dedup happens
 // automatically via ChunkStore.InsertChunk.
-func (w *DedupSplitArchiveWriter) ReferenceSourcePayloadChunks() {
+func (w *DedupWriter) ReferenceSourcePayloadChunks() {
 	if w.sourcePayloadIdx == nil {
 		return
 	}
@@ -323,10 +323,10 @@ type ChunkRange struct {
 	IsFullChunk  bool   // true if the entire chunk is within the file's content
 }
 
-// ReadFileContentFromChunks reads a file's content by loading only the
+// ReadChunkedFile reads a file's content by loading only the
 // necessary payload chunks. This is more efficient than reconstructing
 // the entire payload stream when you only need specific files.
-func ReadFileContentFromChunks(source datastore.ChunkSource, payloadIdx *datastore.DynamicIndexReader, payloadOffset, fileSize uint64) ([]byte, error) {
+func ReadChunkedFile(source datastore.ChunkSource, payloadIdx *datastore.DynamicIndexReader, payloadOffset, fileSize uint64) ([]byte, error) {
 	if fileSize == 0 {
 		return nil, nil
 	}
@@ -352,21 +352,21 @@ func ReadFileContentFromChunks(source datastore.ChunkSource, payloadIdx *datasto
 // archive without reconstructing the entire payload stream. Only loads the
 // chunks needed for that specific file.
 func ComputeContentDigest(source datastore.ChunkSource, payloadIdx *datastore.DynamicIndexReader, payloadOffset, fileSize uint64) ([32]byte, error) {
-	content, err := ReadFileContentFromChunks(source, payloadIdx, payloadOffset, fileSize)
+	content, err := ReadChunkedFile(source, payloadIdx, payloadOffset, fileSize)
 	if err != nil {
 		return [32]byte{}, err
 	}
 	return sha256.Sum256(content), nil
 }
 
-// TryRecordStrictlyGreater mirrors Rust's try_record_strictly_greater from
+// RecordMax mirrors Rust's try_record_strictly_greater from
 // pbs-client/src/pxar/create.rs. It records a strictly-monotonically-increasing
 // offset into `last`. Returns true if offset > *last (or first call when *last == nil),
 // false otherwise. Rejected offsets do not update state.
 //
 // This prevents a corrupt previous archive from injecting backwards PXAR_PAYLOAD_REF
 // offsets, which the encoder's strict offset check would reject, aborting the backup.
-func TryRecordStrictlyGreater(last **uint64, offset uint64) bool {
+func RecordMax(last **uint64, offset uint64) bool {
 	if *last != nil {
 		if offset <= **last {
 			return false

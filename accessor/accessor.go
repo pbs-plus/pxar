@@ -42,7 +42,7 @@ type Accessor struct {
 	fixedBuf []byte // at least 40 bytes
 
 	// metaMu serializes access to the metadata stream reader.
-	// io.ReadSeeker implementations like bytes.Reader and ChunkedReadSeeker
+	// io.ReadSeeker implementations like bytes.Reader and ReadSeeker
 	// are not safe for concurrent Seek+Read (only ReadAt is safe).
 	metaMu sync.Mutex
 
@@ -102,7 +102,7 @@ func (a *Accessor) readRootLocked() (*pxar.Entry, error) {
 	}
 
 	// Skip optional format version
-	if h.Type == format.PXARFormatVersion {
+	if h.Type == format.Version {
 		if _, err := a.reader.Seek(int64(h.ContentSize()), io.SeekCurrent); err != nil {
 			return nil, err
 		}
@@ -947,7 +947,7 @@ func (a *Accessor) getRootContentOffset() (int64, error) {
 	}
 
 	// Skip format version
-	if h.Type == format.PXARFormatVersion {
+	if h.Type == format.Version {
 		if _, err := a.reader.Seek(int64(h.ContentSize()), io.SeekCurrent); err != nil {
 			return 0, err
 		}

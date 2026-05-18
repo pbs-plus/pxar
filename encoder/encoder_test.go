@@ -279,8 +279,8 @@ func TestEncodeSplitArchive(t *testing.T) {
 	// Archive should contain FORMAT_VERSION for v2
 	archiveData := archiveBuf.Bytes()
 	htype = binary.LittleEndian.Uint64(archiveData[0:8])
-	if htype != format.PXARFormatVersion {
-		t.Errorf("archive first header = %x, want FORMAT_VERSION %x", htype, format.PXARFormatVersion)
+	if htype != format.Version {
+		t.Errorf("archive first header = %x, want FORMAT_VERSION %x", htype, format.Version)
 	}
 }
 
@@ -303,8 +303,8 @@ func TestEncodeWithPrelude(t *testing.T) {
 
 	data := archiveBuf.Bytes()
 	htype := binary.LittleEndian.Uint64(data[0:8])
-	if htype != format.PXARFormatVersion {
-		t.Errorf("first header = %x, want FORMAT_VERSION %x", htype, format.PXARFormatVersion)
+	if htype != format.Version {
+		t.Errorf("first header = %x, want FORMAT_VERSION %x", htype, format.Version)
 	}
 
 	// Second item should be PRELUDE

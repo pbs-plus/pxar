@@ -97,7 +97,7 @@ func TestWireFormatStructSizes(t *testing.T) {
 // and distinct (no collisions).
 func TestPXARMagicNumbers(t *testing.T) {
 	types := map[string]uint64{
-		"FORMAT_VERSION":       PXARFormatVersion,
+		"FORMAT_VERSION":       Version,
 		"ENTRY":                PXAREntry,
 		"ENTRY_V1":             PXAREntryV1,
 		"PRELUDE":              PXARPrelude,

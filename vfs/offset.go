@@ -11,13 +11,13 @@ import (
 	"github.com/pbs-plus/pxar/transfer"
 )
 
-// OffsetFileSystem provides offset-based access to a pxar archive.
+// FileSystem provides offset-based access to a pxar archive.
 // Unlike the path-based FileSystem, operations use byte offsets from
 // the archive structure (entry offsets, content offsets). This mirrors
 // the wire protocol used by PBS agents for restore operations.
 //
 // Thread safety: all methods are safe for concurrent use.
-type OffsetFileSystem interface {
+type FileSystem interface {
 	// Root returns the root directory entry.
 	Root() (*pxar.FileInfo, error)
 
@@ -54,8 +54,8 @@ type OffsetFileSystem interface {
 	Close() error
 }
 
-// OffsetStats holds read progress statistics.
-type OffsetStats struct {
+// Stats holds read progress statistics.
+type Stats struct {
 	FilesAccessed   int64
 	FoldersAccessed int64
 	TotalBytes      int64
@@ -64,15 +64,15 @@ type OffsetStats struct {
 // StatsProvider is an optional interface that offset filesystems
 // can implement to expose read progress statistics.
 type StatsProvider interface {
-	Stats() OffsetStats
+	Stats() Stats
 }
 
-// --- LocalOffsetFS ---
+// --- LocalFS ---
 
-// LocalOffsetFS implements OffsetFileSystem backed by a transfer.ArchiveReader.
+// LocalFS implements FileSystem backed by a transfer.ArchiveReader.
 // It maintains offset-based caches for entry lookup, content lookup, and
 // directory range resolution — matching the PBS wire protocol patterns.
-type LocalOffsetFS struct {
+type LocalFS struct {
 	reader transfer.ArchiveReader
 
 	// metaMu serializes metadata stream access (Seek + Read is not thread-safe).
@@ -90,9 +90,9 @@ type LocalOffsetFS struct {
 	bytes   int64
 }
 
-// NewLocalOffsetFS creates an offset-based filesystem backed by an ArchiveReader.
-func NewLocalOffsetFS(reader transfer.ArchiveReader) *LocalOffsetFS {
-	return &LocalOffsetFS{
+// NewLocalFS creates an offset-based filesystem backed by an ArchiveReader.
+func NewLocalFS(reader transfer.ArchiveReader) *LocalFS {
+	return &LocalFS{
 		reader:        reader,
 		entryCache:    make(map[uint64]*pxar.Entry, 256),
 		contentCache:  make(map[uint64]*pxar.Entry, 64),
@@ -101,8 +101,8 @@ func NewLocalOffsetFS(reader transfer.ArchiveReader) *LocalOffsetFS {
 }
 
 // Stats returns current read progress statistics.
-func (fs *LocalOffsetFS) Stats() OffsetStats {
-	return OffsetStats{
+func (fs *LocalFS) Stats() Stats {
+	return Stats{
 		FilesAccessed:   fs.files,
 		FoldersAccessed: fs.folders,
 		TotalBytes:      fs.bytes,
@@ -110,7 +110,7 @@ func (fs *LocalOffsetFS) Stats() OffsetStats {
 }
 
 // Root returns the root directory entry.
-func (fs *LocalOffsetFS) Root() (*pxar.FileInfo, error) {
+func (fs *LocalFS) Root() (*pxar.FileInfo, error) {
 	fs.metaMu.Lock()
 	entry, err := fs.reader.ReadRoot()
 	fs.metaMu.Unlock()
@@ -122,7 +122,7 @@ func (fs *LocalOffsetFS) Root() (*pxar.FileInfo, error) {
 }
 
 // Lookup finds an entry by archive-internal path.
-func (fs *LocalOffsetFS) Lookup(path string) (*pxar.FileInfo, error) {
+func (fs *LocalFS) Lookup(path string) (*pxar.FileInfo, error) {
 	fs.metaMu.Lock()
 	entry, err := fs.reader.Lookup(path)
 	fs.metaMu.Unlock()
@@ -137,7 +137,7 @@ func (fs *LocalOffsetFS) Lookup(path string) (*pxar.FileInfo, error) {
 // ReadDir lists entries in a directory identified by offset.
 // The offset may be a ContentOffset or a legacy EntryRangeEnd —
 // it is resolved to ContentOffset via the internal cache.
-func (fs *LocalOffsetFS) ReadDir(offset uint64) ([]pxar.FileInfo, error) {
+func (fs *LocalFS) ReadDir(offset uint64) ([]pxar.FileInfo, error) {
 	offset = fs.resolveContentOffset(offset)
 
 	fs.metaMu.Lock()
@@ -145,7 +145,7 @@ func (fs *LocalOffsetFS) ReadDir(offset uint64) ([]pxar.FileInfo, error) {
 	err := fs.reader.ListDirectory(int64(offset), accessor.ListOption{Minimal: true}, func(e *pxar.Entry) error {
 		info := pxar.EntryToFileInfo(e)
 		entries = append(entries, *info)
-		pxar.ReleaseFileInfo(info)
+		pxar.PutFileInfo(info)
 		fs.cacheEntry(e)
 		fs.incCount(e)
 		return nil
@@ -158,7 +158,7 @@ func (fs *LocalOffsetFS) ReadDir(offset uint64) ([]pxar.FileInfo, error) {
 }
 
 // GetAttr returns attributes for an entry by file offset.
-func (fs *LocalOffsetFS) GetAttr(entryStart uint64) (*pxar.FileInfo, error) {
+func (fs *LocalFS) GetAttr(entryStart uint64) (*pxar.FileInfo, error) {
 	if e := fs.getCachedEntry(entryStart); e != nil {
 		fs.incCount(e)
 		return pxar.EntryToFileInfo(e), nil
@@ -176,7 +176,7 @@ func (fs *LocalOffsetFS) GetAttr(entryStart uint64) (*pxar.FileInfo, error) {
 }
 
 // Read reads raw file content from a content range.
-func (fs *LocalOffsetFS) Read(contentStart, contentEnd, offset uint64, size uint) ([]byte, error) {
+func (fs *LocalFS) Read(contentStart, contentEnd, offset uint64, size uint) ([]byte, error) {
 	entry := fs.getCachedContentEntry(contentStart)
 	if entry == nil {
 		return nil, fmt.Errorf("entry with content offset %d not found in cache", contentStart)
@@ -205,7 +205,7 @@ func (fs *LocalOffsetFS) Read(contentStart, contentEnd, offset uint64, size uint
 }
 
 // ReadContentReader returns a streaming reader for file content by offset.
-func (fs *LocalOffsetFS) ReadContentReader(contentStart, contentEnd uint64) (io.ReadCloser, error) {
+func (fs *LocalFS) ReadContentReader(contentStart, contentEnd uint64) (io.ReadCloser, error) {
 	entry := fs.getCachedContentEntry(contentStart)
 	if entry == nil {
 		return nil, fmt.Errorf("entry with content offset %d not found in cache", contentStart)
@@ -215,7 +215,7 @@ func (fs *LocalOffsetFS) ReadContentReader(contentStart, contentEnd uint64) (io.
 }
 
 // ReadLink returns the symlink target by entry offset.
-func (fs *LocalOffsetFS) ReadLink(entryStart uint64) ([]byte, error) {
+func (fs *LocalFS) ReadLink(entryStart uint64) ([]byte, error) {
 	if e := fs.getCachedEntry(entryStart); e != nil {
 		if e.LinkTarget != "" {
 			return []byte(e.LinkTarget), nil
@@ -236,7 +236,7 @@ func (fs *LocalOffsetFS) ReadLink(entryStart uint64) ([]byte, error) {
 }
 
 // ListXAttrs returns extended attributes for an entry by offset.
-func (fs *LocalOffsetFS) ListXAttrs(entryStart uint64) (map[string][]byte, error) {
+func (fs *LocalFS) ListXAttrs(entryStart uint64) (map[string][]byte, error) {
 	e := fs.getCachedEntry(entryStart)
 	if e == nil {
 		return nil, fmt.Errorf("entry at offset %d not found", entryStart)
@@ -255,11 +255,11 @@ func (fs *LocalOffsetFS) ListXAttrs(entryStart uint64) (map[string][]byte, error
 		fs.cacheEntry(e)
 	}
 
-	return pxar.EntryToXAttrs(e), nil
+	return pxar.EntryXAttrs(e), nil
 }
 
 // Close releases all resources.
-func (fs *LocalOffsetFS) Close() error {
+func (fs *LocalFS) Close() error {
 	if fs.reader != nil {
 		return fs.reader.Close()
 	}
@@ -267,13 +267,13 @@ func (fs *LocalOffsetFS) Close() error {
 }
 
 // Reader returns the underlying ArchiveReader for advanced operations.
-func (fs *LocalOffsetFS) Reader() transfer.ArchiveReader {
+func (fs *LocalFS) Reader() transfer.ArchiveReader {
 	return fs.reader
 }
 
 // --- internal helpers ---
 
-func (fs *LocalOffsetFS) cacheEntry(e *pxar.Entry) {
+func (fs *LocalFS) cacheEntry(e *pxar.Entry) {
 	fs.cacheMu.Lock()
 	fs.entryCache[e.FileOffset] = e
 	if e.IsRegularFile() && e.ContentOffset > 0 {
@@ -285,21 +285,21 @@ func (fs *LocalOffsetFS) cacheEntry(e *pxar.Entry) {
 	fs.cacheMu.Unlock()
 }
 
-func (fs *LocalOffsetFS) getCachedEntry(offset uint64) *pxar.Entry {
+func (fs *LocalFS) getCachedEntry(offset uint64) *pxar.Entry {
 	fs.cacheMu.RLock()
 	e := fs.entryCache[offset]
 	fs.cacheMu.RUnlock()
 	return e
 }
 
-func (fs *LocalOffsetFS) getCachedContentEntry(contentOffset uint64) *pxar.Entry {
+func (fs *LocalFS) getCachedContentEntry(contentOffset uint64) *pxar.Entry {
 	fs.cacheMu.RLock()
 	e := fs.contentCache[contentOffset]
 	fs.cacheMu.RUnlock()
 	return e
 }
 
-func (fs *LocalOffsetFS) resolveContentOffset(offset uint64) uint64 {
+func (fs *LocalFS) resolveContentOffset(offset uint64) uint64 {
 	fs.cacheMu.RLock()
 	co, ok := fs.rangeToOffset[offset]
 	fs.cacheMu.RUnlock()
@@ -309,7 +309,7 @@ func (fs *LocalOffsetFS) resolveContentOffset(offset uint64) uint64 {
 	return offset
 }
 
-func (fs *LocalOffsetFS) incCount(e *pxar.Entry) {
+func (fs *LocalFS) incCount(e *pxar.Entry) {
 	if e.IsDir() {
 		fs.folders++
 	} else {
@@ -319,9 +319,9 @@ func (fs *LocalOffsetFS) incCount(e *pxar.Entry) {
 
 // --- Offset RPC protocol ---
 
-// OffsetRPCTransport is the transport interface for offset-based remote FS.
+// RPCTransport is the transport interface for offset-based remote FS.
 // Implement this to bridge to any wire format or transport (arpc, gRPC, etc.).
-type OffsetRPCTransport interface {
+type RPCTransport interface {
 	// Call invokes a remote method with a typed request/response.
 	Call(ctx context.Context, method string, req, resp any) error
 
@@ -338,63 +338,63 @@ type OffsetRPCTransport interface {
 
 // Offset method constants for RPC routing.
 const (
-	OffsetMethodRoot       = "pxar.Root"
-	OffsetMethodLookup     = "pxar.Lookup"
-	OffsetMethodReadDir    = "pxar.ReadDir"
-	OffsetMethodGetAttr    = "pxar.GetAttr"
-	OffsetMethodRead       = "pxar.Read"
-	OffsetMethodReadStream = "pxar.ReadStream"
-	OffsetMethodReadLink   = "pxar.ReadLink"
-	OffsetMethodListXAttrs = "pxar.ListXAttrs"
-	OffsetMethodError      = "pxar.Error"
-	OffsetMethodDone       = "pxar.Done"
+	MethodRoot       = "pxar.Root"
+	MethodLookup     = "pxar.Lookup"
+	MethodReadDir    = "pxar.ReadDir"
+	MethodGetAttr    = "pxar.GetAttr"
+	MethodRead       = "pxar.Read"
+	MethodReadStream = "pxar.ReadStream"
+	MethodReadLink   = "pxar.ReadLink"
+	MethodListXAttrs = "pxar.ListXAttrs"
+	MethodError      = "pxar.Error"
+	MethodDone       = "pxar.Done"
 )
 
-// --- OffsetRemoteFS (client) ---
+// --- RemoteFS (client) ---
 
-// OffsetRemoteFS implements OffsetFileSystem over an OffsetRPCTransport.
-type OffsetRemoteFS struct {
-	transport OffsetRPCTransport
+// RemoteFS implements FileSystem over an RPCTransport.
+type RemoteFS struct {
+	transport RPCTransport
 }
 
-// NewOffsetRemoteFS creates an OffsetFileSystem backed by an OffsetRPCTransport.
-func NewOffsetRemoteFS(transport OffsetRPCTransport) *OffsetRemoteFS {
-	return &OffsetRemoteFS{transport: transport}
+// NewRemoteFS creates an FileSystem backed by an RPCTransport.
+func NewRemoteFS(transport RPCTransport) *RemoteFS {
+	return &RemoteFS{transport: transport}
 }
 
-func (fs *OffsetRemoteFS) Root() (*pxar.FileInfo, error) {
+func (fs *RemoteFS) Root() (*pxar.FileInfo, error) {
 	var fi pxar.FileInfo
-	if err := fs.transport.Call(context.Background(), OffsetMethodRoot, nil, &fi); err != nil {
+	if err := fs.transport.Call(context.Background(), MethodRoot, nil, &fi); err != nil {
 		return nil, err
 	}
 	return &fi, nil
 }
 
-func (fs *OffsetRemoteFS) Lookup(path string) (*pxar.FileInfo, error) {
+func (fs *RemoteFS) Lookup(path string) (*pxar.FileInfo, error) {
 	var fi pxar.FileInfo
-	if err := fs.transport.Call(context.Background(), OffsetMethodLookup, map[string]string{"path": path}, &fi); err != nil {
+	if err := fs.transport.Call(context.Background(), MethodLookup, map[string]string{"path": path}, &fi); err != nil {
 		return nil, err
 	}
 	return &fi, nil
 }
 
-func (fs *OffsetRemoteFS) ReadDir(offset uint64) ([]pxar.FileInfo, error) {
+func (fs *RemoteFS) ReadDir(offset uint64) ([]pxar.FileInfo, error) {
 	var entries []pxar.FileInfo
-	if err := fs.transport.Call(context.Background(), OffsetMethodReadDir, map[string]uint64{"offset": offset}, &entries); err != nil {
+	if err := fs.transport.Call(context.Background(), MethodReadDir, map[string]uint64{"offset": offset}, &entries); err != nil {
 		return nil, err
 	}
 	return entries, nil
 }
 
-func (fs *OffsetRemoteFS) GetAttr(entryStart uint64) (*pxar.FileInfo, error) {
+func (fs *RemoteFS) GetAttr(entryStart uint64) (*pxar.FileInfo, error) {
 	var fi pxar.FileInfo
-	if err := fs.transport.Call(context.Background(), OffsetMethodGetAttr, map[string]uint64{"entry_start": entryStart}, &fi); err != nil {
+	if err := fs.transport.Call(context.Background(), MethodGetAttr, map[string]uint64{"entry_start": entryStart}, &fi); err != nil {
 		return nil, err
 	}
 	return &fi, nil
 }
 
-func (fs *OffsetRemoteFS) Read(contentStart, contentEnd, offset uint64, size uint) ([]byte, error) {
+func (fs *RemoteFS) Read(contentStart, contentEnd, offset uint64, size uint) ([]byte, error) {
 	req := map[string]uint64{
 		"content_start": contentStart,
 		"content_end":   contentEnd,
@@ -402,110 +402,110 @@ func (fs *OffsetRemoteFS) Read(contentStart, contentEnd, offset uint64, size uin
 		"size":          uint64(size),
 	}
 	buf := make([]byte, size)
-	n, err := fs.transport.CallBinary(context.Background(), OffsetMethodRead, req, buf)
+	n, err := fs.transport.CallBinary(context.Background(), MethodRead, req, buf)
 	if err != nil {
 		return nil, err
 	}
 	return buf[:n], nil
 }
 
-func (fs *OffsetRemoteFS) ReadContentReader(contentStart, contentEnd uint64) (io.ReadCloser, error) {
+func (fs *RemoteFS) ReadContentReader(contentStart, contentEnd uint64) (io.ReadCloser, error) {
 	req := map[string]uint64{
 		"content_start": contentStart,
 		"content_end":   contentEnd,
 	}
-	return fs.transport.CallStream(context.Background(), OffsetMethodReadStream, req)
+	return fs.transport.CallStream(context.Background(), MethodReadStream, req)
 }
 
-func (fs *OffsetRemoteFS) ReadLink(entryStart uint64) ([]byte, error) {
+func (fs *RemoteFS) ReadLink(entryStart uint64) ([]byte, error) {
 	var target []byte
-	if err := fs.transport.Call(context.Background(), OffsetMethodReadLink, map[string]uint64{"entry_start": entryStart}, &target); err != nil {
+	if err := fs.transport.Call(context.Background(), MethodReadLink, map[string]uint64{"entry_start": entryStart}, &target); err != nil {
 		return nil, err
 	}
 	return target, nil
 }
 
-func (fs *OffsetRemoteFS) ListXAttrs(entryStart uint64) (map[string][]byte, error) {
+func (fs *RemoteFS) ListXAttrs(entryStart uint64) (map[string][]byte, error) {
 	var xattrs map[string][]byte
-	if err := fs.transport.Call(context.Background(), OffsetMethodListXAttrs, map[string]uint64{"entry_start": entryStart}, &xattrs); err != nil {
+	if err := fs.transport.Call(context.Background(), MethodListXAttrs, map[string]uint64{"entry_start": entryStart}, &xattrs); err != nil {
 		return nil, err
 	}
 	return xattrs, nil
 }
 
-func (fs *OffsetRemoteFS) Close() error {
-	_ = fs.transport.Call(context.Background(), OffsetMethodDone, nil, nil)
+func (fs *RemoteFS) Close() error {
+	_ = fs.transport.Call(context.Background(), MethodDone, nil, nil)
 	return fs.transport.Close()
 }
 
-// --- OffsetRemoteServer (server-side handler) ---
+// --- RemoteServer (server-side handler) ---
 
-// OffsetRemoteServer serves OffsetFileSystem operations as typed handler methods.
-// Register each handler with your RPC framework using the OffsetMethod* constants.
+// RemoteServer serves FileSystem operations as typed handler methods.
+// Register each handler with your RPC framework using the Method* constants.
 //
 // Example with arpc:
 //
-//	srv := vfs.NewOffsetRemoteServer(offsetFS)
+//	srv := vfs.NewRemoteServer(offsetFS)
 //	router.Handle("pxar.Root", func(req *arpc.Request) (arpc.Response, error) {
 //	    fi, err := srv.HandleRoot()
 //	    data, _ := cbor.Marshal(fi)
 //	    return arpc.Response{Status: 200, Data: data}, err
 //	})
-type OffsetRemoteServer struct {
-	fs OffsetFileSystem
+type RemoteServer struct {
+	fs FileSystem
 }
 
-// NewOffsetRemoteServer creates a server that dispatches to the given OffsetFileSystem.
-func NewOffsetRemoteServer(fs OffsetFileSystem) *OffsetRemoteServer {
-	return &OffsetRemoteServer{fs: fs}
+// NewRemoteServer creates a server that dispatches to the given FileSystem.
+func NewRemoteServer(fs FileSystem) *RemoteServer {
+	return &RemoteServer{fs: fs}
 }
 
 // HandleRoot returns the root entry.
-func (s *OffsetRemoteServer) HandleRoot() (*pxar.FileInfo, error) {
+func (s *RemoteServer) HandleRoot() (*pxar.FileInfo, error) {
 	return s.fs.Root()
 }
 
 // HandleLookup finds an entry by path.
-func (s *OffsetRemoteServer) HandleLookup(path string) (*pxar.FileInfo, error) {
+func (s *RemoteServer) HandleLookup(path string) (*pxar.FileInfo, error) {
 	return s.fs.Lookup(path)
 }
 
 // HandleReadDir lists directory entries by offset.
-func (s *OffsetRemoteServer) HandleReadDir(offset uint64) ([]pxar.FileInfo, error) {
+func (s *RemoteServer) HandleReadDir(offset uint64) ([]pxar.FileInfo, error) {
 	return s.fs.ReadDir(offset)
 }
 
 // HandleGetAttr returns entry attributes by file offset.
-func (s *OffsetRemoteServer) HandleGetAttr(entryStart uint64) (*pxar.FileInfo, error) {
+func (s *RemoteServer) HandleGetAttr(entryStart uint64) (*pxar.FileInfo, error) {
 	return s.fs.GetAttr(entryStart)
 }
 
 // HandleRead reads raw file content.
-func (s *OffsetRemoteServer) HandleRead(contentStart, contentEnd, offset uint64, size uint) ([]byte, error) {
+func (s *RemoteServer) HandleRead(contentStart, contentEnd, offset uint64, size uint) ([]byte, error) {
 	return s.fs.Read(contentStart, contentEnd, offset, size)
 }
 
 // HandleReadStream returns a streaming reader for file content.
-func (s *OffsetRemoteServer) HandleReadStream(contentStart, contentEnd uint64) (io.ReadCloser, error) {
+func (s *RemoteServer) HandleReadStream(contentStart, contentEnd uint64) (io.ReadCloser, error) {
 	return s.fs.ReadContentReader(contentStart, contentEnd)
 }
 
 // HandleReadLink returns symlink target.
-func (s *OffsetRemoteServer) HandleReadLink(entryStart uint64) ([]byte, error) {
+func (s *RemoteServer) HandleReadLink(entryStart uint64) ([]byte, error) {
 	return s.fs.ReadLink(entryStart)
 }
 
 // HandleListXAttrs returns extended attributes.
-func (s *OffsetRemoteServer) HandleListXAttrs(entryStart uint64) (map[string][]byte, error) {
+func (s *RemoteServer) HandleListXAttrs(entryStart uint64) (map[string][]byte, error) {
 	return s.fs.ListXAttrs(entryStart)
 }
 
 // HandleError receives a client-reported error.
-func (s *OffsetRemoteServer) HandleError(errMsg string) error {
+func (s *RemoteServer) HandleError(errMsg string) error {
 	return nil
 }
 
 // HandleDone signals session completion.
-func (s *OffsetRemoteServer) HandleDone() error {
+func (s *RemoteServer) HandleDone() error {
 	return nil
 }

@@ -8,10 +8,10 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
-// FileSystemAccessor is the interface the client uses to access the local
+// FSAccessor is the interface the client uses to access the local
 // filesystem. Users provide their own implementation. This indirection allows
 // testing without a real filesystem and running in constrained environments.
-type FileSystemAccessor interface {
+type FSAccessor interface {
 	Stat(path string) (format.Stat, error)
 	ReadDir(path string) ([]DirEntry, error)
 	// OpenFile returns a reader for streaming file content. The caller must
@@ -33,7 +33,7 @@ type FileSystemAccessor interface {
 }
 
 // NoExtendedAttrs provides no-op implementations of the extended metadata
-// methods. Embed this in FileSystemAccessor implementations that don't
+// methods. Embed this in FSAccessor implementations that don't
 // support xattrs, ACLs, or file capabilities.
 type NoExtendedAttrs struct{}
 
@@ -67,36 +67,36 @@ type FileOpener interface {
 	OpenFile(ctx context.Context, path string) (io.ReadCloser, uint64, error)
 }
 
-// LocalClient implements ClientProvider by delegating to a FileSystemAccessor.
+// LocalClient implements ClientProvider by delegating to a FSAccessor.
 // This is the client-side component: runs on the machine being backed up.
 type LocalClient struct {
-	fs FileSystemAccessor
+	fs FSAccessor
 }
 
-// NewLocalClient creates a client backed by the given FileSystemAccessor.
-func NewLocalClient(fs FileSystemAccessor) *LocalClient {
+// NewLocalClient creates a client backed by the given FSAccessor.
+func NewLocalClient(fs FSAccessor) *LocalClient {
 	return &LocalClient{fs: fs}
 }
 
 // Stat returns file metadata for the given path by delegating to the
-// underlying FileSystemAccessor.
+// underlying FSAccessor.
 func (lc *LocalClient) Stat(_ context.Context, path string) (format.Stat, error) {
 	return lc.fs.Stat(path)
 }
 
 // ReadDir returns directory entries for the given path by delegating to the
-// underlying FileSystemAccessor.
+// underlying FSAccessor.
 func (lc *LocalClient) ReadDir(_ context.Context, path string) ([]DirEntry, error) {
 	return lc.fs.ReadDir(path)
 }
 
-// OpenFile delegates to the underlying FileSystemAccessor.
+// OpenFile delegates to the underlying FSAccessor.
 func (lc *LocalClient) OpenFile(_ context.Context, path string) (io.ReadCloser, uint64, error) {
 	return lc.fs.OpenFile(path)
 }
 
 // ReadLink returns the symlink target for the given path by delegating to the
-// underlying FileSystemAccessor.
+// underlying FSAccessor.
 func (lc *LocalClient) ReadLink(_ context.Context, path string) (string, error) {
 	return lc.fs.ReadLink(path)
 }

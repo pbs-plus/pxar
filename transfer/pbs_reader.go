@@ -10,16 +10,16 @@ import (
 	"github.com/pbs-plus/pxar/backupproxy"
 )
 
-// PBSArchiveReader reads archives from a PBS remote store.
+// PBSReader reads archives from a PBS remote store.
 // It downloads the index file(s) and reconstructs the archive stream
 // using chunks from the PBS reader protocol.
-type PBSArchiveReader struct {
+type PBSReader struct {
 	inner ArchiveReader
 	pbs   *backupproxy.PBSReader
 }
 
-// PBSArchiveConfig holds the configuration for opening a PBS archive.
-type PBSArchiveConfig struct {
+// PBSReaderConfig holds the configuration for opening a PBS archive.
+type PBSReaderConfig struct {
 	BackupType  string
 	BackupID    string
 	ArchiveName string
@@ -30,9 +30,9 @@ type PBSArchiveConfig struct {
 	MetaOnly    bool
 }
 
-// NewPBSArchiveReader creates a reader for a PBS remote archive.
+// NewPBSReader creates a reader for a PBS remote archive.
 // For v1 archives, set ArchiveName. For v2 split archives, set MetaName and PayloadName.
-func NewPBSArchiveReader(ctx context.Context, cfg PBSArchiveConfig) (*PBSArchiveReader, error) {
+func NewPBSReader(ctx context.Context, cfg PBSReaderConfig) (*PBSReader, error) {
 	pbs := backupproxy.NewPBSReader(cfg.Config, cfg.BackupType, cfg.BackupID, cfg.BackupTime)
 	if err := pbs.Connect(ctx); err != nil {
 		return nil, fmt.Errorf("connect to PBS: %w", err)
@@ -50,7 +50,7 @@ func NewPBSArchiveReader(ctx context.Context, cfg PBSArchiveConfig) (*PBSArchive
 
 		if cfg.MetaOnly {
 			// MetaOnly: skip payload download entirely. Use metadata-only reader.
-			inner, err = NewSplitArchiveReaderMetaOnly(metaIdxData, pbs.AsChunkSource())
+			inner, err = NewSplitReaderMetaOnly(metaIdxData, pbs.AsChunkSource())
 			if err != nil {
 				pbs.Close()
 				return nil, fmt.Errorf("create meta-only reader: %w", err)
@@ -62,7 +62,7 @@ func NewPBSArchiveReader(ctx context.Context, cfg PBSArchiveConfig) (*PBSArchive
 				return nil, fmt.Errorf("download payload index: %w", err)
 			}
 
-			inner, err = NewSplitArchiveReader(metaIdxData, payloadIdxData, pbs.AsChunkSource())
+			inner, err = NewSplitReader(metaIdxData, payloadIdxData, pbs.AsChunkSource())
 			if err != nil {
 				pbs.Close()
 				return nil, fmt.Errorf("create split reader: %w", err)
@@ -76,7 +76,7 @@ func NewPBSArchiveReader(ctx context.Context, cfg PBSArchiveConfig) (*PBSArchive
 			return nil, fmt.Errorf("download index: %w", err)
 		}
 
-		inner, err = NewChunkedArchiveReader(idxData, pbs.AsChunkSource())
+		inner, err = NewChunkedReader(idxData, pbs.AsChunkSource())
 		if err != nil {
 			pbs.Close()
 			return nil, fmt.Errorf("create chunked reader: %w", err)
@@ -86,37 +86,37 @@ func NewPBSArchiveReader(ctx context.Context, cfg PBSArchiveConfig) (*PBSArchive
 		return nil, fmt.Errorf("must specify ArchiveName (v1) or MetaName+PayloadName (v2)")
 	}
 
-	return &PBSArchiveReader{
+	return &PBSReader{
 		inner: inner,
 		pbs:   pbs,
 	}, nil
 }
 
-func (r *PBSArchiveReader) ReadRoot() (*pxar.Entry, error) {
+func (r *PBSReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
 }
 
-func (r *PBSArchiveReader) Lookup(path string) (*pxar.Entry, error) {
+func (r *PBSReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }
 
-func (r *PBSArchiveReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
+func (r *PBSReader) ListDirectory(dirOffset int64, opts accessor.ListOption, fn func(*pxar.Entry) error) error {
 	return r.inner.ListDirectory(dirOffset, opts, fn)
 }
 
-func (r *PBSArchiveReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
+func (r *PBSReader) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, error) {
 	return r.inner.ReadFileContentReader(entry)
 }
 
-func (r *PBSArchiveReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
+func (r *PBSReader) ReadEntryAt(offset int64) (*pxar.Entry, error) {
 	return r.inner.ReadEntryAt(offset)
 }
 
-func (r *PBSArchiveReader) ReadCatalog(fn func(CatalogEntry) error) error {
+func (r *PBSReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return readCatalog(r.inner, fn)
 }
 
-func (r *PBSArchiveReader) Close() error {
+func (r *PBSReader) Close() error {
 	var err error
 	if closeErr := r.inner.Close(); closeErr != nil && err == nil {
 		err = closeErr

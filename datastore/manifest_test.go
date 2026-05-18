@@ -9,7 +9,7 @@ func TestManifestRoundTrip(t *testing.T) {
 		BackupType: "vm",
 		BackupID:   "100",
 		BackupTime: 1700000000,
-		Files: []FileInfo{
+		Files: []BackupFileInfo{
 			{
 				Filename: "drive.qemu.fidx",
 				Size:     10485760,
@@ -63,7 +63,7 @@ func TestManifestVerifyFile(t *testing.T) {
 		BackupType: "host",
 		BackupID:   "myhost",
 		BackupTime: 1700000000,
-		Files: []FileInfo{
+		Files: []BackupFileInfo{
 			{
 				Filename: "root.pxar.didx",
 				Size:     5000,

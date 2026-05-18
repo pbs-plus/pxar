@@ -341,7 +341,7 @@ func BuildCatalogFast(
 		if err != nil {
 			break
 		}
-		if h.Type == format.PXARFormatVersion || h.Type == format.PXARPrelude {
+		if h.Type == format.Version || h.Type == format.PXARPrelude {
 			if err := r.skip(int(h.ContentSize())); err != nil {
 				return nil, fmt.Errorf("skipping %s content: %w", h.String(), err)
 			}

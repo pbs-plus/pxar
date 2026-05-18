@@ -113,7 +113,7 @@ func newTestPBSSession(t *testing.T) (*pbsSession, *mockPBSProtocol) {
 		config:   BackupConfig{BackupType: datastore.BackupHost, BackupID: "test"},
 		compress: false,
 		chunkCfg: cfg,
-		files:    make([]datastore.FileInfo, 0),
+		files:    make([]datastore.BackupFileInfo, 0),
 	}, mock
 }
 
@@ -198,7 +198,7 @@ func TestPBSChunkDedup(t *testing.T) {
 	firstChunks := len(mock.chunks)
 
 	// Reset session for second upload
-	sess.files = make([]datastore.FileInfo, 0)
+	sess.files = make([]datastore.BackupFileInfo, 0)
 	sess.config.BackupID = "2"
 
 	_, err = sess.UploadArchive(context.Background(), "root2.pxar.didx", bytes.NewReader(data))
@@ -280,7 +280,7 @@ func TestPBSManifestFileEntries(t *testing.T) {
 		t.Fatalf("manifest files = %d, want 2", len(manifest.Files))
 	}
 
-	fileMap := make(map[string]datastore.FileInfo)
+	fileMap := make(map[string]datastore.BackupFileInfo)
 	for _, f := range manifest.Files {
 		fileMap[f.Filename] = f
 	}

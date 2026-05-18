@@ -8,12 +8,12 @@ import (
 	"github.com/pbs-plus/pxar/datastore"
 )
 
-// ChunkedReadSeeker implements io.ReadSeeker over a chunked archive stream.
+// ReadSeeker implements io.ReadSeeker over a chunked archive stream.
 // Instead of reconstructing the entire stream into memory, it lazily loads
 // and decodes chunks on demand using the dynamic index and a chunk source.
 // This is critical for same-datastore transfers where only a subset of files
 // are needed — it avoids downloading the entire payload stream from PBS.
-type ChunkedReadSeeker struct {
+type ReadSeeker struct {
 	source   datastore.ChunkSource
 	idx      *datastore.DynamicIndexReader
 	cache    map[int][]byte
@@ -31,10 +31,10 @@ type ChunkedReadSeeker struct {
 	disableCache bool
 }
 
-// NewChunkedReadSeeker creates a lazy read-seeker over chunked data.
+// NewReadSeeker creates a lazy read-seeker over chunked data.
 // maxCache controls how many decoded chunks are kept in memory (0 = unlimited).
-func NewChunkedReadSeeker(idx *datastore.DynamicIndexReader, source datastore.ChunkSource, maxCache int) *ChunkedReadSeeker {
-	return &ChunkedReadSeeker{
+func NewReadSeeker(idx *datastore.DynamicIndexReader, source datastore.ChunkSource, maxCache int) *ReadSeeker {
+	return &ReadSeeker{
 		idx:      idx,
 		source:   source,
 		size:     int64(idx.IndexBytes()),
@@ -43,7 +43,7 @@ func NewChunkedReadSeeker(idx *datastore.DynamicIndexReader, source datastore.Ch
 	}
 }
 
-func (r *ChunkedReadSeeker) Read(p []byte) (int, error) {
+func (r *ReadSeeker) Read(p []byte) (int, error) {
 	r.offsetMu.Lock()
 	defer r.offsetMu.Unlock()
 
@@ -72,7 +72,7 @@ func (r *ChunkedReadSeeker) Read(p []byte) (int, error) {
 
 // ReadAt reads len(p) bytes starting at the given offset without mutating
 // the seeker's internal position. It is safe for concurrent use.
-func (r *ChunkedReadSeeker) ReadAt(p []byte, offset int64) (int, error) {
+func (r *ReadSeeker) ReadAt(p []byte, offset int64) (int, error) {
 	if offset >= r.size {
 		return 0, io.EOF
 	}
@@ -97,7 +97,7 @@ func (r *ChunkedReadSeeker) ReadAt(p []byte, offset int64) (int, error) {
 
 // readAtInternal copies into p from the chunk containing the given absolute
 // offset. It returns the number of bytes copied (0 at stream end).
-func (r *ChunkedReadSeeker) readAtInternal(p []byte, offset int64) (int, error) {
+func (r *ReadSeeker) readAtInternal(p []byte, offset int64) (int, error) {
 	if offset >= r.size {
 		return 0, io.EOF
 	}
@@ -127,7 +127,7 @@ func (r *ChunkedReadSeeker) readAtInternal(p []byte, offset int64) (int, error) 
 	return toCopy, nil
 }
 
-func (r *ChunkedReadSeeker) Seek(offset int64, whence int) (int64, error) {
+func (r *ReadSeeker) Seek(offset int64, whence int) (int64, error) {
 	r.offsetMu.Lock()
 	defer r.offsetMu.Unlock()
 
@@ -153,7 +153,7 @@ func (r *ChunkedReadSeeker) Seek(offset int64, whence int) (int64, error) {
 // and immediately discarded. This is appropriate for payload streams where
 // content is streamed sequentially and caching would accumulate unbounded
 // memory. Existing cached entries are evicted if the new size is lower.
-func (r *ChunkedReadSeeker) SetCacheSize(n int) {
+func (r *ReadSeeker) SetCacheSize(n int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if n <= 0 {
@@ -180,7 +180,7 @@ func (r *ChunkedReadSeeker) SetCacheSize(n int) {
 
 // loadChunk loads and decodes a chunk, using cache if available.
 // It is safe for concurrent use.
-func (r *ChunkedReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
+func (r *ReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
 	if !r.disableCache {
 		// Fast path: check cache under read lock.
 		r.mu.RLock()
@@ -232,7 +232,7 @@ func (r *ChunkedReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
 }
 
 // Close clears the chunk cache.
-func (r *ChunkedReadSeeker) Close() error {
+func (r *ReadSeeker) Close() error {
 	r.cache = nil
 	return nil
 }

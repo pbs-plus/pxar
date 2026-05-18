@@ -21,7 +21,7 @@ import (
 // TestSplitArchiveCopyRoundTrip mimics what pxar-mount commit does:
 // 1. Create a source split archive
 // 2. Read entries from it
-// 3. Re-write them to a new split archive via SplitSessionArchiveWriter
+// 3. Re-write them to a new split archive via SessionWriter
 // 4. Read back the new archive and verify
 func TestSplitArchiveCopyRoundTrip(t *testing.T) {
 	// --- Step 1: Create source archive in memory ---
@@ -51,7 +51,7 @@ func TestSplitArchiveCopyRoundTrip(t *testing.T) {
 	t.Logf("Source meta: %d bytes, payload: %d bytes", srcMeta.Len(), srcPayload.Len())
 
 	// --- Step 2: Read source archive ---
-	srcReader := transfer.NewSplitFileArchiveReader(bytes.NewReader(srcMeta.Bytes()), bytes.NewReader(srcPayload.Bytes()))
+	srcReader := transfer.NewSplitFileReader(bytes.NewReader(srcMeta.Bytes()), bytes.NewReader(srcPayload.Bytes()))
 	defer srcReader.Close()
 
 	// --- Step 3: Re-write to new split archive via local store ---
@@ -70,10 +70,10 @@ func TestSplitArchiveCopyRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dstWriter := transfer.NewSplitSessionArchiveWriter(context.TODO(), sess, "root.mpxar.didx", "root.ppxar.didx")
+	dstWriter := transfer.NewSessionWriter(context.TODO(), sess, "root.mpxar.didx", "root.ppxar.didx")
 
 	dstRootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dstWriter.Begin(&dstRootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	if err := dstWriter.Begin(&dstRootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -166,9 +166,9 @@ func TestSplitArchiveCopyRoundTrip(t *testing.T) {
 	store, _ := datastore.NewChunkStore(dir)
 	source := datastore.NewChunkStoreSource(store)
 
-	reader, err := transfer.NewSplitArchiveReader(metaData, payloadData, source)
+	reader, err := transfer.NewSplitReader(metaData, payloadData, source)
 	if err != nil {
-		t.Fatalf("NewSplitArchiveReader: %v", err)
+		t.Fatalf("NewSplitReader: %v", err)
 	}
 	defer reader.Close()
 

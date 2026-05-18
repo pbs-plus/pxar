@@ -44,7 +44,7 @@ func TestSplitArchivePayloadRefRoundTrip(t *testing.T) {
 	t.Logf("Source meta: %d bytes, payload: %d bytes", srcMeta.Len(), srcPayload.Len())
 
 	// --- Step 2: Read source to get entries and their payload offsets ---
-	srcReader := transfer.NewSplitFileArchiveReader(bytes.NewReader(srcMeta.Bytes()), bytes.NewReader(srcPayload.Bytes()))
+	srcReader := transfer.NewSplitFileReader(bytes.NewReader(srcMeta.Bytes()), bytes.NewReader(srcPayload.Bytes()))
 	defer srcReader.Close()
 
 	root, err := srcReader.ReadRoot()
@@ -108,7 +108,7 @@ func TestSplitArchivePayloadRefRoundTrip(t *testing.T) {
 	// references the same offsets
 	// The dstPayload only has start/tail markers, so we use srcPayload for data
 	// since AddPayloadRef references the same offsets as the source
-	newReader := transfer.NewSplitFileArchiveReader(bytes.NewReader(dstMeta.Bytes()), bytes.NewReader(srcPayload.Bytes()))
+	newReader := transfer.NewSplitFileReader(bytes.NewReader(dstMeta.Bytes()), bytes.NewReader(srcPayload.Bytes()))
 	defer newReader.Close()
 
 	for _, expected := range entries {
@@ -163,9 +163,9 @@ func TestLocalStoreSplitArchiveWithPayloadRef(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srcWriter := transfer.NewSplitSessionArchiveWriter(context.TODO(), sess, "root.mpxar.didx", "root.ppxar.didx")
+	srcWriter := transfer.NewSessionWriter(context.TODO(), sess, "root.mpxar.didx", "root.ppxar.didx")
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := srcWriter.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	if err := srcWriter.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -213,7 +213,7 @@ func TestLocalStoreSplitArchiveWithPayloadRef(t *testing.T) {
 	store, _ := datastore.NewChunkStore(dir)
 	source := datastore.NewChunkStoreSource(store)
 
-	srcReader, err := transfer.NewSplitArchiveReader(metaData, payloadData, source)
+	srcReader, err := transfer.NewSplitReader(metaData, payloadData, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,9 +266,9 @@ func TestLocalStoreSplitArchiveWithPayloadRef(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dstWriter := transfer.NewSplitSessionArchiveWriter(context.TODO(), sess2, "root.mpxar.didx", "root.ppxar.didx")
+	dstWriter := transfer.NewSessionWriter(context.TODO(), sess2, "root.mpxar.didx", "root.ppxar.didx")
 	dstRootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dstWriter.Begin(&dstRootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	if err := dstWriter.Begin(&dstRootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatal(err)
 	}
 

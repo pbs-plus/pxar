@@ -102,9 +102,9 @@ func createNestedArchive(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-func TestFileArchiveReaderLookup(t *testing.T) {
+func TestFileReaderLookup(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	entry, err := reader.Lookup("/hello.txt")
@@ -127,9 +127,9 @@ func TestFileArchiveReaderLookup(t *testing.T) {
 	}
 }
 
-func TestFileArchiveReaderReadFileContent(t *testing.T) {
+func TestFileReaderReadFileContent(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	entry, err := reader.Lookup("/hello.txt")
@@ -151,9 +151,9 @@ func TestFileArchiveReaderReadFileContent(t *testing.T) {
 	}
 }
 
-func TestFileArchiveReaderListDirectory(t *testing.T) {
+func TestFileReaderListDirectory(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	root, err := reader.ReadRoot()
@@ -176,9 +176,9 @@ func TestFileArchiveReaderListDirectory(t *testing.T) {
 	}
 }
 
-func TestFileArchiveReaderNestedDirectory(t *testing.T) {
+func TestFileReaderNestedDirectory(t *testing.T) {
 	data := createNestedArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	entry, err := reader.Lookup("/a/b/deep.txt")
@@ -205,7 +205,7 @@ func TestFileArchiveReaderNestedDirectory(t *testing.T) {
 
 func TestWalkTree(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	var paths []string
@@ -232,7 +232,7 @@ func TestWalkTree(t *testing.T) {
 
 func TestWalkTreeSkipDir(t *testing.T) {
 	data := createNestedArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	var paths []string
@@ -257,17 +257,17 @@ func TestWalkTreeSkipDir(t *testing.T) {
 
 func TestCopySingleFile(t *testing.T) {
 	srcData := createTestArchive(t)
-	srcReader := transfer.NewFileArchiveReader(bytes.NewReader(srcData))
+	srcReader := transfer.NewFileReader(bytes.NewReader(srcData))
 	defer srcReader.Close()
 
 	var dstBuf bytes.Buffer
-	dstWriter := transfer.NewStreamArchiveWriter(&dstBuf)
+	dstWriter := transfer.NewStreamWriter(&dstBuf)
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dstWriter.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1}); err != nil {
+	if err := dstWriter.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion1}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := transfer.Copy(srcReader, dstWriter, []transfer.PathMapping{{Src: "/hello.txt", Dst: "/hello.txt"}}, transfer.TransferOption{})
+	err := transfer.Copy(srcReader, dstWriter, []transfer.PathMapping{{Src: "/hello.txt", Dst: "/hello.txt"}}, transfer.CopyOption{})
 	if err != nil {
 		t.Fatalf("Copy: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestCopySingleFile(t *testing.T) {
 	}
 
 	// Verify the output is a valid archive
-	dstReader := transfer.NewFileArchiveReader(bytes.NewReader(dstBuf.Bytes()))
+	dstReader := transfer.NewFileReader(bytes.NewReader(dstBuf.Bytes()))
 	defer dstReader.Close()
 
 	entry, err := dstReader.Lookup("/hello.txt")
@@ -304,17 +304,17 @@ func TestCopySingleFile(t *testing.T) {
 
 func TestCopyDirectory(t *testing.T) {
 	srcData := createNestedArchive(t)
-	srcReader := transfer.NewFileArchiveReader(bytes.NewReader(srcData))
+	srcReader := transfer.NewFileReader(bytes.NewReader(srcData))
 	defer srcReader.Close()
 
 	var dstBuf bytes.Buffer
-	dstWriter := transfer.NewStreamArchiveWriter(&dstBuf)
+	dstWriter := transfer.NewStreamWriter(&dstBuf)
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dstWriter.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1}); err != nil {
+	if err := dstWriter.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion1}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := transfer.CopyTree(srcReader, dstWriter, "/a", "/a", transfer.TransferOption{})
+	err := transfer.CopyTree(srcReader, dstWriter, "/a", "/a", transfer.CopyOption{})
 	if err != nil {
 		t.Fatalf("CopyTree: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestCopyDirectory(t *testing.T) {
 	}
 
 	// Verify the output
-	dstReader := transfer.NewFileArchiveReader(bytes.NewReader(dstBuf.Bytes()))
+	dstReader := transfer.NewFileReader(bytes.NewReader(dstBuf.Bytes()))
 	defer dstReader.Close()
 
 	// Check that we have the "a" directory
@@ -357,17 +357,17 @@ func TestCopyDirectory(t *testing.T) {
 
 func TestMergeArchives(t *testing.T) {
 	srcData := createTestArchive(t)
-	srcReader := transfer.NewFileArchiveReader(bytes.NewReader(srcData))
+	srcReader := transfer.NewFileReader(bytes.NewReader(srcData))
 	defer srcReader.Close()
 
 	var dstBuf bytes.Buffer
-	dstWriter := transfer.NewStreamArchiveWriter(&dstBuf)
+	dstWriter := transfer.NewStreamWriter(&dstBuf)
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dstWriter.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1}); err != nil {
+	if err := dstWriter.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion1}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := transfer.CopyTree(srcReader, dstWriter, "/", "/", transfer.TransferOption{})
+	err := transfer.CopyTree(srcReader, dstWriter, "/", "/", transfer.CopyOption{})
 	if err != nil {
 		t.Fatalf("CopyTree: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestMergeArchives(t *testing.T) {
 	}
 
 	// Verify the output contains all entries from source
-	dstReader := transfer.NewFileArchiveReader(bytes.NewReader(dstBuf.Bytes()))
+	dstReader := transfer.NewFileReader(bytes.NewReader(dstBuf.Bytes()))
 	defer dstReader.Close()
 
 	root, err := dstReader.ReadRoot()
@@ -449,7 +449,7 @@ func TestV2SplitArchiveRoundTrip(t *testing.T) {
 	}
 
 	// Read back with split reader
-	reader := transfer.NewSplitFileArchiveReader(bytes.NewReader(metaBuf.Bytes()), bytes.NewReader(payloadBuf.Bytes()))
+	reader := transfer.NewSplitFileReader(bytes.NewReader(metaBuf.Bytes()), bytes.NewReader(payloadBuf.Bytes()))
 	defer reader.Close()
 
 	entry, err := reader.Lookup("/data.bin")
@@ -486,18 +486,18 @@ func TestV2CopyToV1(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srcReader := transfer.NewSplitFileArchiveReader(bytes.NewReader(srcMeta.Bytes()), bytes.NewReader(srcPayload.Bytes()))
+	srcReader := transfer.NewSplitFileReader(bytes.NewReader(srcMeta.Bytes()), bytes.NewReader(srcPayload.Bytes()))
 	defer srcReader.Close()
 
 	// Write to v1 destination
 	var dstBuf bytes.Buffer
-	dstWriter := transfer.NewStreamArchiveWriter(&dstBuf)
+	dstWriter := transfer.NewStreamWriter(&dstBuf)
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dstWriter.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1}); err != nil {
+	if err := dstWriter.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion1}); err != nil {
 		t.Fatal(err)
 	}
 
-	err = transfer.CopyTree(srcReader, dstWriter, "/", "/", transfer.TransferOption{})
+	err = transfer.CopyTree(srcReader, dstWriter, "/", "/", transfer.CopyOption{})
 	if err != nil {
 		t.Fatalf("CopyTree: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestV2CopyToV1(t *testing.T) {
 	}
 
 	// Verify the v1 destination
-	dstReader := transfer.NewFileArchiveReader(bytes.NewReader(dstBuf.Bytes()))
+	dstReader := transfer.NewFileReader(bytes.NewReader(dstBuf.Bytes()))
 	defer dstReader.Close()
 
 	entry, err := dstReader.Lookup("/file.txt")
@@ -528,12 +528,12 @@ func TestV2CopyToV1(t *testing.T) {
 	}
 }
 
-func TestStreamArchiveWriterAllEntryTypes(t *testing.T) {
+func TestStreamWriterAllEntryTypes(t *testing.T) {
 	var buf bytes.Buffer
-	writer := transfer.NewStreamArchiveWriter(&buf)
+	writer := transfer.NewStreamWriter(&buf)
 	rootMeta := pxar.DirMetadata(0o755).Build()
 
-	if err := writer.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1}); err != nil {
+	if err := writer.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -584,7 +584,7 @@ func TestStreamArchiveWriterAllEntryTypes(t *testing.T) {
 	}
 
 	// Verify we can read back the written archive
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(buf.Bytes()))
+	reader := transfer.NewFileReader(bytes.NewReader(buf.Bytes()))
 	defer reader.Close()
 
 	fileEntry2, err := reader.Lookup("/file.txt")
@@ -623,18 +623,18 @@ func TestStreamArchiveWriterAllEntryTypes(t *testing.T) {
 
 func TestCopyTreePathRemapping(t *testing.T) {
 	srcData := createNestedArchive(t)
-	srcReader := transfer.NewFileArchiveReader(bytes.NewReader(srcData))
+	srcReader := transfer.NewFileReader(bytes.NewReader(srcData))
 	defer srcReader.Close()
 
 	var dstBuf bytes.Buffer
-	dstWriter := transfer.NewStreamArchiveWriter(&dstBuf)
+	dstWriter := transfer.NewStreamWriter(&dstBuf)
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dstWriter.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion1}); err != nil {
+	if err := dstWriter.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion1}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Copy /a → /backup/a (creates intermediate "backup" directory)
-	err := transfer.CopyTree(srcReader, dstWriter, "/a", "/backup/a", transfer.TransferOption{})
+	err := transfer.CopyTree(srcReader, dstWriter, "/a", "/backup/a", transfer.CopyOption{})
 	if err != nil {
 		t.Fatalf("CopyTree: %v", err)
 	}
@@ -643,7 +643,7 @@ func TestCopyTreePathRemapping(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	dstReader := transfer.NewFileArchiveReader(bytes.NewReader(dstBuf.Bytes()))
+	dstReader := transfer.NewFileReader(bytes.NewReader(dstBuf.Bytes()))
 	defer dstReader.Close()
 
 	// Should find /backup/a/b/deep.txt (intermediate "backup" directory created)
@@ -732,7 +732,7 @@ func symlinkMeta(mode uint64, uid, gid uint32) *pxar.Metadata {
 
 func TestWalkTreeMetaOnly(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	var paths []string
@@ -758,7 +758,7 @@ func TestWalkTreeMetaOnly(t *testing.T) {
 
 func TestWalkTreeMetaFunc(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	var paths []string
@@ -777,7 +777,7 @@ func TestWalkTreeMetaFunc(t *testing.T) {
 
 func TestWalkFilterMask(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	// Only files
@@ -792,7 +792,7 @@ func TestWalkFilterMask(t *testing.T) {
 	}
 
 	// Only dirs
-	reader2 := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader2 := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader2.Close()
 	err = transfer.WalkTreeMetadata(reader2, "/", transfer.WalkDirs, func(entry *pxar.Entry) error {
 		if entry.Kind != pxar.KindDirectory {
@@ -805,7 +805,7 @@ func TestWalkFilterMask(t *testing.T) {
 	}
 
 	// Files + symlinks
-	reader3 := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader3 := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader3.Close()
 	kinds := make(map[pxar.EntryKind]int)
 	err = transfer.WalkTreeMetadata(reader3, "/", transfer.WalkFiles|transfer.WalkSymlinks, func(entry *pxar.Entry) error {
@@ -822,7 +822,7 @@ func TestWalkFilterMask(t *testing.T) {
 
 func TestWalkFilterSkipsDirDescent(t *testing.T) {
 	data := createNestedArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	// Walk only files — should still descend into dirs to find files
@@ -859,7 +859,7 @@ func TestWalkFilterSkipsDirDescent(t *testing.T) {
 
 func TestTreeWalker(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	walker := transfer.NewTreeWalker(reader, transfer.WalkOption{MetaOnly: true})
@@ -884,7 +884,7 @@ func TestTreeWalker(t *testing.T) {
 
 func TestTreeWalkerWithFilter(t *testing.T) {
 	data := createTestArchive(t)
-	reader := transfer.NewFileArchiveReader(bytes.NewReader(data))
+	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
 	walker := transfer.NewTreeWalker(reader, transfer.WalkOption{

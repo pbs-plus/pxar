@@ -61,9 +61,9 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 		t.Fatalf("StartSession snap1: %v", err)
 	}
 
-	dst1 := transfer.NewSplitSessionArchiveWriter(ctx, sess1, "root.mpxar.didx", "root.ppxar.didx")
+	dst1 := transfer.NewSessionWriter(ctx, sess1, "root.mpxar.didx", "root.ppxar.didx")
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dst1.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	if err := dst1.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatalf("Begin snap1: %v", err)
 	}
 
@@ -134,8 +134,8 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 		t.Fatalf("StartSession snap2: %v", err)
 	}
 
-	dst2 := transfer.NewSplitSessionArchiveWriter(ctx, sess2, "root.mpxar.didx", "root.ppxar.didx")
-	if err := dst2.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	dst2 := transfer.NewSessionWriter(ctx, sess2, "root.mpxar.didx", "root.ppxar.didx")
+	if err := dst2.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatalf("Begin snap2: %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 	})
 
 	// --- Phase 3: Read from both snapshots and build a new merged snapshot ---
-	snap1Reader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+	snap1Reader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
 		Config:       pbsCfg,
 		BackupType:   "host",
 		BackupID:     snap1Cfg.BackupID,
@@ -199,7 +199,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 	}
 	defer snap1Reader.Close()
 
-	snap2Reader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+	snap2Reader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
 		Config:       pbsCfg,
 		BackupType:   "host",
 		BackupID:     snap2Cfg.BackupID,
@@ -226,16 +226,16 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 		t.Fatalf("StartSession merged: %v", err)
 	}
 
-	dstMerged := transfer.NewSplitSessionArchiveWriter(ctx, sess3, "root.mpxar.didx", "root.ppxar.didx")
-	if err := dstMerged.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	dstMerged := transfer.NewSessionWriter(ctx, sess3, "root.mpxar.didx", "root.ppxar.didx")
+	if err := dstMerged.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatalf("Begin merged: %v", err)
 	}
 
 	// Copy /etc from snap1 and /opt from snap2 into the merged snapshot
-	if err := transfer.CopyTree(snap1Reader, dstMerged, "/", "/", transfer.TransferOption{}); err != nil {
+	if err := transfer.CopyTree(snap1Reader, dstMerged, "/", "/", transfer.CopyOption{}); err != nil {
 		t.Fatalf("Copy /etc from snap1: %v", err)
 	}
-	if err := transfer.CopyTree(snap2Reader, dstMerged, "/", "/", transfer.TransferOption{}); err != nil {
+	if err := transfer.CopyTree(snap2Reader, dstMerged, "/", "/", transfer.CopyOption{}); err != nil {
 		t.Fatalf("Copy /opt from snap2: %v", err)
 	}
 
@@ -251,7 +251,7 @@ func TestIntegration_PBSMultiSnapshotTransfer(t *testing.T) {
 	verifyPBSSnapshot(t, pbsCfg, mergedCfg)
 
 	// --- Phase 4: Read back the merged snapshot and verify content ---
-	mergedReader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+	mergedReader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
 		Config:       pbsCfg,
 		BackupType:   "host",
 		BackupID:     mergedCfg.BackupID,
@@ -347,9 +347,9 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 		t.Fatalf("StartSession snap1: %v", err)
 	}
 
-	dst1 := transfer.NewSplitSessionArchiveWriter(ctx, sess1, "root.mpxar.didx", "root.ppxar.didx")
+	dst1 := transfer.NewSessionWriter(ctx, sess1, "root.mpxar.didx", "root.ppxar.didx")
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dst1.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	if err := dst1.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatalf("Begin snap1: %v", err)
 	}
 
@@ -401,8 +401,8 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 		t.Fatalf("StartSession snap2: %v", err)
 	}
 
-	dst2 := transfer.NewSplitSessionArchiveWriter(ctx, sess2, "root.mpxar.didx", "root.ppxar.didx")
-	if err := dst2.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	dst2 := transfer.NewSessionWriter(ctx, sess2, "root.mpxar.didx", "root.ppxar.didx")
+	if err := dst2.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatalf("Begin snap2: %v", err)
 	}
 
@@ -450,7 +450,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	})
 
 	// --- Phase 3: Selectively copy specific files ---
-	snap1Reader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+	snap1Reader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
 		Config:      pbsCfg,
 		BackupType:  "host",
 		BackupID:    snap1Cfg.BackupID,
@@ -463,7 +463,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	}
 	defer snap1Reader.Close()
 
-	snap2Reader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+	snap2Reader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
 		Config:      pbsCfg,
 		BackupType:  "host",
 		BackupID:    snap2Cfg.BackupID,
@@ -489,8 +489,8 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 		t.Fatalf("StartSession merged: %v", err)
 	}
 
-	dstMerged := transfer.NewSplitSessionArchiveWriter(ctx, sess3, "root.mpxar.didx", "root.ppxar.didx")
-	if err := dstMerged.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	dstMerged := transfer.NewSessionWriter(ctx, sess3, "root.mpxar.didx", "root.ppxar.didx")
+	if err := dstMerged.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatalf("Begin merged: %v", err)
 	}
 
@@ -498,12 +498,12 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	// and /opt from snap2
 	if err := transfer.Copy(snap1Reader, dstMerged, []transfer.PathMapping{
 		{Src: "/etc", Dst: "/etc"},
-	}, transfer.TransferOption{}); err != nil {
+	}, transfer.CopyOption{}); err != nil {
 		t.Fatalf("Copy /etc from snap1: %v", err)
 	}
 	if err := transfer.Copy(snap2Reader, dstMerged, []transfer.PathMapping{
 		{Src: "/opt", Dst: "/opt"},
-	}, transfer.TransferOption{}); err != nil {
+	}, transfer.CopyOption{}); err != nil {
 		t.Fatalf("Copy /opt from snap2: %v", err)
 	}
 
@@ -516,7 +516,7 @@ func TestIntegration_PBSMultiSnapshotSelectiveTransfer(t *testing.T) {
 	verifyPBSSnapshot(t, pbsCfg, mergedCfg)
 
 	// --- Phase 4: Verify the merged snapshot ---
-	mergedReader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+	mergedReader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
 		Config:      pbsCfg,
 		BackupType:  "host",
 		BackupID:    mergedCfg.BackupID,
@@ -590,9 +590,9 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	dst := transfer.NewSplitSessionArchiveWriter(ctx, sess, "root.mpxar.didx", "root.ppxar.didx")
+	dst := transfer.NewSessionWriter(ctx, sess, "root.mpxar.didx", "root.ppxar.didx")
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := dst.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	if err := dst.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
 
@@ -631,7 +631,7 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	})
 
 	// Read source snapshot and copy /etc to /backup/etc in the new snapshot
-	srcReader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+	srcReader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
 		Config:      pbsCfg,
 		BackupType:  "host",
 		BackupID:    srcCfg.BackupID,
@@ -656,13 +656,13 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 		t.Fatalf("StartSession remap: %v", err)
 	}
 
-	dstRemap := transfer.NewSplitSessionArchiveWriter(ctx, sess2, "root.mpxar.didx", "root.ppxar.didx")
-	if err := dstRemap.Begin(&rootMeta, transfer.WriterOptions{Format: format.FormatVersion2}); err != nil {
+	dstRemap := transfer.NewSessionWriter(ctx, sess2, "root.mpxar.didx", "root.ppxar.didx")
+	if err := dstRemap.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2}); err != nil {
 		t.Fatalf("Begin remap: %v", err)
 	}
 
 	// Copy /etc → /backup/etc (path remapping)
-	if err := transfer.CopyTree(srcReader, dstRemap, "/etc", "/backup/etc", transfer.TransferOption{}); err != nil {
+	if err := transfer.CopyTree(srcReader, dstRemap, "/etc", "/backup/etc", transfer.CopyOption{}); err != nil {
 		t.Fatalf("CopyTree /etc → /backup/etc: %v", err)
 	}
 
@@ -675,7 +675,7 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	verifyPBSSnapshot(t, pbsCfg, remapCfg)
 
 	// Verify the remapped snapshot
-	remapReader, err := transfer.NewPBSArchiveReader(ctx, transfer.PBSArchiveConfig{
+	remapReader, err := transfer.NewPBSReader(ctx, transfer.PBSReaderConfig{
 		Config:      pbsCfg,
 		BackupType:  "host",
 		BackupID:    remapCfg.BackupID,

@@ -9,8 +9,8 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
-// WriterOptions configures how an ArchiveWriter creates archives.
-type WriterOptions struct {
+// Options configures how an ArchiveWriter creates archives.
+type Options struct {
 	Prelude []byte
 	Format  format.FormatVersion
 }
@@ -18,7 +18,7 @@ type WriterOptions struct {
 // ArchiveWriter provides unified write access to any pxar archive format.
 type ArchiveWriter interface {
 	// Begin starts writing to a new archive with the given root metadata.
-	Begin(rootMeta *pxar.Metadata, opts WriterOptions) error
+	Begin(rootMeta *pxar.Metadata, opts Options) error
 
 	// WriteEntry writes an entry (file, symlink, device, etc.) to the archive.
 	// For regular files, content is the file data. For other types, content may be nil.
@@ -48,34 +48,34 @@ type ArchiveWriter interface {
 	Close() error
 }
 
-// StreamArchiveWriter writes a pxar archive to one or two io.Writer streams.
+// StreamWriter writes a pxar archive to one or two io.Writer streams.
 // For v1 format, only output is used. For v2 format, both output and payloadOut
 // are used.
-type StreamArchiveWriter struct {
+type StreamWriter struct {
 	output     io.Writer
 	payloadOut io.Writer
 	enc        *encoder.Encoder
 	closers    []io.Closer
-	opts       WriterOptions
+	opts       Options
 	dirDepth   int
 }
 
-// NewStreamArchiveWriter creates a writer for v1 (unified) format.
-func NewStreamArchiveWriter(output io.Writer) *StreamArchiveWriter {
-	return &StreamArchiveWriter{
+// NewStreamWriter creates a writer for v1 (unified) format.
+func NewStreamWriter(output io.Writer) *StreamWriter {
+	return &StreamWriter{
 		output: output,
 	}
 }
 
-// NewSplitStreamArchiveWriter creates a writer for v2 (split) format.
-func NewSplitStreamArchiveWriter(output, payloadOut io.Writer) *StreamArchiveWriter {
-	return &StreamArchiveWriter{
+// NewSplitStreamWriter creates a writer for v2 (split) format.
+func NewSplitStreamWriter(output, payloadOut io.Writer) *StreamWriter {
+	return &StreamWriter{
 		output:     output,
 		payloadOut: payloadOut,
 	}
 }
 
-func (w *StreamArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOptions) error {
+func (w *StreamWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.opts = opts
 	var prelude []byte
 	if len(opts.Prelude) > 0 {
@@ -87,7 +87,7 @@ func (w *StreamArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOptions)
 	return nil
 }
 
-func (w *StreamArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
+func (w *StreamWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -121,7 +121,7 @@ func (w *StreamArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) erro
 	}
 }
 
-func (w *StreamArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+func (w *StreamWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -150,7 +150,7 @@ func (w *StreamArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, s
 	}
 }
 
-func (w *StreamArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
+func (w *StreamWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -173,7 +173,7 @@ func (w *StreamArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uin
 }
 
 // WriteHardlink writes a hard link entry with an explicit target offset.
-func (w *StreamArchiveWriter) WriteHardlink(name string, target string, targetOffset encoder.LinkOffset) error {
+func (w *StreamWriter) WriteHardlink(name string, target string, targetOffset encoder.LinkOffset) error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -182,11 +182,11 @@ func (w *StreamArchiveWriter) WriteHardlink(name string, target string, targetOf
 
 // Encoder returns the underlying encoder for advanced operations.
 // This is useful for getting file offsets for hardlink tracking.
-func (w *StreamArchiveWriter) Encoder() *encoder.Encoder {
+func (w *StreamWriter) Encoder() *encoder.Encoder {
 	return w.enc
 }
 
-func (w *StreamArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
+func (w *StreamWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -194,7 +194,7 @@ func (w *StreamArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) e
 	return w.enc.CreateDirectory(name, meta)
 }
 
-func (w *StreamArchiveWriter) EndDirectory() error {
+func (w *StreamWriter) EndDirectory() error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -205,7 +205,7 @@ func (w *StreamArchiveWriter) EndDirectory() error {
 	return w.enc.Finish()
 }
 
-func (w *StreamArchiveWriter) Finish() error {
+func (w *StreamWriter) Finish() error {
 	if w.enc == nil {
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
@@ -219,7 +219,7 @@ func (w *StreamArchiveWriter) Finish() error {
 	return w.enc.Close()
 }
 
-func (w *StreamArchiveWriter) Close() error {
+func (w *StreamWriter) Close() error {
 	var err error
 	for _, c := range w.closers {
 		if closeErr := c.Close(); closeErr != nil && err == nil {

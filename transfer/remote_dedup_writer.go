@@ -13,7 +13,7 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
-// RemoteDedupSplitArchiveWriter writes a split archive to PBS with chunk-level dedup.
+// RemoteDedupWriter writes a split archive to PBS with chunk-level dedup.
 //
 // For files that are unchanged from the original archive (pxar-only entries),
 // it uses AddPayloadRef to reference original payload offsets without reading
@@ -23,10 +23,10 @@ import (
 //
 // Only metadata and new file content are buffered in memory. Unchanged file
 // content is never read — the original payload chunks are referenced directly.
-type RemoteDedupSplitArchiveWriter struct {
+type RemoteDedupWriter struct {
 	session      backupproxy.BackupSession
 	ctx          context.Context
-	inner        *StreamArchiveWriter
+	inner        *StreamWriter
 	metaName     string
 	payloadName  string
 	origChunks   []backupproxy.KnownChunkRef
@@ -38,15 +38,15 @@ type RemoteDedupSplitArchiveWriter struct {
 	payloadAlign bool    // true once payloadWritePos has been aligned to origSize
 }
 
-// NewRemoteDedupSplitArchiveWriter creates a dedup writer for PBS uploads.
+// NewRemoteDedupWriter creates a dedup writer for PBS uploads.
 // origPayloadIndex is the raw DIDX bytes from the original .ppxar.didx.
-func NewRemoteDedupSplitArchiveWriter(
+func NewRemoteDedupWriter(
 	ctx context.Context,
 	session backupproxy.BackupSession,
 	metaName, payloadName string,
 	origPayloadIndex []byte,
-) (*RemoteDedupSplitArchiveWriter, error) {
-	w := &RemoteDedupSplitArchiveWriter{
+) (*RemoteDedupWriter, error) {
+	w := &RemoteDedupWriter{
 		session:     session,
 		ctx:         ctx,
 		metaName:    metaName,
@@ -75,10 +75,10 @@ func NewRemoteDedupSplitArchiveWriter(
 	return w, nil
 }
 
-func (w *RemoteDedupSplitArchiveWriter) Begin(rootMeta *pxar.Metadata, opts WriterOptions) error {
+func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.metaBuf.Reset()
 	w.payloadBuf.Reset()
-	w.inner = NewSplitStreamArchiveWriter(&w.metaBuf, &w.payloadBuf)
+	w.inner = NewSplitStreamWriter(&w.metaBuf, &w.payloadBuf)
 	w.dirDepth = 1
 	opts.Format = format.FormatVersion2
 	return w.inner.Begin(rootMeta, opts)
@@ -92,7 +92,7 @@ func (w *RemoteDedupSplitArchiveWriter) Begin(rootMeta *pxar.Metadata, opts Writ
 // payloadWritePos = 16 + sum(16+fileSize for ref'd files), which may be less
 // than origSize (missing the original stream's TAIL_MARKER and any skipped files).
 // We advance by the difference so that CreateFile generates correct offsets.
-func (w *RemoteDedupSplitArchiveWriter) alignPayload() error {
+func (w *RemoteDedupWriter) alignPayload() error {
 	if w.payloadAlign {
 		return nil
 	}
@@ -110,14 +110,14 @@ func (w *RemoteDedupSplitArchiveWriter) alignPayload() error {
 	return nil
 }
 
-func (w *RemoteDedupSplitArchiveWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
+func (w *RemoteDedupWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
 	if err := w.alignPayload(); err != nil {
 		return err
 	}
 	return w.inner.WriteEntry(entry, content)
 }
 
-func (w *RemoteDedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
+func (w *RemoteDedupWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
 	if err := w.alignPayload(); err != nil {
 		return err
 	}
@@ -127,19 +127,19 @@ func (w *RemoteDedupSplitArchiveWriter) WriteEntryReader(entry *pxar.Entry, r io
 // WriteEntryRef writes an entry referencing existing payload data.
 // Returns an error if payloadOffset is not strictly greater than the last accepted
 // offset (mirrors Rust's try_record_strictly_greater validation).
-func (w *RemoteDedupSplitArchiveWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
-	if !TryRecordStrictlyGreater(&w.lastRefOff, payloadOffset) {
+func (w *RemoteDedupWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
+	if !RecordMax(&w.lastRefOff, payloadOffset) {
 		return fmt.Errorf("payload offset %d is not strictly greater than last accepted offset %d", payloadOffset, *w.lastRefOff)
 	}
 	return w.inner.WriteEntryRef(entry, payloadOffset)
 }
 
-func (w *RemoteDedupSplitArchiveWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
+func (w *RemoteDedupWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
 	w.dirDepth++
 	return w.inner.BeginDirectory(name, meta)
 }
 
-func (w *RemoteDedupSplitArchiveWriter) EndDirectory() error {
+func (w *RemoteDedupWriter) EndDirectory() error {
 	if w.dirDepth <= 1 {
 		return fmt.Errorf("no directory to finish")
 	}
@@ -147,7 +147,7 @@ func (w *RemoteDedupSplitArchiveWriter) EndDirectory() error {
 	return w.inner.EndDirectory()
 }
 
-func (w *RemoteDedupSplitArchiveWriter) Finish() error {
+func (w *RemoteDedupWriter) Finish() error {
 	for w.dirDepth > 1 {
 		if err := w.inner.EndDirectory(); err != nil {
 			return err
@@ -178,7 +178,7 @@ func (w *RemoteDedupSplitArchiveWriter) Finish() error {
 //
 //	[0, origSize)                  — original chunks (injected)
 //	[origSize, origSize + newData) — new file data (uploaded)
-func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
+func (w *RemoteDedupWriter) uploadPayload() error {
 	enc := w.inner.Encoder()
 	if enc == nil {
 		_, err := w.session.UploadArchive(w.ctx, w.payloadName, bytes.NewReader(w.payloadBuf.Bytes()))
@@ -207,19 +207,19 @@ func (w *RemoteDedupSplitArchiveWriter) uploadPayload() error {
 	return err
 }
 
-func (w *RemoteDedupSplitArchiveWriter) Close() error {
+func (w *RemoteDedupWriter) Close() error {
 	return nil
 }
 
 // Encoder returns the underlying encoder.
-func (w *RemoteDedupSplitArchiveWriter) Encoder() *encoder.Encoder {
+func (w *RemoteDedupWriter) Encoder() *encoder.Encoder {
 	return w.inner.Encoder()
 }
 
 // AdvancePayloadPosition advances the encoder's payload write position.
 // Call after all AddPayloadRef calls to account for the original stream's
 // TAIL_MARKER before writing new files.
-func (w *RemoteDedupSplitArchiveWriter) AdvancePayloadPosition(n uint64) error {
+func (w *RemoteDedupWriter) AdvancePayloadPosition(n uint64) error {
 	if enc := w.inner.Encoder(); enc != nil {
 		return enc.Advance(n)
 	}

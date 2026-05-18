@@ -63,10 +63,10 @@ func chunkDigest(chunk []byte, cc *datastore.CryptConfig) [32]byte {
 }
 
 // addFileInfo appends a file entry to the manifest file list.
-func addFileInfo(files *[]datastore.FileInfo, name string, size uint64, digest [32]byte, cryptMode string) {
+func addFileInfo(files *[]datastore.BackupFileInfo, name string, size uint64, digest [32]byte, cryptMode string) {
 	var hexBuf [64]byte
 	hex.Encode(hexBuf[:], digest[:])
-	*files = append(*files, datastore.FileInfo{
+	*files = append(*files, datastore.BackupFileInfo{
 		Filename:  name,
 		Size:      size,
 		CSum:      string(hexBuf[:]),
@@ -158,7 +158,7 @@ func (ls *LocalStore) StartSession(_ context.Context, config BackupConfig) (Back
 		chunkConfig: ls.config,
 		compress:    ls.compress,
 		baseDir:     ls.baseDir,
-		files:       make([]datastore.FileInfo, 0),
+		files:       make([]datastore.BackupFileInfo, 0),
 	}, nil
 }
 
@@ -166,7 +166,7 @@ func (ls *LocalStore) StartSession(_ context.Context, config BackupConfig) (Back
 type localSession struct {
 	store       *datastore.ChunkStore
 	baseDir     string
-	files       []datastore.FileInfo
+	files       []datastore.BackupFileInfo
 	config      BackupConfig
 	chunkConfig buzhash.Config
 	compress    bool

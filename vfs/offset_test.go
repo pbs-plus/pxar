@@ -67,7 +67,7 @@ func fileMetaXattr(mode uint64, uid, gid uint32, xattrs ...[2]string) *pxar.Meta
 	return m
 }
 
-// buildOffsetTestArchive creates a test archive:
+// buildTestArchive creates a test archive:
 //
 //	/ (dir)
 //	├── hello.txt (file, "hello world")
@@ -75,7 +75,7 @@ func fileMetaXattr(mode uint64, uid, gid uint32, xattrs ...[2]string) *pxar.Meta
 //	├── subdir (dir)
 //	│   └── nested.txt (file, "nested content")
 //	└── xattr.txt (file, "data", xattr: user.foo=bar)
-func buildOffsetTestArchive(tb testing.TB) *transfer.FileArchiveReader {
+func buildTestArchive(tb testing.TB) *transfer.FileReader {
 	tb.Helper()
 	var buf bytes.Buffer
 	enc := encoder.NewEncoder(&buf, nil, dirMeta(0o755), nil)
@@ -89,14 +89,14 @@ func buildOffsetTestArchive(tb testing.TB) *transfer.FileArchiveReader {
 	_ = enc.Close()
 
 	reader := bytes.NewReader(buf.Bytes())
-	return transfer.NewFileArchiveReader(reader)
+	return transfer.NewFileReader(reader)
 }
 
-func TestOffsetFS_Root(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_Root(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	root, err := fs.Root()
@@ -111,11 +111,11 @@ func TestOffsetFS_Root(t *testing.T) {
 	}
 }
 
-func TestOffsetFS_Lookup(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_Lookup(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	fi, err := fs.Lookup("hello.txt")
@@ -133,11 +133,11 @@ func TestOffsetFS_Lookup(t *testing.T) {
 	}
 }
 
-func TestOffsetFS_ReadDir(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_ReadDir(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	root, err := fs.Root()
@@ -164,11 +164,11 @@ func TestOffsetFS_ReadDir(t *testing.T) {
 	}
 }
 
-func TestOffsetFS_GetAttr(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_GetAttr(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	// First, lookup to populate the cache
@@ -187,11 +187,11 @@ func TestOffsetFS_GetAttr(t *testing.T) {
 	}
 }
 
-func TestOffsetFS_Read(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_Read(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	// Lookup to populate cache
@@ -237,11 +237,11 @@ func TestOffsetFS_Read(t *testing.T) {
 	}
 }
 
-func TestOffsetFS_ReadLink(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_ReadLink(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	fi, err := fs.Lookup("link")
@@ -258,11 +258,11 @@ func TestOffsetFS_ReadLink(t *testing.T) {
 	}
 }
 
-func TestOffsetFS_ListXAttrs(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_ListXAttrs(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	fi, err := fs.Lookup("xattr.txt")
@@ -292,11 +292,11 @@ func TestOffsetFS_ListXAttrs(t *testing.T) {
 	}
 }
 
-func TestOffsetFS_Stats(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_Stats(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	_, _ = fs.Root()
@@ -312,11 +312,11 @@ func TestOffsetFS_Stats(t *testing.T) {
 	}
 }
 
-func TestOffsetFS_ReadContentReader(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_ReadContentReader(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	fs := vfs.NewLocalOffsetFS(ar)
+	fs := vfs.NewLocalFS(ar)
 	defer fs.Close()
 
 	root, _ := fs.Root()
@@ -353,15 +353,15 @@ func TestOffsetFS_ReadContentReader(t *testing.T) {
 
 // --- Remote round-trip test ---
 
-func TestOffsetFS_RemoteRoundTrip(t *testing.T) {
-	ar := buildOffsetTestArchive(t)
+func TestFS_RemoteRoundTrip(t *testing.T) {
+	ar := buildTestArchive(t)
 	defer ar.Close()
 
-	serverFS := vfs.NewLocalOffsetFS(ar)
+	serverFS := vfs.NewLocalFS(ar)
 	defer serverFS.Close()
 
-	tp := &testOffsetTransport{srv: vfs.NewOffsetRemoteServer(serverFS)}
-	client := vfs.NewOffsetRemoteFS(tp)
+	tp := &testTransport{srv: vfs.NewRemoteServer(serverFS)}
+	client := vfs.NewRemoteFS(tp)
 	defer client.Close()
 
 	// Root
@@ -446,15 +446,15 @@ func TestOffsetFS_RemoteRoundTrip(t *testing.T) {
 	}
 }
 
-// --- testOffsetTransport implements vfs.OffsetRPCTransport using direct calls ---
+// --- testTransport implements vfs.RPCTransport using direct calls ---
 
-type testOffsetTransport struct {
-	srv *vfs.OffsetRemoteServer
+type testTransport struct {
+	srv *vfs.RemoteServer
 }
 
-func (t *testOffsetTransport) Call(_ context.Context, method string, req, resp any) error {
+func (t *testTransport) Call(_ context.Context, method string, req, resp any) error {
 	switch method {
-	case vfs.OffsetMethodRoot:
+	case vfs.MethodRoot:
 		fi, err := t.srv.HandleRoot()
 		if err != nil {
 			return err
@@ -463,7 +463,7 @@ func (t *testOffsetTransport) Call(_ context.Context, method string, req, resp a
 			*d = *fi
 		}
 		return nil
-	case vfs.OffsetMethodLookup:
+	case vfs.MethodLookup:
 		reqMap := req.(map[string]string)
 		fi, err := t.srv.HandleLookup(reqMap["path"])
 		if err != nil {
@@ -473,7 +473,7 @@ func (t *testOffsetTransport) Call(_ context.Context, method string, req, resp a
 			*d = *fi
 		}
 		return nil
-	case vfs.OffsetMethodReadDir:
+	case vfs.MethodReadDir:
 		reqMap := req.(map[string]uint64)
 		entries, err := t.srv.HandleReadDir(reqMap["offset"])
 		if err != nil {
@@ -483,7 +483,7 @@ func (t *testOffsetTransport) Call(_ context.Context, method string, req, resp a
 			*d = entries
 		}
 		return nil
-	case vfs.OffsetMethodGetAttr:
+	case vfs.MethodGetAttr:
 		reqMap := req.(map[string]uint64)
 		fi, err := t.srv.HandleGetAttr(reqMap["entry_start"])
 		if err != nil {
@@ -493,7 +493,7 @@ func (t *testOffsetTransport) Call(_ context.Context, method string, req, resp a
 			*d = *fi
 		}
 		return nil
-	case vfs.OffsetMethodReadLink:
+	case vfs.MethodReadLink:
 		reqMap := req.(map[string]uint64)
 		target, err := t.srv.HandleReadLink(reqMap["entry_start"])
 		if err != nil {
@@ -503,7 +503,7 @@ func (t *testOffsetTransport) Call(_ context.Context, method string, req, resp a
 			*d = target
 		}
 		return nil
-	case vfs.OffsetMethodListXAttrs:
+	case vfs.MethodListXAttrs:
 		reqMap := req.(map[string]uint64)
 		xattrs, err := t.srv.HandleListXAttrs(reqMap["entry_start"])
 		if err != nil {
@@ -513,15 +513,15 @@ func (t *testOffsetTransport) Call(_ context.Context, method string, req, resp a
 			*d = xattrs
 		}
 		return nil
-	case vfs.OffsetMethodDone:
+	case vfs.MethodDone:
 		return t.srv.HandleDone()
 	default:
 		return fmt.Errorf("unknown method: %s", method)
 	}
 }
 
-func (t *testOffsetTransport) CallBinary(_ context.Context, method string, req any, dst []byte) (int, error) {
-	if method == vfs.OffsetMethodRead {
+func (t *testTransport) CallBinary(_ context.Context, method string, req any, dst []byte) (int, error) {
+	if method == vfs.MethodRead {
 		reqMap := req.(map[string]uint64)
 		data, err := t.srv.HandleRead(reqMap["content_start"], reqMap["content_end"], reqMap["offset"], uint(reqMap["size"]))
 		if err != nil {
@@ -532,12 +532,12 @@ func (t *testOffsetTransport) CallBinary(_ context.Context, method string, req a
 	return 0, fmt.Errorf("unknown binary method: %s", method)
 }
 
-func (t *testOffsetTransport) CallStream(_ context.Context, method string, req any) (io.ReadCloser, error) {
-	if method == vfs.OffsetMethodReadStream {
+func (t *testTransport) CallStream(_ context.Context, method string, req any) (io.ReadCloser, error) {
+	if method == vfs.MethodReadStream {
 		reqMap := req.(map[string]uint64)
 		return t.srv.HandleReadStream(reqMap["content_start"], reqMap["content_end"])
 	}
 	return nil, fmt.Errorf("unknown stream method: %s", method)
 }
 
-func (t *testOffsetTransport) Close() error { return nil }
+func (t *testTransport) Close() error { return nil }

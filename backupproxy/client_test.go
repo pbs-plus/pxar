@@ -10,7 +10,7 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
-// mockFS is a test FileSystemAccessor using function fields.
+// mockFS is a test FSAccessor using function fields.
 type mockFS struct {
 	NoExtendedAttrs
 	statFn     func(path string) (format.Stat, error)

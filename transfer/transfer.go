@@ -15,7 +15,7 @@ import (
 // directory, the entire subtree is copied with paths remapped from Src to Dst
 // prefix. If the source entry is a file, the file is written with its path
 // remapped.
-func Copy(src ArchiveReader, dst ArchiveWriter, mappings []PathMapping, opts TransferOption) error {
+func Copy(src ArchiveReader, dst ArchiveWriter, mappings []PathMapping, opts CopyOption) error {
 	for _, m := range mappings {
 		entry, err := src.Lookup(m.Src)
 		if err != nil {
@@ -46,7 +46,7 @@ func Copy(src ArchiveReader, dst ArchiveWriter, mappings []PathMapping, opts Tra
 // CopyTree copies a directory tree from srcPath in the source archive to
 // dstPath in the target. All entries under the source directory have their
 // paths remapped from the srcPath prefix to the dstPath prefix.
-func CopyTree(src ArchiveReader, dst ArchiveWriter, srcPath, dstPath string, opts TransferOption) error {
+func CopyTree(src ArchiveReader, dst ArchiveWriter, srcPath, dstPath string, opts CopyOption) error {
 	root, err := src.Lookup(srcPath)
 	if err != nil {
 		return fmt.Errorf("lookup %q in source: %w", srcPath, err)
@@ -60,7 +60,7 @@ func CopyTree(src ArchiveReader, dst ArchiveWriter, srcPath, dstPath string, opt
 }
 
 // copyEntry copies a single non-directory entry to the target.
-func copyEntry(src ArchiveReader, dst ArchiveWriter, entry *pxar.Entry, opts TransferOption) error {
+func copyEntry(src ArchiveReader, dst ArchiveWriter, entry *pxar.Entry, opts CopyOption) error {
 	if entry.IsRegularFile() && entry.FileSize > 0 {
 		r, err := src.ReadFileContentReader(entry)
 		if err != nil {
@@ -74,7 +74,7 @@ func copyEntry(src ArchiveReader, dst ArchiveWriter, entry *pxar.Entry, opts Tra
 
 // copyDir copies a directory and all its contents to the target,
 // remapping paths from srcPath prefix to dstPath prefix.
-func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, srcPath, dstPath string, opts TransferOption) error {
+func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, srcPath, dstPath string, opts CopyOption) error {
 	if err := dst.BeginDirectory(dir.FileName(), &dir.Metadata); err != nil {
 		return fmt.Errorf("begin directory %q: %w", dir.Path, err)
 	}
@@ -108,7 +108,7 @@ func copyDir(src ArchiveReader, dst ArchiveWriter, dir *pxar.Entry, srcPath, dst
 
 // walkAndCopy walks a source directory tree and copies entries to dst,
 // remapping paths from srcPath to dstPath.
-func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath, dstPath string, opts TransferOption) error {
+func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath, dstPath string, opts CopyOption) error {
 	// When srcPath is "/", we're copying from the archive root — don't create
 	// a new directory since the target writer already has one from Begin.
 	if srcPath == "/" {
@@ -200,11 +200,11 @@ func walkAndCopy(src ArchiveReader, dst ArchiveWriter, root *pxar.Entry, srcPath
 }
 
 // Ensure archive interfaces are satisfied.
-var _ ArchiveReader = (*FileArchiveReader)(nil)
-var _ ArchiveReader = (*ChunkedArchiveReader)(nil)
-var _ ArchiveReader = (*SplitArchiveReader)(nil)
+var _ ArchiveReader = (*FileReader)(nil)
+var _ ArchiveReader = (*ChunkedReader)(nil)
+var _ ArchiveReader = (*SplitReader)(nil)
 var _ ArchiveReader = (*DecryptingReader)(nil)
-var _ ArchiveReader = (*PBSArchiveReader)(nil)
-var _ ArchiveWriter = (*StreamArchiveWriter)(nil)
-var _ ArchiveWriter = (*RemoteDedupSplitArchiveWriter)(nil)
-var _ ArchiveWriter = (*SplitSessionArchiveWriter)(nil)
+var _ ArchiveReader = (*PBSReader)(nil)
+var _ ArchiveWriter = (*StreamWriter)(nil)
+var _ ArchiveWriter = (*RemoteDedupWriter)(nil)
+var _ ArchiveWriter = (*SessionWriter)(nil)

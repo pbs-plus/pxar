@@ -399,7 +399,7 @@ func TestIntegration_ManifestVerification(t *testing.T) {
 	}
 
 	// Build a lookup map for files by name
-	fileMap := make(map[string]datastore.FileInfo)
+	fileMap := make(map[string]datastore.BackupFileInfo)
 	for _, f := range manifest.Files {
 		fileMap[f.Filename] = f
 	}
@@ -719,7 +719,7 @@ func TestIntegration_ManifestRoundTrip(t *testing.T) {
 	}
 
 	// Build lookup by filename
-	pbsFileMap := make(map[string]datastore.FileInfo)
+	pbsFileMap := make(map[string]datastore.BackupFileInfo)
 	for _, f := range pbsManifest.Files {
 		pbsFileMap[f.Filename] = f
 	}
@@ -1044,7 +1044,7 @@ func TestIntegration_MultipleArchivesPerSession(t *testing.T) {
 	}
 
 	// Verify manifest has correct file entries
-	fileMap := make(map[string]datastore.FileInfo)
+	fileMap := make(map[string]datastore.BackupFileInfo)
 	for _, f := range manifest.Files {
 		fileMap[f.Filename] = f
 	}

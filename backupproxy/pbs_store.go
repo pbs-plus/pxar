@@ -166,7 +166,7 @@ func (ps *PBSStore) StartSession(ctx context.Context, config BackupConfig) (Back
 		config:   config,
 		compress: ps.compress,
 		chunkCfg: ps.chunkCfg,
-		files:    make([]datastore.FileInfo, 0),
+		files:    make([]datastore.BackupFileInfo, 0),
 	}, nil
 }
 
@@ -175,7 +175,7 @@ type pbsSession struct {
 	proto       pbsBackupProtocol
 	store       *PBSStore
 	knownChunks map[[32]byte]bool
-	files       []datastore.FileInfo
+	files       []datastore.BackupFileInfo
 	config      BackupConfig
 	chunkCfg    buzhash.Config
 	compress    bool

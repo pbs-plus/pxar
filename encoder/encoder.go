@@ -121,7 +121,7 @@ func (e *Encoder) encodeFormatVersion() {
 		return
 	}
 	data := e.version.Serialize()
-	if e.err = e.writeHeader(format.PXARFormatVersion, uint64(len(data))); e.err != nil {
+	if e.err = e.writeHeader(format.Version, uint64(len(data))); e.err != nil {
 		return
 	}
 	e.err = e.writeAll(data)

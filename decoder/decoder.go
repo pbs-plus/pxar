@@ -111,7 +111,7 @@ func (d *Decoder) readBegin() (*pxar.Entry, error) {
 	d.header = h
 
 	// Optional format version header
-	if h.Type == format.PXARFormatVersion {
+	if h.Type == format.Version {
 		verEntry, err := d.readFormatVersion()
 		if err != nil {
 			return nil, err

@@ -476,21 +476,21 @@ func openArchiveReader(path string) (transfer.ArchiveReader, error) {
 			return nil, fmt.Errorf("create chunk store: %w", err)
 		}
 		chunkSource := datastore.NewChunkStoreSource(chunkStore)
-		return transfer.NewChunkedArchiveReader(idxData, chunkSource)
+		return transfer.NewChunkedReader(idxData, chunkSource)
 	case strings.HasSuffix(path, ".pxar"):
 		// Standalone v1 archive
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("open archive: %w", err)
 		}
-		return transfer.NewFileArchiveReader(f), nil
+		return transfer.NewFileReader(f), nil
 	default:
 		// Try as standalone .pxar
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("open archive: %w", err)
 		}
-		return transfer.NewFileArchiveReader(f), nil
+		return transfer.NewFileReader(f), nil
 	}
 }
 
@@ -620,13 +620,13 @@ func runCp() error {
 	}
 	defer outFile.Close()
 
-	writer := transfer.NewStreamArchiveWriter(outFile)
+	writer := transfer.NewStreamWriter(outFile)
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := writer.Begin(&rootMeta, transfer.WriterOptions{Format: targetFormat}); err != nil {
+	if err := writer.Begin(&rootMeta, transfer.Options{Format: targetFormat}); err != nil {
 		return fmt.Errorf("begin writer: %w", err)
 	}
 
-	err = transfer.Copy(reader, writer, []transfer.PathMapping{{Src: srcFilePath, Dst: dstFilePath}}, transfer.TransferOption{
+	err = transfer.Copy(reader, writer, []transfer.PathMapping{{Src: srcFilePath, Dst: dstFilePath}}, transfer.CopyOption{
 		TargetFormat: targetFormat,
 	})
 	if err != nil {
@@ -667,13 +667,13 @@ func runMerge() error {
 	}
 	defer outFile.Close()
 
-	writer := transfer.NewStreamArchiveWriter(outFile)
+	writer := transfer.NewStreamWriter(outFile)
 	rootMeta := pxar.DirMetadata(0o755).Build()
-	if err := writer.Begin(&rootMeta, transfer.WriterOptions{Format: targetFormat}); err != nil {
+	if err := writer.Begin(&rootMeta, transfer.Options{Format: targetFormat}); err != nil {
 		return fmt.Errorf("begin writer: %w", err)
 	}
 
-	if err := transfer.CopyTree(reader, writer, "/", "/", transfer.TransferOption{
+	if err := transfer.CopyTree(reader, writer, "/", "/", transfer.CopyOption{
 		TargetFormat: targetFormat,
 	}); err != nil {
 		return fmt.Errorf("merge: %w", err)

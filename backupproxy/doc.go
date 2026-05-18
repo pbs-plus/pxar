@@ -29,7 +29,7 @@
 // # Extended Metadata
 //
 // Extended attributes, POSIX ACLs, and file capabilities are collected via
-// the FileSystemAccessor/ClientProvider interfaces and encoded into archives.
+// the FSAccessor/ClientProvider interfaces and encoded into archives.
 // Metadata change detection compares all fields (stat, xattrs, ACLs, fcaps)
 // to trigger re-upload when they change.
 //
@@ -57,7 +57,7 @@
 //	// Or partial range:
 //	reader.RestoreFileRange(idx, 1024, 1024, &buf)
 //
-// Use AsChunkSource() to integrate with Restorer, ChunkedReadSeeker, etc.
+// Use AsChunkSource() to integrate with Restorer, ReadSeeker, etc.
 package backupproxy
 
 import (

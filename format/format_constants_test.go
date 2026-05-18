@@ -12,7 +12,7 @@ func TestFormatConstantGeneration(t *testing.T) {
 		marker string
 		want   uint64
 	}{
-		{"PXAR_FORMAT_VERSION", "__PROXMOX_FORMAT_VERSION__", PXARFormatVersion},
+		{"PXAR_FORMAT_VERSION", "__PROXMOX_FORMAT_VERSION__", Version},
 		{"PXAR_ENTRY", "__PROXMOX_FORMAT_ENTRY_V2__", PXAREntry},
 		{"PXAR_ENTRY_V1", "__PROXMOX_FORMAT_ENTRY__", PXAREntryV1},
 		{"PXAR_PRELUDE", "__PROXMOX_FORMAT_PRELUDE__", PXARPrelude},

@@ -374,6 +374,229 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 	return result.Data, nil
 }
 
+// h2PipelineReq is a pending pipelined H2 request.
+type h2PipelineReq struct {
+	streamID uint32
+	result   chan h2PipelineResult
+}
+
+type h2PipelineResult struct {
+	data json.RawMessage
+	err  error
+}
+
+// sendRequest writes an H2 request on a new stream without reading the response.
+// The caller must later collect the response via readResponses or the pipeline.
+func (c *pbsH2Conn) sendRequest(method, path string, params url.Values, body []byte, contentType string) (uint32, error) {
+	streamID := c.allocID()
+
+	fullPath := path
+	if len(params) > 0 {
+		fullPath += "?" + params.Encode()
+	}
+
+	c.hdrBuf.Reset()
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":method", Value: method})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":path", Value: fullPath})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":scheme", Value: "https"})
+	_ = c.enc.WriteField(hpack.HeaderField{Name: ":authority", Value: c.authority})
+	if contentType != "" {
+		_ = c.enc.WriteField(hpack.HeaderField{Name: "content-type", Value: contentType})
+	}
+	if body != nil {
+		_ = c.enc.WriteField(hpack.HeaderField{Name: "content-length", Value: strconv.Itoa(len(body))})
+	}
+
+	if err := c.framer.WriteHeaders(http2.HeadersFrameParam{
+		StreamID:      streamID,
+		BlockFragment: c.hdrBuf.Bytes(),
+		EndHeaders:    true,
+		EndStream:     body == nil,
+	}); err != nil {
+		return 0, fmt.Errorf("write HEADERS: %w", err)
+	}
+
+	if body != nil {
+		if err := c.writeDataFrames(streamID, body); err != nil {
+			return 0, fmt.Errorf("write DATA: %w", err)
+		}
+	}
+
+	return streamID, nil
+}
+
+// pipeline sends N requests, then reads all N responses in order.
+// This uses H2 multiplexing: all requests are sent before any response
+// is read, allowing the server to process them concurrently.
+func (c *pbsH2Conn) pipeline(reqs []pipelineEntry) []h2PipelineResult {
+	// Phase 1: send all requests.
+	results := make([]h2PipelineResult, len(reqs))
+	streamIDs := make([]uint32, len(reqs))
+	for i, req := range reqs {
+		sid, err := c.sendRequest(req.method, req.path, req.params, req.body, req.contentType)
+		if err != nil {
+			results[i] = h2PipelineResult{err: err}
+			continue
+		}
+		streamIDs[i] = sid
+	}
+
+	// Phase 2: read all responses.
+	// readResponses handles frame dispatch for multiple concurrent streams.
+	allResults := c.readResponses(streamIDs)
+	for i, sid := range streamIDs {
+		if results[i].err != nil {
+			continue // already failed on send
+		}
+		results[i] = allResults[sid]
+	}
+
+	return results
+}
+
+type pipelineEntry struct {
+	method      string
+	path        string
+	params      url.Values
+	body        []byte
+	contentType string
+}
+
+// readResponses reads frames until responses for ALL given stream IDs are complete.
+// Returns a map from stream ID to result.
+func (c *pbsH2Conn) readResponses(streamIDs []uint32) map[uint32]h2PipelineResult {
+	pending := make(map[uint32]*streamState, len(streamIDs))
+	for _, sid := range streamIDs {
+		if sid == 0 {
+			continue // failed send
+		}
+		pending[sid] = newStreamState()
+	}
+
+	results := make(map[uint32]h2PipelineResult, len(streamIDs))
+	connThreshold := int32(c.connInitialWindow / 2)
+
+	for len(results) < len(pending) {
+		frame, err := c.framer.ReadFrame()
+		if err != nil {
+			for sid := range pending {
+				results[sid] = h2PipelineResult{err: fmt.Errorf("read frame: %w", err)}
+			}
+			return results
+		}
+
+		switch f := frame.(type) {
+		case *http2.HeadersFrame:
+			s := pending[f.StreamID]
+			if s == nil {
+				_, _ = c.dec.DecodeFull(f.HeaderBlockFragment())
+				continue
+			}
+			s.hdrBuf.Write(f.HeaderBlockFragment())
+			if f.Flags.Has(http2.FlagHeadersEndHeaders) {
+				s.status = c.decodeStatus(&s.hdrBuf)
+			}
+			if f.StreamEnded() {
+				data, err := s.responseData()
+				results[f.StreamID] = h2PipelineResult{data: data, err: err}
+			}
+
+		case *http2.ContinuationFrame:
+			s := pending[f.StreamID]
+			if s == nil {
+				continue
+			}
+			s.hdrBuf.Write(f.HeaderBlockFragment())
+			if f.Flags.Has(http2.FlagHeadersEndHeaders) {
+				s.status = c.decodeStatus(&s.hdrBuf)
+			}
+
+		case *http2.DataFrame:
+			dataLen := int32(len(f.Data()))
+			c.connWindow -= uint32(dataLen)
+			if c.connWindow < uint32(connThreshold) {
+				incr := c.connInitialWindow - c.connWindow
+				if incr > 0 {
+					_ = c.framer.WriteWindowUpdate(0, incr)
+					c.connWindow += incr
+				}
+			}
+
+			s := pending[f.StreamID]
+			if s == nil {
+				continue
+			}
+			s.dataBuf.Write(f.Data())
+			s.streamWin -= dataLen
+			if s.streamWin < s.streamThreshold {
+				incr := uint32(initialStreamWindow - s.streamWin)
+				_ = c.framer.WriteWindowUpdate(f.StreamID, incr)
+				s.streamWin += int32(incr)
+			}
+			if f.StreamEnded() {
+				data, err := s.responseData()
+				results[f.StreamID] = h2PipelineResult{data: data, err: err}
+			}
+
+		case *http2.SettingsFrame:
+			if !f.IsAck() {
+				_ = c.framer.WriteSettingsAck()
+			}
+
+		case *http2.PingFrame:
+			if !f.IsAck() {
+				_ = c.framer.WritePing(true, f.Data)
+			}
+
+		case *http2.RSTStreamFrame:
+			if _, ok := pending[f.StreamID]; ok {
+				results[f.StreamID] = h2PipelineResult{err: fmt.Errorf("stream reset: error code %d", f.ErrCode)}
+			}
+
+		case *http2.GoAwayFrame:
+			for sid := range pending {
+				results[sid] = h2PipelineResult{err: fmt.Errorf("server GOAWAY: error code %d", f.ErrCode)}
+			}
+			return results
+		}
+	}
+
+	return results
+}
+
+const initialStreamWindow = 65535
+
+type streamState struct {
+	status         int
+	dataBuf        bytes.Buffer
+	hdrBuf         bytes.Buffer
+	streamWin      int32
+	streamThreshold int32
+}
+
+func newStreamState() *streamState {
+	return &streamState{
+		streamWin:       initialStreamWindow,
+		streamThreshold: initialStreamWindow / 2,
+	}
+}
+
+func (s *streamState) responseData() (json.RawMessage, error) {
+	if s.status >= 400 {
+		return nil, fmt.Errorf("HTTP %d: %s", s.status, s.dataBuf.String())
+	}
+	if s.dataBuf.Len() == 0 {
+		return nil, nil
+	}
+	var result struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(s.dataBuf.Bytes(), &result); err != nil {
+		return nil, fmt.Errorf("parse response JSON: %w", err)
+	}
+	return result.Data, nil
+}
+
 // doRaw sends a request and returns the raw response body without JSON parsing.
 // Used for binary endpoints like "previous" that return raw index data.
 func (c *pbsH2Conn) doRaw(method, path string, params url.Values) ([]byte, error) {

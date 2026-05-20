@@ -20,6 +20,7 @@ import (
 type pbsBackupProtocol interface {
 	dynamicIndexCreate(archiveName string) (uint64, error)
 	dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error
+	pipelineChunkUploads(wid uint64, chunks []chunkUploadReq) error
 	dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error
 	dynamicIndexClose(wid uint64, chunkCount int, size uint64, csum string) error
 	blobUpload(fileName string, encodedSize int, data []byte) error
@@ -63,16 +64,53 @@ func (p *h2Protocol) downloadPrevious(archiveName string) ([]byte, error) {
 }
 
 func (p *h2Protocol) dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error {
-	params := url.Values{}
-	params.Set("wid", strconv.FormatUint(wid, 10))
-	params.Set("digest", digest)
-	params.Set("size", strconv.Itoa(size))
-	params.Set("encoded-size", strconv.Itoa(encodedSize))
-	_, err := p.conn.do("POST", "dynamic_chunk", params, data, "application/octet-stream")
-	if err != nil {
-		return fmt.Errorf("upload chunk: %w", err)
+	return p.pipelineChunkUploads(wid, []chunkUploadReq{{
+		digest:      digest,
+		size:        size,
+		encodedSize: encodedSize,
+		data:        data,
+	}})
+}
+
+// pipelineChunkUploads sends multiple chunk upload requests concurrently over H2.
+// All requests are sent before any responses are read (pipelining), matching
+// the Rust PBS client's behavior where h2.send_request is called without awaiting.
+// Returns the first error encountered, or nil.
+func (p *h2Protocol) pipelineChunkUploads(wid uint64, chunks []chunkUploadReq) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	entries := make([]pipelineEntry, len(chunks))
+	for i, c := range chunks {
+		params := url.Values{}
+		params.Set("wid", strconv.FormatUint(wid, 10))
+		params.Set("digest", c.digest)
+		params.Set("size", strconv.Itoa(c.size))
+		params.Set("encoded-size", strconv.Itoa(c.encodedSize))
+		entries[i] = pipelineEntry{
+			method:      "POST",
+			path:        "dynamic_chunk",
+			params:       params,
+			body:        c.data,
+			contentType: "application/octet-stream",
+		}
+	}
+
+	results := p.conn.pipeline(entries)
+	for i, r := range results {
+		if r.err != nil {
+			return fmt.Errorf("upload chunk %s: %w", chunks[i].digest, r.err)
+		}
 	}
 	return nil
+}
+
+type chunkUploadReq struct {
+	digest      string
+	size        int
+	encodedSize int
+	data        []byte
 }
 
 func (p *h2Protocol) dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error {
@@ -347,7 +385,6 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 	totalChunks := len(origChunks)
 	const appendBatchSize = 1024
 
-	// Pre-allocate batch buffers with total capacity estimate.
 	batchDigests := make([]string, 0, min(totalChunks+16, appendBatchSize))
 	batchOffsets := make([]uint64, 0, min(totalChunks+16, appendBatchSize))
 
@@ -384,12 +421,39 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 		}
 	}
 
-	// Phase 2: Chunk new data, upload, and append references.
+	// Phase 2: Chunk new data, pipeline uploads, batch append references.
+	//
+	// Mirrors the Rust PBS client's upload_merged_chunk_stream:
+	// - Collect up to pipelineDepth new chunks
+	// - Send all chunk uploads via H2 pipeline (send all, then read all responses)
+	// - Batch index appends
+	const pipelineDepth = 64
+
 	newChunkCount := 0
 	if newData != nil {
 		if newDataOffset > totalSize {
 			totalSize = newDataOffset
 		}
+
+		pendingUploads := make([]chunkUploadReq, 0, pipelineDepth)
+		// Track digests for pending uploads so we can register them after pipeline completes.
+		pendingDigests := make([][32]byte, 0, pipelineDepth)
+
+		flushPipeline := func() error {
+			if len(pendingUploads) == 0 {
+				return nil
+			}
+			if err := s.proto.pipelineChunkUploads(wid, pendingUploads); err != nil {
+				return err
+			}
+			for _, d := range pendingDigests {
+				s.knownChunks[d] = true
+			}
+			pendingUploads = pendingUploads[:0]
+			pendingDigests = pendingDigests[:0]
+			return nil
+		}
+
 		chunker := buzhash.NewChunker(newData, s.chunkCfg)
 		for {
 			chunk, err := chunker.Next()
@@ -413,10 +477,21 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 				if err != nil {
 					return nil, err
 				}
-				if err := s.proto.dynamicChunkUpload(wid, hexDigest, len(chunk), len(blobData), blobData); err != nil {
-					return nil, err
+
+				pendingUploads = append(pendingUploads, chunkUploadReq{
+					digest:      hexDigest,
+					size:        len(chunk),
+					encodedSize: len(blobData),
+					data:        blobData,
+				})
+				pendingDigests = append(pendingDigests, digest)
+
+				// Flush pipeline when full (mirrors Rust's mpsc::channel(64)).
+				if len(pendingUploads) >= pipelineDepth {
+					if err := flushPipeline(); err != nil {
+						return nil, err
+					}
 				}
-				s.knownChunks[digest] = true
 			}
 
 			newChunkCount++
@@ -424,10 +499,20 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 			batchOffsets = append(batchOffsets, chunkOffset)
 
 			if len(batchDigests) >= appendBatchSize {
+				// Flush any pending uploads before appending to avoid deadlock
+				// (append references chunks that must be uploaded first).
+				if err := flushPipeline(); err != nil {
+					return nil, err
+				}
 				if err := flushBatch(); err != nil {
 					return nil, fmt.Errorf("append new chunks: %w", err)
 				}
 			}
+		}
+
+		// Flush remaining pipeline.
+		if err := flushPipeline(); err != nil {
+			return nil, err
 		}
 	}
 

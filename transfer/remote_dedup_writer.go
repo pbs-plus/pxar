@@ -1,11 +1,12 @@
 package transfer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"os"
+	"sync"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/backupproxy"
@@ -22,9 +23,11 @@ import (
 //
 // For new/modified files (backed entries), it writes payload data normally.
 //
-// Payload data is spilled to a temporary file instead of buffered in memory.
-// Metadata is buffered (it is small). This avoids OOM on large archives while
-// keeping encoding and upload decoupled for throughput.
+// Architecture mirrors the Rust PBS client (pxar_backup_stream.rs):
+// the encoder writes to a bufio.Writer wrapping a bounded channel sender.
+// A separate goroutine reads the channel and presents an io.Reader to
+// UploadPayloadWithInjection. This decouples encoding from uploading with
+// bounded memory (~10 × bufioSize = ~2.5 MB in-flight payload data).
 type RemoteDedupWriter struct {
 	session     backupproxy.BackupSession
 	ctx         context.Context
@@ -38,8 +41,23 @@ type RemoteDedupWriter struct {
 	lastRefOff  *uint64 // monotonic offset tracker for WriteEntryRef (nil = no offset yet)
 	alignDone   bool    // true once payloadWritePos has been aligned to origSize
 
-	// Payload spills to a temp file instead of a bytes.Buffer.
-	payloadFile *os.File
+	// Channel-based payload stream (mirrors Rust's sync_channel(10)).
+	encCh   chan payloadChunk
+	encDone chan struct{}   // closed when encoder finishes
+	encErr  error          // set by encoder before closing encDone
+	encMu   sync.Mutex     // guards encErr
+
+	uploadRes chan uploadResult // upload goroutine result
+}
+
+type payloadChunk struct {
+	data []byte
+	err  error // non-nil on encoder error
+}
+
+type uploadResult struct {
+	result *backupproxy.UploadResult
+	err    error
 }
 
 // NewRemoteDedupWriter creates a dedup writer for PBS uploads.
@@ -79,21 +97,183 @@ func NewRemoteDedupWriter(
 	return w, nil
 }
 
+// channelWriter is an io.Writer that sends flushed buffers through a channel.
+// This mirrors Rust's StdChannelWriter that wraps a sync_channel sender.
+type channelWriter struct {
+	ch chan<- payloadChunk
+}
+
+func (cw *channelWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	// Copy because bufio may reuse the underlying buffer after Write returns.
+	buf := make([]byte, len(p))
+	copy(buf, p)
+	cw.ch <- payloadChunk{data: buf}
+	return len(p), nil
+}
+
 func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.metaBuf.Reset()
 	w.dirDepth = 1
 	opts.Format = format.FormatVersion2
 
-	// Create temp file for payload spilling.
-	f, err := os.CreateTemp("", "pxar-payload-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create payload temp file: %w", err)
-	}
-	w.payloadFile = f
+	// Bounded channel — matches Rust's sync_channel(10).
+	// Encoder can get ~10 flushes ahead of the uploader before blocking.
+	w.encCh = make(chan payloadChunk, 10)
+	w.encDone = make(chan struct{})
+	w.uploadRes = make(chan uploadResult, 1)
 
-	w.inner = NewSplitStreamWriter(&w.metaBuf, w.payloadFile)
+	// Start upload goroutine that reads from the channel and presents
+	// an io.Reader to UploadPayloadWithInjection.
+	go w.uploadPayload()
+
+	// Encoder writes to bufio.Writer (256KB buffer, matches Rust's buffer_size)
+	// wrapping the channel sender.
+	const bufSize = 256 * 1024
+	cw := &channelWriter{ch: w.encCh}
+	payloadOut := bufio.NewWriterSize(cw, bufSize)
+
+	w.inner = NewSplitStreamWriter(&w.metaBuf, payloadOut)
 
 	return w.inner.Begin(rootMeta, opts)
+}
+
+// flushPayload flushes the bufio.Writer, sending any buffered data through
+// the channel. Called before closing the channel to ensure all data is sent.
+func (w *RemoteDedupWriter) flushPayload() {
+	if sw, ok := w.inner.payloadOut.(*bufio.Writer); ok {
+		_ = sw.Flush()
+	}
+}
+
+// setEncError records an encoder error for the upload goroutine.
+func (w *RemoteDedupWriter) setEncErr(err error) {
+	w.encMu.Lock()
+	if w.encErr == nil {
+		w.encErr = err
+	}
+	w.encMu.Unlock()
+}
+
+// uploadPayload runs in a goroutine. It reads payload chunks from the channel
+// and presents them as an io.Reader to UploadPayloadWithInjection.
+func (w *RemoteDedupWriter) uploadPayload() {
+	// Ensure the upload result is always sent.
+	defer func() {
+		close(w.encCh) // release any blocked encoder writes
+	}()
+
+	cr := &channelReader{ch: w.encCh, done: w.encDone}
+
+	// When there are original chunks, skip the 16-byte START_MARKER
+	// from the encoder's payload stream (the combined stream already
+	// has one from the original). For init mode, keep it as-is.
+	var reader io.Reader = cr
+	if len(w.origChunks) > 0 {
+		reader = &skipHeaderReader{source: cr, skip: int(format.HeaderSize)}
+	}
+
+	result, err := w.session.UploadPayloadWithInjection(
+		w.ctx,
+		w.payloadName,
+		w.origChunks,
+		reader,
+		w.origSize,
+	)
+	w.uploadRes <- uploadResult{result: result, err: err}
+}
+
+// channelReader presents an io.Reader interface over the payload channel.
+// This mirrors how the Rust client's PxarBackupStream implements Stream
+// by receiving from the sync_channel.
+type channelReader struct {
+	ch   <-chan payloadChunk
+	done <-chan struct{} // closed when encoder is finished
+	buf  []byte          // leftover data from previous chunk
+	err  error
+}
+
+func (cr *channelReader) Read(p []byte) (int, error) {
+	if cr.err != nil {
+		return 0, cr.err
+	}
+
+	// Use leftover data from previous chunk first.
+	if len(cr.buf) > 0 {
+		n := copy(p, cr.buf)
+		cr.buf = cr.buf[n:]
+		return n, nil
+	}
+
+	// Read next chunk from channel.
+	for {
+		select {
+		case chunk, ok := <-cr.ch:
+			if !ok {
+				// Channel closed — check for encoder error.
+				<-cr.done // wait for encoder to report status
+				return 0, io.EOF
+			}
+			if chunk.err != nil {
+				cr.err = chunk.err
+				return 0, chunk.err
+			}
+			if len(chunk.data) == 0 {
+				continue
+			}
+			n := copy(p, chunk.data)
+			if n < len(chunk.data) {
+				cr.buf = chunk.data[n:]
+			}
+			return n, nil
+		case <-cr.done:
+			// Encoder finished. Drain remaining channel data.
+			for {
+				select {
+				case chunk, ok := <-cr.ch:
+					if !ok {
+						return 0, io.EOF
+					}
+					if chunk.err != nil {
+						cr.err = chunk.err
+						return 0, chunk.err
+					}
+					if len(chunk.data) == 0 {
+						continue
+					}
+					n := copy(p, chunk.data)
+					if n < len(chunk.data) {
+						cr.buf = chunk.data[n:]
+					}
+					return n, nil
+				default:
+					return 0, io.EOF
+				}
+			}
+		}
+	}
+}
+
+// skipHeaderReader skips the first N bytes from the underlying reader,
+// then passes through everything else.
+type skipHeaderReader struct {
+	source io.Reader
+	skip   int
+	done   bool
+}
+
+func (s *skipHeaderReader) Read(p []byte) (int, error) {
+	if !s.done {
+		// Drain the skip bytes.
+		buf := make([]byte, s.skip)
+		if _, err := io.ReadFull(s.source, buf); err != nil {
+			return 0, err
+		}
+		s.done = true
+	}
+	return s.source.Read(p)
 }
 
 // alignPayload advances the encoder's payloadWritePos so that new file offsets
@@ -156,90 +336,44 @@ func (w *RemoteDedupWriter) EndDirectory() error {
 func (w *RemoteDedupWriter) Finish() error {
 	for w.dirDepth > 1 {
 		if err := w.inner.EndDirectory(); err != nil {
+			w.setEncErr(err)
+			w.flushPayload()
+			close(w.encDone)
+			<-w.uploadRes // drain upload goroutine
 			return err
 		}
 		w.dirDepth--
 	}
 	if err := w.inner.Finish(); err != nil {
+		w.setEncErr(err)
+		w.flushPayload()
+		close(w.encDone)
+		<-w.uploadRes
 		return err
 	}
 
-	// Sync temp file to disk before uploading.
-	if err := w.payloadFile.Sync(); err != nil {
-		return fmt.Errorf("sync payload temp file: %w", err)
+	// Flush remaining buffered payload data through the channel.
+	w.flushPayload()
+
+	// Signal that encoding is complete (no error).
+	close(w.encDone)
+
+	// Wait for upload to finish.
+	res := <-w.uploadRes
+	if res.err != nil {
+		return fmt.Errorf("upload payload: %w", res.err)
 	}
 
-	// Upload metadata (small, always buffered in memory).
+	// Upload metadata (small, buffered in memory — always last).
 	_, err := w.session.UploadArchive(w.ctx, w.metaName, bytes.NewReader(w.metaBuf.Bytes()))
 	if err != nil {
 		return fmt.Errorf("upload metadata: %w", err)
 	}
 
-	// Upload payload from temp file.
-	return w.uploadPayload()
-}
-
-// uploadPayload builds the combined payload DIDX by streaming from the temp file.
-//
-// When there are original chunks, the encoder's payload stream starts with a
-// 16-byte START_MARKER that must be stripped (the combined stream already has
-// one from the original). When there are no original chunks (init mode), the
-// full stream is uploaded as-is.
-func (w *RemoteDedupWriter) uploadPayload() error {
-	enc := w.inner.Encoder()
-
-	if enc == nil {
-		// Fallback: no encoder, upload raw payload file.
-		if _, err := w.payloadFile.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("seek payload temp file: %w", err)
-		}
-		_, err := w.session.UploadArchive(w.ctx, w.payloadName, w.payloadFile)
-		return err
-	}
-
-	fi, err := w.payloadFile.Stat()
-	if err != nil {
-		return fmt.Errorf("stat payload temp file: %w", err)
-	}
-	payloadSize := fi.Size()
-
-	// Seek to start of payload data (skip header if needed).
-	offset := int64(0)
-	if len(w.origChunks) > 0 && payloadSize > int64(format.HeaderSize) {
-		offset = int64(format.HeaderSize)
-	} else if len(w.origChunks) > 0 && payloadSize <= int64(format.HeaderSize) {
-		// Only header data — nothing to upload for new data portion.
-		_, err := w.session.UploadPayloadWithInjection(
-			w.ctx,
-			w.payloadName,
-			w.origChunks,
-			nil,
-			w.origSize,
-		)
-		return err
-	}
-
-	if _, err := w.payloadFile.Seek(offset, io.SeekStart); err != nil {
-		return fmt.Errorf("seek payload temp file: %w", err)
-	}
-
-	_, err = w.session.UploadPayloadWithInjection(
-		w.ctx,
-		w.payloadName,
-		w.origChunks,
-		w.payloadFile,
-		w.origSize,
-	)
-	return err
+	return nil
 }
 
 func (w *RemoteDedupWriter) Close() error {
-	if w.payloadFile != nil {
-		name := w.payloadFile.Name()
-		_ = w.payloadFile.Close()
-		_ = os.Remove(name)
-		w.payloadFile = nil
-	}
 	return nil
 }
 

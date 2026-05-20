@@ -344,8 +344,12 @@ func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) 
 	if e.payloadOut != nil {
 		s := e.currentState()
 		payloadOffset := s.payloadWritePos
-		s.previousPayloadOffset = payloadOffset
-		s.hasPrevPayloadOffset = true
+		// Use max to prevent CreateFile from decreasing previousPayloadOffset
+		// below what was set by a prior AddPayloadRef call.
+		if !s.hasPrevPayloadOffset || payloadOffset > s.previousPayloadOffset {
+			s.previousPayloadOffset = payloadOffset
+			s.hasPrevPayloadOffset = true
+		}
 		var prBuf [16]byte
 		binary.LittleEndian.PutUint64(prBuf[0:], payloadOffset)
 		binary.LittleEndian.PutUint64(prBuf[8:], size)
@@ -769,10 +773,16 @@ func (e *Encoder) AddPayloadRef(metadata *pxar.Metadata, name string, fileSize u
 		return 0, fmt.Errorf("AddPayloadRef requires split archive (v2 format)")
 	}
 
-	// Monotonic offset check — mirrors Rust encoder's payload_ref_from:
-	// payload_offset must be strictly larger than the previously seen PAYLOAD_REF
-	// offset for the sequential decoder to correctly restore contents.
+	// Offset checks — mirrors Rust encoder's payload_ref_from:
+	// 1. payload_offset must be >= current payload write position (can't point backwards
+	//    in the payload stream past already-written data)
+	// 2. payload_offset must be strictly larger than the previously seen PAYLOAD_REF
+	//    offset for the sequential decoder to correctly restore contents.
 	s := e.currentState()
+	if payloadOffset < s.payloadWritePos {
+		return 0, fmt.Errorf("payload offset %d smaller than current write position %d",
+			payloadOffset, s.payloadWritePos)
+	}
 	if s.hasPrevPayloadOffset && payloadOffset <= s.previousPayloadOffset {
 		return 0, fmt.Errorf("unexpected payload offset %d not larger than previous offset %d",
 			payloadOffset, s.previousPayloadOffset)

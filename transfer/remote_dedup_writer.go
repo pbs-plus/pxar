@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/backupproxy"
@@ -21,21 +22,33 @@ import (
 //
 // For new/modified files (backed entries), it writes payload data normally.
 //
-// Only metadata and new file content are buffered in memory. Unchanged file
-// content is never read — the original payload chunks are referenced directly.
+// Payload data is streamed to PBS via an io.Pipe — no full-archive buffering
+// in memory. Metadata is buffered (it is small). Only the pipe buffer (typically
+// 64 KB) is held in memory for payload at any given time.
 type RemoteDedupWriter struct {
-	session      backupproxy.BackupSession
-	ctx          context.Context
-	inner        *StreamWriter
-	metaName     string
-	payloadName  string
-	origChunks   []backupproxy.KnownChunkRef
-	metaBuf      bytes.Buffer
-	payloadBuf   bytes.Buffer
-	dirDepth     int
-	origSize     uint64
-	lastRefOff   *uint64 // monotonic offset tracker for WriteEntryRef (nil = no offset yet)
-	payloadAlign bool    // true once payloadWritePos has been aligned to origSize
+	session     backupproxy.BackupSession
+	ctx         context.Context
+	inner       *StreamWriter
+	metaName    string
+	payloadName string
+	origChunks  []backupproxy.KnownChunkRef
+	metaBuf     bytes.Buffer
+	dirDepth    int
+	origSize    uint64
+	lastRefOff  *uint64 // monotonic offset tracker for WriteEntryRef (nil = no offset yet)
+	alignDone   bool    // true once payloadWritePos has been aligned to origSize
+
+	// Streaming payload — encoder writes to pw, upload goroutine reads from pr.
+	payloadMu   sync.Mutex
+	payloadPr   *io.PipeReader
+	payloadPw   *io.PipeWriter
+	payloadOnce sync.Once
+	payloadRes  chan payloadUploadResult
+}
+
+type payloadUploadResult struct {
+	result *backupproxy.UploadResult
+	err    error
 }
 
 // NewRemoteDedupWriter creates a dedup writer for PBS uploads.
@@ -75,28 +88,80 @@ func NewRemoteDedupWriter(
 	return w, nil
 }
 
+// startPayloadUpload lazily creates the pipe and starts the upload goroutine.
+// Called on first actual payload write or in Finish if no new data was written.
+func (w *RemoteDedupWriter) startPayloadUpload() {
+	w.payloadOnce.Do(func() {
+		pr, pw := io.Pipe()
+		w.payloadPr = pr
+		w.payloadPw = pw
+		w.payloadRes = make(chan payloadUploadResult, 1)
+
+		go func() {
+			var reader io.Reader = pr
+
+			// When there are original chunks, the encoder writes a START_MARKER
+			// (16 bytes) at the beginning of the payload stream. The combined
+			// stream already has one from the original, so skip it.
+			if len(w.origChunks) > 0 {
+				discard := make([]byte, format.HeaderSize)
+				if _, err := io.ReadFull(pr, discard); err != nil {
+					_ = pr.CloseWithError(err)
+					w.payloadRes <- payloadUploadResult{err: fmt.Errorf("skip header: %w", err)}
+					return
+				}
+			}
+
+			result, err := w.session.UploadPayloadWithInjection(
+				w.ctx,
+				w.payloadName,
+				w.origChunks,
+				reader,
+				w.origSize,
+			)
+			w.payloadRes <- payloadUploadResult{result: result, err: err}
+		}()
+	})
+}
+
 func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.metaBuf.Reset()
-	w.payloadBuf.Reset()
-	w.inner = NewSplitStreamWriter(&w.metaBuf, &w.payloadBuf)
 	w.dirDepth = 1
 	opts.Format = format.FormatVersion2
+
+	// Don't start the pipe yet — delay until first payload write.
+	// Create a deferredPayloadWriter that starts the pipe on first Write.
+	dw := &deferredWriter{}
+	dw.start = func() {
+		w.startPayloadUpload()
+		dw.w = w.payloadPw
+	}
+	w.inner = NewSplitStreamWriter(&w.metaBuf, dw)
+
 	return w.inner.Begin(rootMeta, opts)
+}
+
+// deferredWriter wraps an io.Writer that is nil until start() is called.
+// All writes go through the pipe once started.
+type deferredWriter struct {
+	start func()
+	w     io.Writer // set by start()
+}
+
+func (d *deferredWriter) Write(p []byte) (int, error) {
+	if d.w == nil {
+		d.start()
+	}
+	return d.w.Write(p)
 }
 
 // alignPayload advances the encoder's payloadWritePos so that new file offsets
 // match their actual positions in the combined payload stream.
-//
-// Combined stream: [0, origSize) = original chunks, [origSize, ...) = new data.
-// The encoder tracks a virtual payloadWritePos. After all AddPayloadRef calls,
-// payloadWritePos = 16 + sum(16+fileSize for ref'd files), which may be less
-// than origSize (missing the original stream's TAIL_MARKER and any skipped files).
-// We advance by the difference so that CreateFile generates correct offsets.
 func (w *RemoteDedupWriter) alignPayload() error {
-	if w.payloadAlign {
+	if w.alignDone {
 		return nil
 	}
-	w.payloadAlign = true
+	w.alignDone = true
 	enc := w.inner.Encoder()
 	if enc == nil || w.origSize == 0 {
 		return nil
@@ -155,56 +220,48 @@ func (w *RemoteDedupWriter) Finish() error {
 		w.dirDepth--
 	}
 	if err := w.inner.Finish(); err != nil {
+		// Encoder failed — close pipe to unblock upload goroutine.
+		if w.payloadPw != nil {
+			_ = w.payloadPw.CloseWithError(err)
+		}
 		return err
 	}
 
-	// Upload metadata (small, always uploaded)
+	// Close payload pipe (signals EOF to upload goroutine).
+	if w.payloadPw != nil {
+		_ = w.payloadPw.Close()
+	}
+
+	// Wait for payload upload to finish.
+	if w.payloadRes != nil {
+		res := <-w.payloadRes
+		if res.err != nil {
+			return fmt.Errorf("upload payload: %w", res.err)
+		}
+	}
+
+	// If no payload data was written at all (empty archive with no origChunks),
+	// upload an empty payload.
+	if w.payloadPw == nil {
+		_, err := w.session.UploadPayloadWithInjection(
+			w.ctx,
+			w.payloadName,
+			w.origChunks,
+			nil,
+			w.origSize,
+		)
+		if err != nil {
+			return fmt.Errorf("upload empty payload: %w", err)
+		}
+	}
+
+	// Upload metadata (small, buffered — always uploaded last).
 	_, err := w.session.UploadArchive(w.ctx, w.metaName, bytes.NewReader(w.metaBuf.Bytes()))
 	if err != nil {
 		return fmt.Errorf("upload metadata: %w", err)
 	}
 
-	// Upload payload with chunk injection
-	return w.uploadPayload()
-}
-
-// uploadPayload builds the combined payload DIDX.
-//
-// alignPayload (called before the first WriteEntry/WriteEntryReader) advances
-// the encoder's virtual payloadWritePos to origSize so that PAYLOAD_REF offsets
-// for new files match their actual positions in the combined stream.
-//
-// Combined DIDX layout:
-//
-//	[0, origSize)                  — original chunks (injected)
-//	[origSize, origSize + newData) — new file data (uploaded)
-func (w *RemoteDedupWriter) uploadPayload() error {
-	enc := w.inner.Encoder()
-	if enc == nil {
-		_, err := w.session.UploadArchive(w.ctx, w.payloadName, bytes.NewReader(w.payloadBuf.Bytes()))
-		return err
-	}
-
-	// The encoder wrote payloadBuf = [START_MARKER] [new file entries] [TAIL_MARKER]
-	// When there are original chunks, strip the START_MARKER (first 16 bytes)
-	// because the combined stream already has one from the original.
-	// When there are no original chunks (init mode), keep the START_MARKER
-	// because it IS the start of the combined stream.
-	newData := w.payloadBuf.Bytes()
-	if len(w.origChunks) > 0 && len(newData) > int(format.HeaderSize) {
-		newData = newData[format.HeaderSize:]
-	} else if len(w.origChunks) > 0 {
-		newData = nil
-	}
-
-	_, err := w.session.UploadPayloadWithInjection(
-		w.ctx,
-		w.payloadName,
-		w.origChunks,
-		bytes.NewReader(newData),
-		w.origSize,
-	)
-	return err
+	return nil
 }
 
 func (w *RemoteDedupWriter) Close() error {

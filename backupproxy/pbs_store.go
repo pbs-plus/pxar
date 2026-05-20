@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"strconv"
@@ -448,7 +449,13 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 			totalSize = newDataOffset
 		}
 
+		// Snapshot knownChunks for the producer to avoid a data race
+		// with the consumer goroutine that writes new entries.
+		localKnown := make(map[[32]byte]bool, len(s.knownChunks))
+		maps.Copy(localKnown, s.knownChunks)
+
 		// Producer: chunk + encode blobs, send batches to workCh.
+		producerTotalSize := totalSize
 		go func() {
 			defer close(workCh)
 
@@ -466,9 +473,9 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 				}
 
 				digest := chunkDigest(chunk, s.config.CryptConfig)
-				chunkOffset := totalSize
-				totalSize += uint64(len(chunk))
-				idx.Add(totalSize, digest)
+				chunkOffset := producerTotalSize
+				producerTotalSize += uint64(len(chunk))
+				idx.Add(producerTotalSize, digest)
 
 				hex.Encode(hexBuf[:], digest[:])
 				hexDigest := string(hexBuf[:])
@@ -479,13 +486,14 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 					size:      len(chunk),
 				}
 
-				if !s.knownChunks[digest] {
+				if !localKnown[digest] {
 					blobData, encErr := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
 					if encErr != nil {
 						producerErr <- encErr
 						return
 					}
 					work.blob = blobData
+					localKnown[digest] = true
 				}
 
 				batch = append(batch, work)
@@ -557,6 +565,12 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 
 	if err := flushBatch(); err != nil {
 		return nil, fmt.Errorf("append final batch: %w", err)
+	}
+
+	// Compute final totalSize from the index end offsets.
+	// The entries cover original chunks (Phase 1) + new data chunks (Phase 2).
+	if len(origChunks)+newChunkCount > 0 {
+		totalSize = idx.LastEndOffset()
 	}
 
 	indexDigest := idx.Csum()

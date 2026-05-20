@@ -41,7 +41,7 @@ func NewCryptConfig(encKey [32]byte) (*CryptConfig, error) {
 	}
 
 	var idKey [32]byte
-	pbkdf2Derive(encKey[:], idKeySalt, 10, idKey[:])
+	pbkdf2DeriveFull(encKey[:], idKeySalt, 10, idKey[:])
 
 	return &CryptConfig{
 		encKey: encKey,
@@ -120,27 +120,6 @@ type KeyDerivationConfig struct {
 	R    int    `json:"r,omitempty"`    // scrypt: block size
 	P    int    `json:"p,omitempty"`    // scrypt: parallelism
 	Iter int    `json:"iter,omitempty"` // pbkdf2: iterations
-}
-
-// pbkdf2Derive implements PBKDF2-HMAC-SHA256 derivation.
-// This is a simplified implementation matching PBS's use: key derivation
-// for id_key (10 iterations) and is NOT a general-purpose PBKDF2.
-func pbkdf2Derive(password, salt []byte, iterations int, out []byte) {
-	// HMAC-SHA256 based PBKDF2
-	key := hmac.New(sha256.New, password)
-	key.Write(salt)
-	prf := key.Sum(nil)
-
-	result := make([]byte, len(prf))
-	copy(result, prf)
-
-	for i := 1; i < iterations; i++ {
-		key = hmac.New(sha256.New, password)
-		key.Write(result)
-		result = key.Sum(result[:0])
-	}
-
-	copy(out, result[:min(len(out), len(result))])
 }
 
 // CreateRandomKey generates a random 32-byte encryption key.

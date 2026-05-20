@@ -153,6 +153,15 @@ func (w *DynamicIndexWriter) Add(endOffset uint64, digest [32]byte) {
 	w.cached = false
 }
 
+// LastEndOffset returns the end offset of the last entry, which is the total
+// virtual size of the indexed stream. Returns 0 if there are no entries.
+func (w *DynamicIndexWriter) LastEndOffset() uint64 {
+	if len(w.entries) == 0 {
+		return 0
+	}
+	return w.entries[len(w.entries)-1].EndOffset
+}
+
 // Csum returns the SHA-256 checksum over all entry data (end_offset || digest pairs).
 // This matches PBS's compute_csum() and is the checksum stored in the manifest.
 // The result is cached and invalidated by Add().

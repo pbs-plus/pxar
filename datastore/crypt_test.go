@@ -1,10 +1,25 @@
 package datastore
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 )
+
+func TestPBKDF2Correctness(t *testing.T) {
+	// Test vector: key=all-zeros, salt="_id_key", iterations=10
+	// Verified against Python: hashlib.pbkdf2_hmac('sha256', b'\x00'*32, b'_id_key', 10, dklen=32)
+	var key, exp [32]byte
+	var out [32]byte
+	pbkdf2DeriveFull(key[:], []byte("_id_key"), 10, out[:])
+	expHex := "1fa7f0ef7eae0e67adbec4219b31d02fbb831d686fda90ea02c47b91c6df888e"
+	hex.Decode(exp[:], []byte(expHex))
+	if !bytes.Equal(out[:], exp[:]) {
+		t.Errorf("pbkdf2DeriveFull mismatch:\n  got: %x\n want: %x", out, exp)
+	}
+}
 
 func TestCryptConfigKeyDerivation(t *testing.T) {
 	key, err := CreateRandomKey()

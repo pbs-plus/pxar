@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sync"
+	"os"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/backupproxy"
@@ -22,9 +22,9 @@ import (
 //
 // For new/modified files (backed entries), it writes payload data normally.
 //
-// Payload data is streamed to PBS via an io.Pipe — no full-archive buffering
-// in memory. Metadata is buffered (it is small). Only the pipe buffer (typically
-// 64 KB) is held in memory for payload at any given time.
+// Payload data is spilled to a temporary file instead of buffered in memory.
+// Metadata is buffered (it is small). This avoids OOM on large archives while
+// keeping encoding and upload decoupled for throughput.
 type RemoteDedupWriter struct {
 	session     backupproxy.BackupSession
 	ctx         context.Context
@@ -38,17 +38,8 @@ type RemoteDedupWriter struct {
 	lastRefOff  *uint64 // monotonic offset tracker for WriteEntryRef (nil = no offset yet)
 	alignDone   bool    // true once payloadWritePos has been aligned to origSize
 
-	// Streaming payload — encoder writes to pw, upload goroutine reads from pr.
-	payloadMu   sync.Mutex
-	payloadPr   *io.PipeReader
-	payloadPw   *io.PipeWriter
-	payloadOnce sync.Once
-	payloadRes  chan payloadUploadResult
-}
-
-type payloadUploadResult struct {
-	result *backupproxy.UploadResult
-	err    error
+	// Payload spills to a temp file instead of a bytes.Buffer.
+	payloadFile *os.File
 }
 
 // NewRemoteDedupWriter creates a dedup writer for PBS uploads.
@@ -88,71 +79,21 @@ func NewRemoteDedupWriter(
 	return w, nil
 }
 
-// startPayloadUpload lazily creates the pipe and starts the upload goroutine.
-// Called on first actual payload write or in Finish if no new data was written.
-func (w *RemoteDedupWriter) startPayloadUpload() {
-	w.payloadOnce.Do(func() {
-		pr, pw := io.Pipe()
-		w.payloadPr = pr
-		w.payloadPw = pw
-		w.payloadRes = make(chan payloadUploadResult, 1)
-
-		go func() {
-			var reader io.Reader = pr
-
-			// When there are original chunks, the encoder writes a START_MARKER
-			// (16 bytes) at the beginning of the payload stream. The combined
-			// stream already has one from the original, so skip it.
-			if len(w.origChunks) > 0 {
-				discard := make([]byte, format.HeaderSize)
-				if _, err := io.ReadFull(pr, discard); err != nil {
-					_ = pr.CloseWithError(err)
-					w.payloadRes <- payloadUploadResult{err: fmt.Errorf("skip header: %w", err)}
-					return
-				}
-			}
-
-			result, err := w.session.UploadPayloadWithInjection(
-				w.ctx,
-				w.payloadName,
-				w.origChunks,
-				reader,
-				w.origSize,
-			)
-			w.payloadRes <- payloadUploadResult{result: result, err: err}
-		}()
-	})
-}
-
 func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.metaBuf.Reset()
 	w.dirDepth = 1
 	opts.Format = format.FormatVersion2
 
-	// Don't start the pipe yet — delay until first payload write.
-	// Create a deferredPayloadWriter that starts the pipe on first Write.
-	dw := &deferredWriter{}
-	dw.start = func() {
-		w.startPayloadUpload()
-		dw.w = w.payloadPw
+	// Create temp file for payload spilling.
+	f, err := os.CreateTemp("", "pxar-payload-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create payload temp file: %w", err)
 	}
-	w.inner = NewSplitStreamWriter(&w.metaBuf, dw)
+	w.payloadFile = f
+
+	w.inner = NewSplitStreamWriter(&w.metaBuf, w.payloadFile)
 
 	return w.inner.Begin(rootMeta, opts)
-}
-
-// deferredWriter wraps an io.Writer that is nil until start() is called.
-// All writes go through the pipe once started.
-type deferredWriter struct {
-	start func()
-	w     io.Writer // set by start()
-}
-
-func (d *deferredWriter) Write(p []byte) (int, error) {
-	if d.w == nil {
-		d.start()
-	}
-	return d.w.Write(p)
 }
 
 // alignPayload advances the encoder's payloadWritePos so that new file offsets
@@ -220,29 +161,54 @@ func (w *RemoteDedupWriter) Finish() error {
 		w.dirDepth--
 	}
 	if err := w.inner.Finish(); err != nil {
-		// Encoder failed — close pipe to unblock upload goroutine.
-		if w.payloadPw != nil {
-			_ = w.payloadPw.CloseWithError(err)
-		}
 		return err
 	}
 
-	// Close payload pipe (signals EOF to upload goroutine).
-	if w.payloadPw != nil {
-		_ = w.payloadPw.Close()
+	// Sync temp file to disk before uploading.
+	if err := w.payloadFile.Sync(); err != nil {
+		return fmt.Errorf("sync payload temp file: %w", err)
 	}
 
-	// Wait for payload upload to finish.
-	if w.payloadRes != nil {
-		res := <-w.payloadRes
-		if res.err != nil {
-			return fmt.Errorf("upload payload: %w", res.err)
+	// Upload metadata (small, always buffered in memory).
+	_, err := w.session.UploadArchive(w.ctx, w.metaName, bytes.NewReader(w.metaBuf.Bytes()))
+	if err != nil {
+		return fmt.Errorf("upload metadata: %w", err)
+	}
+
+	// Upload payload from temp file.
+	return w.uploadPayload()
+}
+
+// uploadPayload builds the combined payload DIDX by streaming from the temp file.
+//
+// When there are original chunks, the encoder's payload stream starts with a
+// 16-byte START_MARKER that must be stripped (the combined stream already has
+// one from the original). When there are no original chunks (init mode), the
+// full stream is uploaded as-is.
+func (w *RemoteDedupWriter) uploadPayload() error {
+	enc := w.inner.Encoder()
+
+	if enc == nil {
+		// Fallback: no encoder, upload raw payload file.
+		if _, err := w.payloadFile.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("seek payload temp file: %w", err)
 		}
+		_, err := w.session.UploadArchive(w.ctx, w.payloadName, w.payloadFile)
+		return err
 	}
 
-	// If no payload data was written at all (empty archive with no origChunks),
-	// upload an empty payload.
-	if w.payloadPw == nil {
+	fi, err := w.payloadFile.Stat()
+	if err != nil {
+		return fmt.Errorf("stat payload temp file: %w", err)
+	}
+	payloadSize := fi.Size()
+
+	// Seek to start of payload data (skip header if needed).
+	offset := int64(0)
+	if len(w.origChunks) > 0 && payloadSize > int64(format.HeaderSize) {
+		offset = int64(format.HeaderSize)
+	} else if len(w.origChunks) > 0 && payloadSize <= int64(format.HeaderSize) {
+		// Only header data — nothing to upload for new data portion.
 		_, err := w.session.UploadPayloadWithInjection(
 			w.ctx,
 			w.payloadName,
@@ -250,21 +216,30 @@ func (w *RemoteDedupWriter) Finish() error {
 			nil,
 			w.origSize,
 		)
-		if err != nil {
-			return fmt.Errorf("upload empty payload: %w", err)
-		}
+		return err
 	}
 
-	// Upload metadata (small, buffered — always uploaded last).
-	_, err := w.session.UploadArchive(w.ctx, w.metaName, bytes.NewReader(w.metaBuf.Bytes()))
-	if err != nil {
-		return fmt.Errorf("upload metadata: %w", err)
+	if _, err := w.payloadFile.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek payload temp file: %w", err)
 	}
 
-	return nil
+	_, err = w.session.UploadPayloadWithInjection(
+		w.ctx,
+		w.payloadName,
+		w.origChunks,
+		w.payloadFile,
+		w.origSize,
+	)
+	return err
 }
 
 func (w *RemoteDedupWriter) Close() error {
+	if w.payloadFile != nil {
+		name := w.payloadFile.Name()
+		_ = w.payloadFile.Close()
+		_ = os.Remove(name)
+		w.payloadFile = nil
+	}
 	return nil
 }
 

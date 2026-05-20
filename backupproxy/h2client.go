@@ -374,12 +374,6 @@ func (c *pbsH2Conn) readResponse(streamID uint32) (json.RawMessage, error) {
 	return result.Data, nil
 }
 
-// h2PipelineReq is a pending pipelined H2 request.
-type h2PipelineReq struct {
-	streamID uint32
-	result   chan h2PipelineResult
-}
-
 type h2PipelineResult struct {
 	data json.RawMessage
 	err  error
@@ -567,10 +561,10 @@ func (c *pbsH2Conn) readResponses(streamIDs []uint32) map[uint32]h2PipelineResul
 const initialStreamWindow = 65535
 
 type streamState struct {
-	status         int
-	dataBuf        bytes.Buffer
-	hdrBuf         bytes.Buffer
-	streamWin      int32
+	status          int
+	dataBuf         bytes.Buffer
+	hdrBuf          bytes.Buffer
+	streamWin       int32
 	streamThreshold int32
 }
 

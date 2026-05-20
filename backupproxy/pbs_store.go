@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+
 	"time"
 
 	"github.com/pbs-plus/pxar/buzhash"
@@ -91,7 +92,7 @@ func (p *h2Protocol) pipelineChunkUploads(wid uint64, chunks []chunkUploadReq) e
 		entries[i] = pipelineEntry{
 			method:      "POST",
 			path:        "dynamic_chunk",
-			params:       params,
+			params:      params,
 			body:        c.data,
 			contentType: "application/octet-stream",
 		}
@@ -364,6 +365,7 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 // chunks with new data chunks. The original chunks are already in the datastore,
 // so only their references are appended. The new data is chunked and uploaded.
 // newDataOffset is the byte offset where new data starts in the combined stream.
+
 func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string, origChunks []KnownChunkRef, newData io.Reader, newDataOffset uint64) (*UploadResult, error) {
 	if s.knownChunks == nil {
 		s.knownChunks = make(map[[32]byte]bool, len(origChunks)+16)
@@ -382,11 +384,10 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 
 	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
 
-	totalChunks := len(origChunks)
 	const appendBatchSize = 1024
 
-	batchDigests := make([]string, 0, min(totalChunks+16, appendBatchSize))
-	batchOffsets := make([]uint64, 0, min(totalChunks+16, appendBatchSize))
+	batchDigests := make([]string, 0, appendBatchSize)
+	batchOffsets := make([]uint64, 0, appendBatchSize)
 
 	flushBatch := func() error {
 		if len(batchDigests) == 0 {
@@ -421,13 +422,25 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 		}
 	}
 
-	// Phase 2: Chunk new data, pipeline uploads, batch append references.
+	// Phase 2: Chunk new data via producer-consumer pipeline.
 	//
-	// Mirrors the Rust PBS client's upload_merged_chunk_stream:
-	// - Collect up to pipelineDepth new chunks
-	// - Send all chunk uploads via H2 pipeline (send all, then read all responses)
-	// - Batch index appends
+	// Mirrors Rust's upload_merged_chunk_stream + append_chunk_queue:
+	//   Producer goroutine: chunk + encode (CPU-bound) → channel(64)
+	//   Consumer (main goroutine): upload + append (I/O-bound, owns framer)
+	//
+	// This overlaps CPU work with network I/O. The channel provides
+	// backpressure matching Rust's mpsc::channel(64).
 	const pipelineDepth = 64
+
+	type chunkWork struct {
+		hexDigest string
+		offset    uint64
+		blob      []byte // nil for known chunks (dedup hit)
+		size      int    // uncompressed chunk size
+	}
+
+	workCh := make(chan []chunkWork, pipelineDepth)
+	producerErr := make(chan error, 1)
 
 	newChunkCount := 0
 	if newData != nil {
@@ -435,84 +448,106 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 			totalSize = newDataOffset
 		}
 
-		pendingUploads := make([]chunkUploadReq, 0, pipelineDepth)
-		// Track digests for pending uploads so we can register them after pipeline completes.
-		pendingDigests := make([][32]byte, 0, pipelineDepth)
+		// Producer: chunk + encode blobs, send batches to workCh.
+		go func() {
+			defer close(workCh)
 
-		flushPipeline := func() error {
-			if len(pendingUploads) == 0 {
-				return nil
+			chunker := buzhash.NewChunker(newData, s.chunkCfg)
+			var batch []chunkWork
+
+			for {
+				chunk, err := chunker.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					producerErr <- fmt.Errorf("chunk new data: %w", err)
+					return
+				}
+
+				digest := chunkDigest(chunk, s.config.CryptConfig)
+				chunkOffset := totalSize
+				totalSize += uint64(len(chunk))
+				idx.Add(totalSize, digest)
+
+				hex.Encode(hexBuf[:], digest[:])
+				hexDigest := string(hexBuf[:])
+
+				work := chunkWork{
+					hexDigest: hexDigest,
+					offset:    chunkOffset,
+					size:      len(chunk),
+				}
+
+				if !s.knownChunks[digest] {
+					blobData, encErr := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
+					if encErr != nil {
+						producerErr <- encErr
+						return
+					}
+					work.blob = blobData
+				}
+
+				batch = append(batch, work)
+				if len(batch) >= pipelineDepth {
+					workCh <- batch
+					batch = nil
+				}
 			}
-			if err := s.proto.pipelineChunkUploads(wid, pendingUploads); err != nil {
-				return err
+			if len(batch) > 0 {
+				workCh <- batch
 			}
-			for _, d := range pendingDigests {
+		}()
+
+		// Consumer: upload blobs + batch-append digests.
+		// Runs on the main goroutine — owns the H2 framer, no concurrent frame I/O.
+		for batch := range workCh {
+			// Collect uploads for new (non-dedup) chunks.
+			var uploads []chunkUploadReq
+			for _, w := range batch {
+				if w.blob != nil {
+					uploads = append(uploads, chunkUploadReq{
+						digest:      w.hexDigest,
+						size:        w.size,
+						encodedSize: len(w.blob),
+						data:        w.blob,
+					})
+				}
+			}
+
+			// Upload new chunks (pipelined: send all, read all responses).
+			if len(uploads) > 0 {
+				if err := s.proto.pipelineChunkUploads(wid, uploads); err != nil {
+					return nil, err
+				}
+			}
+
+			// Register uploaded digests as known.
+			for _, u := range uploads {
+				var d [32]byte
+				hex.Decode(d[:], []byte(u.digest))
 				s.knownChunks[d] = true
 			}
-			pendingUploads = pendingUploads[:0]
-			pendingDigests = pendingDigests[:0]
-			return nil
-		}
 
-		chunker := buzhash.NewChunker(newData, s.chunkCfg)
-		for {
-			chunk, err := chunker.Next()
-			if err == io.EOF {
-				break
+			// Append all digests (known + newly uploaded) to index.
+			newChunkCount += len(batch)
+			for _, w := range batch {
+				batchDigests = append(batchDigests, w.hexDigest)
+				batchOffsets = append(batchOffsets, w.offset)
 			}
-			if err != nil {
-				return nil, fmt.Errorf("chunk new data: %w", err)
-			}
-
-			digest := chunkDigest(chunk, s.config.CryptConfig)
-			chunkOffset := totalSize
-			totalSize += uint64(len(chunk))
-			idx.Add(totalSize, digest)
-
-			hex.Encode(hexBuf[:], digest[:])
-			hexDigest := string(hexBuf[:])
-
-			if !s.knownChunks[digest] {
-				blobData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
-				if err != nil {
-					return nil, err
-				}
-
-				pendingUploads = append(pendingUploads, chunkUploadReq{
-					digest:      hexDigest,
-					size:        len(chunk),
-					encodedSize: len(blobData),
-					data:        blobData,
-				})
-				pendingDigests = append(pendingDigests, digest)
-
-				// Flush pipeline when full (mirrors Rust's mpsc::channel(64)).
-				if len(pendingUploads) >= pipelineDepth {
-					if err := flushPipeline(); err != nil {
-						return nil, err
-					}
-				}
-			}
-
-			newChunkCount++
-			batchDigests = append(batchDigests, hexDigest)
-			batchOffsets = append(batchOffsets, chunkOffset)
 
 			if len(batchDigests) >= appendBatchSize {
-				// Flush any pending uploads before appending to avoid deadlock
-				// (append references chunks that must be uploaded first).
-				if err := flushPipeline(); err != nil {
-					return nil, err
-				}
 				if err := flushBatch(); err != nil {
 					return nil, fmt.Errorf("append new chunks: %w", err)
 				}
 			}
 		}
 
-		// Flush remaining pipeline.
-		if err := flushPipeline(); err != nil {
+		// Check for producer errors.
+		select {
+		case err := <-producerErr:
 			return nil, err
+		default:
 		}
 	}
 
@@ -541,7 +576,6 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 
 	return result, nil
 }
-
 func (s *pbsSession) UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error) {
 	metaResult, err := s.UploadArchive(ctx, metadataName, metadataData)
 	if err != nil {

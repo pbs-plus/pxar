@@ -425,13 +425,19 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 
 	// Phase 2: Chunk new data via producer-consumer pipeline.
 	//
-	// Mirrors Rust's upload_merged_chunk_stream + append_chunk_queue:
-	//   Producer goroutine: chunk + encode (CPU-bound) → channel(64)
-	//   Consumer (main goroutine): upload + append (I/O-bound, owns framer)
+	// Mirrors Rust's upload_merged_chunk_stream exactly:
+	//   Producer goroutine: chunk → encode → send individual chunkWork
+	//     through channel(10), matching Rust's sync_channel(10).
+	//   Consumer (main goroutine, owns H2 framer):
+	//     - New chunks: upload individually via H2 POST (like Rust)
+	//     - Accumulate digests, flush to PUT dynamic_index every 64
+	//       (matches Rust's merge_known_chunks threshold of 64)
 	//
-	// This overlaps CPU work with network I/O. The channel provides
-	// backpressure matching Rust's mpsc::channel(64).
-	const pipelineDepth = 64
+	// Memory bounded: 10 chunks × ~4MB avg = ~40MB in-flight.
+	const (
+		chunkChannelDepth   = 10 // Rust: sync_channel(10)
+		knownMergeThreshold = 64 // Rust: merge_known_chunks threshold
+	)
 
 	type chunkWork struct {
 		hexDigest string
@@ -440,7 +446,7 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 		size      int    // uncompressed chunk size
 	}
 
-	workCh := make(chan []chunkWork, pipelineDepth)
+	workCh := make(chan chunkWork, chunkChannelDepth)
 	producerErr := make(chan error, 1)
 
 	newChunkCount := 0
@@ -454,14 +460,13 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 		localKnown := make(map[[32]byte]bool, len(s.knownChunks))
 		maps.Copy(localKnown, s.knownChunks)
 
-		// Producer: chunk + encode blobs, send batches to workCh.
+		// Producer: chunk + encode, send individual items.
+		// Matches Rust's ChunkStream → mpsc::channel(10) flow.
 		producerTotalSize := totalSize
 		go func() {
 			defer close(workCh)
 
 			chunker := buzhash.NewChunker(newData, s.chunkCfg)
-			var batch []chunkWork
-
 			for {
 				chunk, err := chunker.Next()
 				if err == io.EOF {
@@ -496,57 +501,32 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 					localKnown[digest] = true
 				}
 
-				batch = append(batch, work)
-				if len(batch) >= pipelineDepth {
-					workCh <- batch
-					batch = nil
-				}
-			}
-			if len(batch) > 0 {
-				workCh <- batch
+				workCh <- work
 			}
 		}()
 
-		// Consumer: upload blobs + batch-append digests.
-		// Runs on the main goroutine — owns the H2 framer, no concurrent frame I/O.
-		for batch := range workCh {
-			// Collect uploads for new (non-dedup) chunks.
-			var uploads []chunkUploadReq
-			for _, w := range batch {
-				if w.blob != nil {
-					uploads = append(uploads, chunkUploadReq{
-						digest:      w.hexDigest,
-						size:        w.size,
-						encodedSize: len(w.blob),
-						data:        w.blob,
-					})
-				}
-			}
+		// Consumer: upload + append, owns the H2 framer.
+		// Matches Rust's upload_merged_chunk_stream + append_chunk_queue.
+		for work := range workCh {
+			newChunkCount++
 
-			// Upload new chunks (pipelined: send all, read all responses).
-			if len(uploads) > 0 {
-				if err := s.proto.pipelineChunkUploads(wid, uploads); err != nil {
+			if work.blob != nil {
+				// New chunk — upload individually (matches Rust's per-chunk H2 POST).
+				if err := s.proto.dynamicChunkUpload(wid, work.hexDigest, work.size, len(work.blob), work.blob); err != nil {
 					return nil, err
 				}
-			}
-
-			// Register uploaded digests as known.
-			for _, u := range uploads {
 				var d [32]byte
-				hex.Decode(d[:], []byte(u.digest))
+				hex.Decode(d[:], []byte(work.hexDigest))
 				s.knownChunks[d] = true
 			}
 
-			// Append all digests (known + newly uploaded) to index.
-			newChunkCount += len(batch)
-			for _, w := range batch {
-				batchDigests = append(batchDigests, w.hexDigest)
-				batchOffsets = append(batchOffsets, w.offset)
-			}
+			// Accumulate digest for batch append (matches Rust's merge_known_chunks).
+			batchDigests = append(batchDigests, work.hexDigest)
+			batchOffsets = append(batchOffsets, work.offset)
 
-			if len(batchDigests) >= appendBatchSize {
+			if len(batchDigests) >= knownMergeThreshold {
 				if err := flushBatch(); err != nil {
-					return nil, fmt.Errorf("append new chunks: %w", err)
+					return nil, fmt.Errorf("append chunks: %w", err)
 				}
 			}
 		}

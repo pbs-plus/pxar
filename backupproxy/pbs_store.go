@@ -362,20 +362,13 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 	return result, nil
 }
 
-// UploadPayloadWithInjection uploads a payload DIDX that combines original (injected)
-// chunks with new data chunks. The original chunks are already in the datastore,
-// so only their references are appended. The new data is chunked and uploaded.
-// newDataOffset is the byte offset where new data starts in the combined stream.
-
-func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string, origChunks []KnownChunkRef, newData io.Reader, newDataOffset uint64) (*UploadResult, error) {
+func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {
 	if s.knownChunks == nil {
-		s.knownChunks = make(map[[32]byte]bool, len(origChunks)+16)
+		s.knownChunks = make(map[[32]byte]bool, 16)
 	}
 
-	if len(origChunks) > 0 {
-		if _, err := s.proto.downloadPrevious(name); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: download previous for chunk registration: %v\n", err)
-		}
+	if _, err := s.proto.downloadPrevious(name); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: download previous for chunk registration: %v\n", err)
 	}
 
 	wid, err := s.proto.dynamicIndexCreate(name)
@@ -404,64 +397,30 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 
 	var hexBuf [64]byte
 
-	// Phase 1: Append original chunk references (data already in datastore).
 	totalSize := uint64(0)
-	for _, chunk := range origChunks {
-		totalSize += chunk.Size
-		idx.Add(totalSize, chunk.Digest)
+	chunkCount := 0
 
-		hex.Encode(hexBuf[:], chunk.Digest[:])
-		batchDigests = append(batchDigests, string(hexBuf[:]))
-		batchOffsets = append(batchOffsets, totalSize-chunk.Size)
-
-		s.knownChunks[chunk.Digest] = true
-
-		if len(batchDigests) >= appendBatchSize {
-			if err := flushBatch(); err != nil {
-				return nil, fmt.Errorf("append original chunks: %w", err)
-			}
-		}
-	}
-
-	// Phase 2: Chunk new data via producer-consumer pipeline.
-	//
-	// Mirrors Rust's upload_merged_chunk_stream exactly:
-	//   Producer goroutine: chunk → encode → send individual chunkWork
-	//     through channel(10), matching Rust's sync_channel(10).
-	//   Consumer (main goroutine, owns H2 framer):
-	//     - New chunks: upload individually via H2 POST (like Rust)
-	//     - Accumulate digests, flush to PUT dynamic_index every 64
-	//       (matches Rust's merge_known_chunks threshold of 64)
-	//
-	// Memory bounded: 10 chunks × ~4MB avg = ~40MB in-flight.
+	// Producer-consumer pipeline for new data chunks.
 	const (
-		chunkChannelDepth   = 10 // Rust: sync_channel(10)
-		knownMergeThreshold = 64 // Rust: merge_known_chunks threshold
+		chunkChannelDepth   = 10
+		knownMergeThreshold = 64
 	)
 
 	type chunkWork struct {
 		hexDigest string
 		offset    uint64
-		blob      []byte // nil for known chunks (dedup hit)
-		size      int    // uncompressed chunk size
+		blob      []byte
+		size      int
 	}
 
 	workCh := make(chan chunkWork, chunkChannelDepth)
 	producerErr := make(chan error, 1)
-
 	newChunkCount := 0
-	if newData != nil {
-		if newDataOffset > totalSize {
-			totalSize = newDataOffset
-		}
 
-		// Snapshot knownChunks for the producer to avoid a data race
-		// with the consumer goroutine that writes new entries.
+	if newData != nil {
 		localKnown := make(map[[32]byte]bool, len(s.knownChunks))
 		maps.Copy(localKnown, s.knownChunks)
 
-		// Producer: chunk + encode, send individual items.
-		// Matches Rust's ChunkStream → mpsc::channel(10) flow.
 		producerTotalSize := totalSize
 		go func() {
 			defer close(workCh)
@@ -504,14 +463,83 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 				workCh <- work
 			}
 		}()
+	}
 
-		// Consumer: upload + append, owns the H2 framer.
-		// Matches Rust's upload_merged_chunk_stream + append_chunk_queue.
-		for work := range workCh {
+	// Main loop: interleave injected chunks with new data chunks.
+	// New data chunks arrive via workCh; injected chunks arrive via injections.
+	// We process whichever is available, maintaining DIDX offset order.
+	for {
+		// Check for pending injection at current offset.
+		select {
+		case inj, ok := <-injections:
+			if !ok {
+				injections = nil
+			} else {
+				for _, chunk := range inj.Chunks {
+					chunkOffset := totalSize
+					totalSize += chunk.Size
+					chunkCount++
+					idx.Add(totalSize, chunk.Digest)
+
+					hex.Encode(hexBuf[:], chunk.Digest[:])
+					batchDigests = append(batchDigests, string(hexBuf[:]))
+					batchOffsets = append(batchOffsets, chunkOffset)
+
+					s.knownChunks[chunk.Digest] = true
+
+					if len(batchDigests) >= appendBatchSize {
+						if err := flushBatch(); err != nil {
+							return nil, fmt.Errorf("append injected chunks: %w", err)
+						}
+					}
+				}
+				continue
+			}
+		default:
+		}
+
+		// No injection pending — process new data chunk.
+		if newData == nil {
+			break
+		}
+
+		select {
+		case inj, ok := <-injections:
+			if !ok {
+				injections = nil
+			} else {
+				for _, chunk := range inj.Chunks {
+					chunkOffset := totalSize
+					totalSize += chunk.Size
+					chunkCount++
+					idx.Add(totalSize, chunk.Digest)
+
+					hex.Encode(hexBuf[:], chunk.Digest[:])
+					batchDigests = append(batchDigests, string(hexBuf[:]))
+					batchOffsets = append(batchOffsets, chunkOffset)
+
+					s.knownChunks[chunk.Digest] = true
+
+					if len(batchDigests) >= appendBatchSize {
+						if err := flushBatch(); err != nil {
+							return nil, fmt.Errorf("append injected chunks: %w", err)
+						}
+					}
+				}
+			}
+		case work, ok := <-workCh:
+			if !ok {
+				newData = nil
+				select {
+				case err := <-producerErr:
+					return nil, err
+				default:
+				}
+				continue
+			}
 			newChunkCount++
 
 			if work.blob != nil {
-				// New chunk — upload individually (matches Rust's per-chunk H2 POST).
 				if err := s.proto.dynamicChunkUpload(wid, work.hexDigest, work.size, len(work.blob), work.blob); err != nil {
 					return nil, err
 				}
@@ -520,9 +548,10 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 				s.knownChunks[d] = true
 			}
 
-			// Accumulate digest for batch append (matches Rust's merge_known_chunks).
 			batchDigests = append(batchDigests, work.hexDigest)
 			batchOffsets = append(batchOffsets, work.offset)
+
+			totalSize = idx.LastEndOffset()
 
 			if len(batchDigests) >= knownMergeThreshold {
 				if err := flushBatch(); err != nil {
@@ -531,11 +560,8 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 			}
 		}
 
-		// Check for producer errors.
-		select {
-		case err := <-producerErr:
-			return nil, err
-		default:
+		if injections == nil && newData == nil {
+			break
 		}
 	}
 
@@ -547,16 +573,14 @@ func (s *pbsSession) UploadPayloadWithInjection(ctx context.Context, name string
 		return nil, fmt.Errorf("append final batch: %w", err)
 	}
 
-	// Compute final totalSize from the index end offsets.
-	// The entries cover original chunks (Phase 1) + new data chunks (Phase 2).
-	if len(origChunks)+newChunkCount > 0 {
+	if chunkCount+newChunkCount > 0 {
 		totalSize = idx.LastEndOffset()
 	}
 
 	indexDigest := idx.Csum()
 	pbsChecksum := hex.EncodeToString(indexDigest[:])
 
-	if err := s.proto.dynamicIndexClose(wid, len(origChunks)+newChunkCount, totalSize, pbsChecksum); err != nil {
+	if err := s.proto.dynamicIndexClose(wid, chunkCount+newChunkCount, totalSize, pbsChecksum); err != nil {
 		return nil, err
 	}
 

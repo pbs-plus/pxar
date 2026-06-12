@@ -821,11 +821,8 @@ func (e *Encoder) AddPayloadRef(metadata *pxar.Metadata, name string, fileSize u
 	// The correct approach: write the payload data as-is from the original.
 	// But we don't have the original data here — that's the whole point.
 	//
-	// For the "all reused" case, we don't need to write any payload data at
-	// all. We inject the original chunks directly into the DIDX. For the mixed
-	// case, we build the DIDX in two parts. Do NOT advance payloadWritePos
-	// here — the dedup writer calls alignPayload to set the correct position
-	// before writing new data.
+	// InjectChunks advances payloadWritePos per-batch; WriteEntryReader
+	// writes new data after the last injected region.
 
 	endOffset := e.currentState().writePosition
 	s = e.currentState()

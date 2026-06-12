@@ -117,10 +117,13 @@ type BackupSession interface {
 	UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error)
 	UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error)
 	UploadBlob(ctx context.Context, name string, data []byte) error
-	// UploadPayloadWithInjection uploads a payload DIDX combining injected original chunks
-	// with new data chunks. Only new data is actually uploaded.
-	UploadPayloadWithInjection(ctx context.Context, name string, origChunks []KnownChunkRef, newData io.Reader, newDataOffset uint64) (*UploadResult, error)
+	UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error)
 	Finish(ctx context.Context) (*datastore.Manifest, error)
+}
+
+type InjectChunks struct {
+	Chunks []KnownChunkRef
+	Size   uint64
 }
 
 // LocalStore implements RemoteStore using a local filesystem directory.
@@ -269,22 +272,24 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 	return nil
 }
 
-func (s *localSession) UploadPayloadWithInjection(_ context.Context, name string, origChunks []KnownChunkRef, newData io.Reader, newDataOffset uint64) (*UploadResult, error) {
-	// For local store: write a DIDX combining original chunks + new data chunks.
-	// This streams new data through the chunker and uploads to the local chunk store.
+func (s *localSession) UploadPayloadInterleaved(_ context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {
 	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
 	totalSize := uint64(0)
 
-	// Add original chunk references
-	for _, chunk := range origChunks {
-		totalSize += chunk.Size
-		idx.Add(totalSize, chunk.Digest)
-	}
-
-	// Chunk and store new data
 	if newData != nil {
-		_ = newDataOffset
-		// TODO: implement local chunking with offset for new data
+		chunker := buzhash.NewChunker(newData, s.chunkConfig)
+		for {
+			chunk, err := chunker.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("chunk new data: %w", err)
+			}
+			digest := sha256.Sum256(chunk)
+			totalSize += uint64(len(chunk))
+			idx.Add(totalSize, digest)
+		}
 	}
 
 	idxData, err := idx.Finish()

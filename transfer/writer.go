@@ -5,6 +5,7 @@ import (
 	"io"
 
 	pxar "github.com/pbs-plus/pxar"
+	"github.com/pbs-plus/pxar/backupproxy"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
 )
@@ -40,6 +41,13 @@ type ArchiveWriter interface {
 
 	// EndDirectory pops a directory context.
 	EndDirectory() error
+
+	// InjectChunks injects existing chunks at the current encoder position.
+	// The encoder's payload write position is advanced by the total size.
+	InjectChunks(chunks []backupproxy.KnownChunkRef) error
+
+	// Encoder returns the underlying encoder for payload position queries.
+	Encoder() *encoder.Encoder
 
 	// Finish finalizes the archive.
 	Finish() error
@@ -217,6 +225,10 @@ func (w *StreamWriter) Finish() error {
 		w.dirDepth--
 	}
 	return w.enc.Close()
+}
+
+func (w *StreamWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) error {
+	return fmt.Errorf("InjectChunks not supported by StreamWriter")
 }
 
 func (w *StreamWriter) Close() error {

@@ -102,6 +102,10 @@ func (w *SessionWriter) Encoder() *encoder.Encoder {
 	return w.inner.Encoder()
 }
 
+func (w *SessionWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) error {
+	return fmt.Errorf("InjectChunks not supported by SessionWriter")
+}
+
 func (w *SessionWriter) Close() error {
 	var err error
 	for _, c := range w.closers {

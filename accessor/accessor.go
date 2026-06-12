@@ -14,6 +14,12 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
+type readSeekCloser struct {
+	io.ReadSeeker
+}
+
+func (readSeekCloser) Close() error { return nil }
+
 // goodbyeItemPool reuses GoodbyeItem slices across ListDirectory calls.
 var goodbyeItemPool = sync.Pool{
 	New: func() any {
@@ -1044,7 +1050,7 @@ func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, erro
 		// Use ReaderAt path when available — each SectionReader is independent
 		// so concurrent file reads don't race on the shared seek position.
 		if ra, ok := a.payloadReader.(io.ReaderAt); ok {
-			return io.NopCloser(io.NewSectionReader(ra, start, size)), nil
+			return &readSeekCloser{ReadSeeker: io.NewSectionReader(ra, start, size)}, nil
 		}
 
 		if _, err := a.payloadReader.Seek(start, io.SeekStart); err != nil {
@@ -1093,7 +1099,7 @@ func (a *Accessor) ReadFileContentReader(entry *pxar.Entry) (io.ReadCloser, erro
 		case format.PXARPayload:
 			if ra, ok := a.reader.(io.ReaderAt); ok {
 				pos, _ := a.reader.Seek(0, io.SeekCurrent)
-				return io.NopCloser(io.NewSectionReader(ra, pos, int64(h.ContentSize()))), nil
+				return &readSeekCloser{ReadSeeker: io.NewSectionReader(ra, pos, int64(h.ContentSize()))}, nil
 			}
 			return io.NopCloser(io.LimitReader(a.reader, int64(h.ContentSize()))), nil
 		case format.PXARFilename, format.PXARGoodbye:

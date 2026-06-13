@@ -410,27 +410,47 @@ func (a *Accessor) findGoodbyeOffset(dirOffset int64) (int64, error) {
 }
 
 // cacheRootGoodbyeFromEnd computes the root directory's GOODBYE offset
-// by reading the last header in the metadata stream and caches it under
-// contentOffset. For split archives, the root GOODBYE is the final item
-// in the metadata stream, so this is O(1) instead of scanning the entire
-// directory tree.
+// by reading the tail marker from the end of the metadata stream and
+// caches it under contentOffset. The GOODBYE header's size field equals
+// tailMarker.Size (HeaderSize + bstSize * 24), so we back up from the
+// end of the stream to find the GOODBYE header in O(1) instead of
+// scanning the entire directory tree.
 // Caller must hold a.metaMu.
 func (a *Accessor) cacheRootGoodbyeFromEnd(contentOffset int64) {
+	// The last 24 bytes of a pxar metadata stream are always the tail
+	// marker GoodbyeItem (Hash, Offset, Size). The Size field stores
+	// HeaderSize + bstSize*24, which equals the GOODBYE header's Size
+	// field. Back up by that amount to find the GOODBYE header.
 	totalSize, err := a.reader.Seek(0, io.SeekEnd)
-	if err != nil || totalSize < 16 {
+	if err != nil || totalSize < 24+16 {
 		return
 	}
-	if _, err := a.reader.Seek(totalSize-16, io.SeekStart); err != nil {
+	// Read the tail marker (last 24 bytes of the stream).
+	if _, err := a.reader.Seek(totalSize-24, io.SeekStart); err != nil {
+		return
+	}
+	tail := a.growBuf(24)
+	if _, err := io.ReadFull(a.reader, tail); err != nil {
+		return
+	}
+	tailHash := binary.LittleEndian.Uint64(tail[0:])
+	tailSize := binary.LittleEndian.Uint64(tail[16:])
+	if tailHash != format.PXARGoodbyeTailMarker {
+		// Not a valid tail marker — fall back to linear scan in ListDirectory.
+		return
+	}
+	goodbyeOffset := totalSize - int64(tailSize)
+	if goodbyeOffset < 0 || goodbyeOffset+16 > totalSize {
+		return
+	}
+	// Verify the GOODBYE header.
+	if _, err := a.reader.Seek(goodbyeOffset, io.SeekStart); err != nil {
 		return
 	}
 	h, err := a.readHeader()
-	if err != nil {
+	if err != nil || h.Type != format.PXARGoodbye {
 		return
 	}
-	if h.Type != format.PXARGoodbye {
-		return
-	}
-	goodbyeOffset := totalSize - format.HeaderSize - int64(h.Size)
 	a.goodbyeMu.Lock()
 	a.goodbyeCache[contentOffset] = goodbyeOffset
 	a.goodbyeMu.Unlock()

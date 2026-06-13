@@ -2,6 +2,7 @@ package accessor
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -618,5 +619,98 @@ func TestAccessorFollowHardlinkRejectsNonHardlink(t *testing.T) {
 	_, err = acc.FollowHardlink(entry)
 	if err == nil {
 		t.Error("FollowHardlink should reject non-hardlink entries")
+	}
+}
+
+// countingReader wraps an io.ReadSeeker and counts total bytes read.
+type countingReader struct {
+	io.ReadSeeker
+	bytesRead int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.ReadSeeker.Read(p)
+	c.bytesRead += int64(n)
+	return n, err
+}
+
+func (c *countingReader) Seek(offset int64, whence int) (int64, error) {
+	return c.ReadSeeker.Seek(offset, whence)
+}
+
+func (c *countingReader) Reset() { c.bytesRead = 0 }
+
+// TestAccessorRootListNoTreeScan verifies that the first ListDirectory on
+// the root directory does not scan the entire directory tree. The root's
+// GOODBYE offset is computed from the end of the metadata stream in O(1)
+// rather than by scanning through all children recursively.
+func TestAccessorRootListNoTreeScan(t *testing.T) {
+	// Build two split (v2) archives with 3 root entries each:
+	//   deep) 2 files + 1 subdir containing 50 small files
+	//   flat) 3 files (no subdirectory)
+	// If the optimization works, ListDirectory on root reads the same
+	// amount of data for both — the deep subdirectory is never traversed.
+	build := func(t *testing.T, deep bool) (meta, payload []byte) {
+		t.Helper()
+		var mb, pb bytes.Buffer
+		enc := encoder.NewEncoder(&mb, &pb, dirMetadata(0o755), nil)
+		_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "root1.txt", []byte("a"))
+		_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "root2.txt", []byte("b"))
+		if deep {
+			_ = enc.CreateDirectory("subdir", dirMetadata(0o755))
+			for i := range 50 {
+				_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000),
+					fmt.Sprintf("file%02d.txt", i), []byte("x"))
+			}
+			_ = enc.Finish()
+		} else {
+			_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), "root3.txt", []byte("c"))
+		}
+		enc.Close()
+		return mb.Bytes(), pb.Bytes()
+	}
+
+	deepM, deepP := build(t, true)
+	flatM, flatP := build(t, false)
+
+	var deepBytes, flatBytes int64
+
+	for _, tc := range []struct {
+		name string
+		meta []byte
+		pay  []byte
+		dest *int64
+	}{
+		{"deep", deepM, deepP, &deepBytes},
+		{"flat", flatM, flatP, &flatBytes},
+	} {
+		cr := &countingReader{ReadSeeker: bytes.NewReader(tc.meta)}
+		acc := NewAccessor(cr, bytes.NewReader(tc.pay))
+		_, err := acc.ReadRoot()
+		if err != nil {
+			t.Fatalf("%s ReadRoot: %v", tc.name, err)
+		}
+		cr.Reset()
+		rootOff, err := acc.getRootContentOffset()
+		if err != nil {
+			t.Fatalf("%s getRootContentOffset: %v", tc.name, err)
+		}
+		err = acc.ListDirectory(rootOff, ListOption{Minimal: true}, func(e *pxar.Entry) error {
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("%s ListDirectory: %v", tc.name, err)
+		}
+		*tc.dest = cr.bytesRead
+		t.Logf("%s: ListDirectory root bytes read: %d", tc.name, cr.bytesRead)
+	}
+
+	// Both archives have 3 root entries. The deep archive's subdirectory
+	// content must not be traversed — byte counts should be nearly equal.
+	ratio := float64(deepBytes) / float64(flatBytes)
+	if ratio > 1.20 {
+		t.Errorf("deep/flat byte ratio = %.2f; expected ≤ 1.20 "+
+			"(deep=%d flat=%d — subdirectory scan may have triggered)",
+			ratio, deepBytes, flatBytes)
 	}
 }

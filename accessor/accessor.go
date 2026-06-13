@@ -157,8 +157,15 @@ func (a *Accessor) readRootLocked() (*pxar.Entry, error) {
 			return nil, err
 		}
 		switch h2.Type {
-		case format.PXARFilename, format.PXARGoodbye:
+		case format.PXARFilename:
 			entry.ContentOffset = uint64(posBefore)
+			a.cacheRootGoodbyeFromEnd(int64(entry.ContentOffset))
+			return entry, nil
+		case format.PXARGoodbye:
+			entry.ContentOffset = uint64(posBefore)
+			a.goodbyeMu.Lock()
+			a.goodbyeCache[int64(entry.ContentOffset)] = int64(entry.ContentOffset)
+			a.goodbyeMu.Unlock()
 			return entry, nil
 		default:
 			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
@@ -400,6 +407,33 @@ func (a *Accessor) findGoodbyeOffset(dirOffset int64) (int64, error) {
 			}
 		}
 	}
+}
+
+// cacheRootGoodbyeFromEnd computes the root directory's GOODBYE offset
+// by reading the last header in the metadata stream and caches it under
+// contentOffset. For split archives, the root GOODBYE is the final item
+// in the metadata stream, so this is O(1) instead of scanning the entire
+// directory tree.
+// Caller must hold a.metaMu.
+func (a *Accessor) cacheRootGoodbyeFromEnd(contentOffset int64) {
+	totalSize, err := a.reader.Seek(0, io.SeekEnd)
+	if err != nil || totalSize < 16 {
+		return
+	}
+	if _, err := a.reader.Seek(totalSize-16, io.SeekStart); err != nil {
+		return
+	}
+	h, err := a.readHeader()
+	if err != nil {
+		return
+	}
+	if h.Type != format.PXARGoodbye {
+		return
+	}
+	goodbyeOffset := totalSize - format.HeaderSize - int64(h.Size)
+	a.goodbyeMu.Lock()
+	a.goodbyeCache[contentOffset] = goodbyeOffset
+	a.goodbyeMu.Unlock()
 }
 
 // skipChildEntry skips a complete child entry (ENTRY header + stat + all content).

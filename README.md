@@ -20,6 +20,7 @@ This library is organized into focused packages:
 | `datastore`   | Chunk storage, blob encoding, indexes, backup catalogs     |
 | `binarytree`  | Binary search tree permutation for goodbye tables          |
 | `fusefs`      | Read-only FUSE filesystem over pxar archives               |
+| `vfs`         | Offset-based remote filesystem with RPC transport          |
 | `backupproxy` | Pull-mode backup architecture with pluggable transport     |
 
 ## Installation
@@ -338,10 +339,10 @@ hits, total := writer.DedupStats()
 fmt.Printf("%d/%d payload chunks reused\n", hits, total)
 ```
 
-For PBS remote stores, `RemoteDedupWriter` injects original chunks via `UploadPayloadWithInjection`, uploading only new data:
+For PBS remote stores, `RemoteDedupWriter` injects original chunks via `UploadPayloadInterleaved`, uploading only new data:
 
 ```go
-writer, _ := transfer.NewRemoteDedupWriter(ctx, session, metaName, payloadName, origDidxBytes)
+writer, _ := transfer.NewRemoteDedupWriter(ctx, session, metaName, payloadName)
 writer.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2})
 writer.WriteEntryRef(entry, payloadOffset) // monotonic offset validated
 writer.Finish()
@@ -557,7 +558,7 @@ The library supports three crypt modes:
 | ------------------- | -------------------------------------------------------------------------- |
 | `CryptModeNone`     | No encryption or signing (default)                                         |
 | `CryptModeEncrypt`  | AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing         |
-| `CryptModeSignOnly` | No encryption, but HMAC-SHA256 manifest signing for integrity verification |
+| `CryptModeSign`     | No encryption, but HMAC-SHA256 manifest signing for integrity verification |
 
 Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM (12-byte nonce, empty AAD) for chunk encryption. Manifests are always signed when a `CryptConfig` is provided — they are never encrypted, since PBS must be able to read the manifest. Chunk digests in encrypted mode use `SHA-256(data || id_key)` to prevent cross-key collisions.
 
@@ -594,7 +595,7 @@ type BackupSession interface {
     UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error)
     UploadSplitArchive(ctx context.Context, ...) (*SplitArchiveResult, error)
     UploadBlob(ctx context.Context, name string, data []byte) error
-    UploadPayloadWithInjection(ctx context.Context, ...) (*UploadResult, error)
+    UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error)
     Finish(ctx context.Context) (*datastore.Manifest, error)
 }
 ```
@@ -808,7 +809,7 @@ target, _ := sess.Readlink(symlinkInode)
   - `MetaIndexData()`, `PayloadIndexData()` — index results
   - Not a full `ArchiveWriter` — lacks `WriteEntryRef`
 - **`RemoteDedupWriter`** — PBS remote dedup with chunk injection
-  - `NewRemoteDedupWriter(ctx, session, metaName, payloadName, origDidxBytes)`
+  - `NewRemoteDedupWriter(ctx, session, metaName, payloadName)`
   - `Encoder()`, `AdvancePayloadPosition(n)` — direct encoder access
 - **`SessionWriter`** — uploads via BackupSession
   - `NewSessionWriter(ctx, session, metaName, payloadName)`
@@ -883,12 +884,12 @@ target, _ := sess.Readlink(symlinkInode)
   - `KeyConfig`, `KeyDerivationConfig`, `UnprotectedInfo` — key file structures
   - `CreateRandomKey()`, `GenerateKeyFile(password)`, `LoadKeyFile(data, password)`, `LoadKeyFileNoPassword(data)`
   - `SignManifest(manifest, cc)`, `VerifyManifestSignature(manifest, cc)`
-  - `CryptMode` constants: `CryptModeNone`, `CryptModeEncrypt`, `CryptModeSignOnly`
+  - `CryptMode` constants: `CryptModeNone`, `CryptModeEncrypt`, `CryptModeSign`
   - `IsEncryptedMagic(magic)`, `IsCompressedMagic(magic)`, `BlobHeaderSizeFor(magic)`
 
 - **Backup Catalogs**
-  - `BuildCatalogFast(payloadIdx, metaIdx, source, opts)` → `(*Catalog, *DirIndex, error)` — parallel extraction
-  - `BuildDirIndex(metaIdx, source, opts)` → `(*DirIndex, error)` — directory index
+  - `BuildCatalogFast(metaIdx, source, opts)` → `(*Catalog, error)` — parallel extraction
+  - `BuildDirIndex(metaIdx, source, opts)` → `(*BuildResult, error)` — directory index
   - `OnDemandCatalog` — lazy catalog with `HasDir`, `DirPaths`, `NumDirs`, `ListDir`
   - `CatalogChild` — lightweight entry (name, type, size, mtime)
   - `CatalogWriter` / `CatalogReader` — pcat1 binary catalog serialization
@@ -937,7 +938,7 @@ target, _ := sess.Readlink(symlinkInode)
 - **`RemoteStore`** — storage backend interface (session + snapshot reader)
   - `RemoteStoreBase` (StartSession), `SnapshotReader` (ReadPreviousArchive, NewPreviousSnapshotSource)
 - **`BackupSession`** — upload session interface
-  - `UploadArchive`, `UploadSplitArchive`, `UploadBlob`, `UploadPayloadWithInjection`, `Finish`
+  - `UploadArchive`, `UploadSplitArchive`, `UploadBlob`, `UploadPayloadInterleaved`, `Finish`
 - **`KnownChunkRef`** — reference to a chunk already in the datastore (Digest + Size)
 - **`UploadResult`** — upload outcome (Filename, Size, Digest)
 - **`SplitArchiveResult`** — split upload outcome (Meta + Payload UploadResult)

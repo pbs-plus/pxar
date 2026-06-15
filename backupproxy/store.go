@@ -121,9 +121,19 @@ type BackupSession interface {
 	Finish(ctx context.Context) (*datastore.Manifest, error)
 }
 
+// InjectChunks describes a batch of reused chunks to inject into the payload
+// stream at a specific offset.
+//
+// Boundary is the absolute payload-stream offset (encoder.PayloadPosition)
+// at which the injection occurs, before the encoder is advanced by Size.
+// It mirrors the `boundary` field of pbs-client's InjectChunks and is what
+// the payload chunker uses to interleave injected chunks with new data in
+// the correct offset order. Without it the new-data and injected-chunk
+// offsets drift apart, producing server errors like "strange chunk offset".
 type InjectChunks struct {
-	Chunks []KnownChunkRef
-	Size   uint64
+	Chunks   []KnownChunkRef
+	Size     uint64
+	Boundary uint64
 }
 
 // LocalStore implements RemoteStore using a local filesystem directory.
@@ -273,36 +283,71 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 }
 
 func (s *localSession) UploadPayloadInterleaved(_ context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {
-	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
-	totalSize := uint64(0)
-
-	if newData != nil {
-		chunker := buzhash.NewChunker(newData, s.chunkConfig)
-		for {
-			chunk, err := chunker.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, fmt.Errorf("chunk new data: %w", err)
-			}
-			digest := sha256.Sum256(chunk)
-			totalSize += uint64(len(chunk))
-			idx.Add(totalSize, digest)
-		}
+	sink := &localPayloadSink{
+		session:    s,
+		idx:        datastore.NewDynamicIndexWriter(time.Now().Unix()),
+		localKnown: make(map[[32]byte]bool),
+	}
+	totalSize, err := interleavePayload(s.chunkConfig, newData, injections, sink)
+	if err != nil {
+		return nil, err
 	}
 
-	idxData, err := idx.Finish()
+	raw, err := sink.idx.Finish()
 	if err != nil {
 		return nil, fmt.Errorf("finish index: %w", err)
 	}
-
-	idxPath := filepath.Join(s.baseDir, name)
-	if err := os.WriteFile(idxPath, idxData, 0o644); err != nil {
+	indexPath := filepath.Join(s.baseDir, name)
+	if err := os.WriteFile(indexPath, raw, 0o644); err != nil {
 		return nil, fmt.Errorf("write index: %w", err)
 	}
 
-	return &UploadResult{Filename: name, Size: totalSize}, nil
+	indexDigest := sink.idx.Csum()
+	result := &UploadResult{
+		Filename: name,
+		Size:     totalSize,
+		Digest:   indexDigest,
+	}
+	addFileInfo(&s.files, name, totalSize, indexDigest, string(s.config.CryptMode))
+	return result, nil
+}
+
+// localPayloadSink implements payloadSink for a local chunk store. New chunks
+// are stored via the ChunkStore and every chunk is recorded in one shared
+// DynamicIndexWriter, matching the PBS path's offset accounting.
+type localPayloadSink struct {
+	session    *localSession
+	idx        *datastore.DynamicIndexWriter
+	localKnown map[[32]byte]bool
+}
+
+func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	digest := chunkDigest(raw, s.session.config.CryptConfig)
+	if !s.localKnown[digest] {
+		storeData, err := encodeChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
+		if err != nil {
+			return err
+		}
+		if _, _, err := s.session.store.InsertChunk(digest, storeData); err != nil {
+			return fmt.Errorf("store chunk: %w", err)
+		}
+		s.localKnown[digest] = true
+	}
+	endOffset := offset + uint64(len(raw))
+	s.idx.Add(endOffset, digest)
+	return nil
+}
+
+func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
+	cur := offset
+	for _, c := range inj.Chunks {
+		s.idx.Add(cur+c.Size, c.Digest)
+		cur += c.Size
+	}
+	return nil
 }
 
 func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {

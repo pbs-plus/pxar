@@ -175,12 +175,21 @@ func (w *RemoteDedupWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) err
 		return fmt.Errorf("encoder not initialized")
 	}
 
+	// Boundary is the absolute payload offset at which the injection occurs.
+	// It must be captured from the encoder BEFORE advancing, matching the
+	// Rust encoder's `injection_boundary = encoder.payload_position()` taken
+	// before `encoder.advance(size)`. The payload chunker uses it to splice
+	// injected chunks into the stream at the right place so offsets stay in
+	// sync with the rest of the archive.
+	boundary := enc.PayloadPosition()
+
 	w.flushPayload()
 
 	w.eventCh <- streamEvent{
 		injection: &backupproxy.InjectChunks{
-			Chunks: chunks,
-			Size:   totalSize,
+			Chunks:   chunks,
+			Size:     totalSize,
+			Boundary: boundary,
 		},
 	}
 

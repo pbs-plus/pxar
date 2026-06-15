@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/url"
 	"os"
 	"strconv"
@@ -376,211 +375,26 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 		return nil, err
 	}
 
-	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
-
-	const appendBatchSize = 1024
-
-	batchDigests := make([]string, 0, appendBatchSize)
-	batchOffsets := make([]uint64, 0, appendBatchSize)
-
-	flushBatch := func() error {
-		if len(batchDigests) == 0 {
-			return nil
-		}
-		if err := s.proto.dynamicIndexAppend(wid, batchDigests, batchOffsets); err != nil {
-			return err
-		}
-		batchDigests = batchDigests[:0]
-		batchOffsets = batchOffsets[:0]
-		return nil
+	sink := &pbsPayloadSink{
+		session: s,
+		proto:   s.proto,
+		wid:     wid,
+		idx:     datastore.NewDynamicIndexWriter(time.Now().Unix()),
 	}
-
-	var hexBuf [64]byte
-
-	totalSize := uint64(0)
-	chunkCount := 0
-
-	// Producer-consumer pipeline for new data chunks.
-	const (
-		chunkChannelDepth   = 10
-		knownMergeThreshold = 64
-	)
-
-	type chunkWork struct {
-		hexDigest string
-		offset    uint64
-		blob      []byte
-		size      int
+	totalSize, err := interleavePayload(s.chunkCfg, newData, injections, sink)
+	if err != nil {
+		return nil, err
 	}
-
-	workCh := make(chan chunkWork, chunkChannelDepth)
-	producerErr := make(chan error, 1)
-	newChunkCount := 0
-
-	if newData != nil {
-		localKnown := make(map[[32]byte]bool, len(s.knownChunks))
-		maps.Copy(localKnown, s.knownChunks)
-
-		producerTotalSize := totalSize
-		go func() {
-			defer close(workCh)
-
-			chunker := buzhash.NewChunker(newData, s.chunkCfg)
-			for {
-				chunk, err := chunker.Next()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					producerErr <- fmt.Errorf("chunk new data: %w", err)
-					return
-				}
-
-				digest := chunkDigest(chunk, s.config.CryptConfig)
-				chunkOffset := producerTotalSize
-				producerTotalSize += uint64(len(chunk))
-				idx.Add(producerTotalSize, digest)
-
-				hex.Encode(hexBuf[:], digest[:])
-				hexDigest := string(hexBuf[:])
-
-				work := chunkWork{
-					hexDigest: hexDigest,
-					offset:    chunkOffset,
-					size:      len(chunk),
-				}
-
-				if !localKnown[digest] {
-					blobData, encErr := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
-					if encErr != nil {
-						producerErr <- encErr
-						return
-					}
-					work.blob = blobData
-					localKnown[digest] = true
-				}
-
-				workCh <- work
-			}
-		}()
-	}
-
-	// Main loop: interleave injected chunks with new data chunks.
-	// New data chunks arrive via workCh; injected chunks arrive via injections.
-	// We process whichever is available, maintaining DIDX offset order.
-	for {
-		// Check for pending injection at current offset.
-		select {
-		case inj, ok := <-injections:
-			if !ok {
-				injections = nil
-			} else {
-				for _, chunk := range inj.Chunks {
-					chunkOffset := totalSize
-					totalSize += chunk.Size
-					chunkCount++
-					idx.Add(totalSize, chunk.Digest)
-
-					hex.Encode(hexBuf[:], chunk.Digest[:])
-					batchDigests = append(batchDigests, string(hexBuf[:]))
-					batchOffsets = append(batchOffsets, chunkOffset)
-
-					s.knownChunks[chunk.Digest] = true
-
-					if len(batchDigests) >= appendBatchSize {
-						if err := flushBatch(); err != nil {
-							return nil, fmt.Errorf("append injected chunks: %w", err)
-						}
-					}
-				}
-				continue
-			}
-		default:
-		}
-
-		// No injection pending — process new data chunk.
-		if newData == nil {
-			break
-		}
-
-		select {
-		case inj, ok := <-injections:
-			if !ok {
-				injections = nil
-			} else {
-				for _, chunk := range inj.Chunks {
-					chunkOffset := totalSize
-					totalSize += chunk.Size
-					chunkCount++
-					idx.Add(totalSize, chunk.Digest)
-
-					hex.Encode(hexBuf[:], chunk.Digest[:])
-					batchDigests = append(batchDigests, string(hexBuf[:]))
-					batchOffsets = append(batchOffsets, chunkOffset)
-
-					s.knownChunks[chunk.Digest] = true
-
-					if len(batchDigests) >= appendBatchSize {
-						if err := flushBatch(); err != nil {
-							return nil, fmt.Errorf("append injected chunks: %w", err)
-						}
-					}
-				}
-			}
-		case work, ok := <-workCh:
-			if !ok {
-				newData = nil
-				select {
-				case err := <-producerErr:
-					return nil, err
-				default:
-				}
-				continue
-			}
-			newChunkCount++
-
-			if work.blob != nil {
-				if err := s.proto.dynamicChunkUpload(wid, work.hexDigest, work.size, len(work.blob), work.blob); err != nil {
-					return nil, err
-				}
-				var d [32]byte
-				hex.Decode(d[:], []byte(work.hexDigest))
-				s.knownChunks[d] = true
-			}
-
-			batchDigests = append(batchDigests, work.hexDigest)
-			batchOffsets = append(batchOffsets, work.offset)
-
-			totalSize = idx.LastEndOffset()
-
-			if len(batchDigests) >= knownMergeThreshold {
-				if err := flushBatch(); err != nil {
-					return nil, fmt.Errorf("append chunks: %w", err)
-				}
-			}
-		}
-
-		if injections == nil && newData == nil {
-			break
-		}
-	}
-
-	if _, err := idx.Finish(); err != nil {
-		return nil, fmt.Errorf("finish index: %w", err)
-	}
-
-	if err := flushBatch(); err != nil {
+	if err := sink.flushBatch(); err != nil {
 		return nil, fmt.Errorf("append final batch: %w", err)
 	}
 
-	if chunkCount+newChunkCount > 0 {
-		totalSize = idx.LastEndOffset()
+	if _, err := sink.idx.Finish(); err != nil {
+		return nil, fmt.Errorf("finish index: %w", err)
 	}
-
-	indexDigest := idx.Csum()
+	indexDigest := sink.idx.Csum()
 	pbsChecksum := hex.EncodeToString(indexDigest[:])
-
-	if err := s.proto.dynamicIndexClose(wid, chunkCount+newChunkCount, totalSize, pbsChecksum); err != nil {
+	if err := s.proto.dynamicIndexClose(wid, sink.chunkCount, totalSize, pbsChecksum); err != nil {
 		return nil, err
 	}
 
@@ -589,10 +403,95 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 		Size:     totalSize,
 		Digest:   indexDigest,
 	}
-
 	addFileInfo(&s.files, name, totalSize, indexDigest, string(s.config.CryptMode))
-
 	return result, nil
+}
+
+// pbsPayloadSink implements payloadSink for the PBS backup protocol. It uploads
+// unknown chunks, batches dynamic-index appends, and records every chunk (new,
+// dedup-known, and injected) in one shared DynamicIndexWriter so the index and
+// its checksum match proxmox-backup's compute_csum (end_offset || digest).
+type pbsPayloadSink struct {
+	session *pbsSession
+	proto   pbsBackupProtocol
+	wid     uint64
+	idx     *datastore.DynamicIndexWriter
+
+	batchDigests []string
+	batchOffsets []uint64
+	chunkCount   int
+
+	localKnown map[[32]byte]bool
+	hexBuf     [64]byte
+}
+
+const pbsAppendBatchSize = 1024
+
+func (s *pbsPayloadSink) flushBatch() error {
+	if len(s.batchDigests) == 0 {
+		return nil
+	}
+	if err := s.proto.dynamicIndexAppend(s.wid, s.batchDigests, s.batchOffsets); err != nil {
+		return err
+	}
+	s.batchDigests = s.batchDigests[:0]
+	s.batchOffsets = s.batchOffsets[:0]
+	return nil
+}
+
+// appendIndex records one chunk at [offset, offset+size) in the shared index.
+// The local index stores end offsets (matching PBS add_chunk); the server
+// appends the start offset. This keeps the index checksum identical to PBS.
+func (s *pbsPayloadSink) appendIndex(offset uint64, digest [32]byte, size uint64) error {
+	endOffset := offset + size
+	s.idx.Add(endOffset, digest)
+	hex.Encode(s.hexBuf[:], digest[:])
+	s.batchDigests = append(s.batchDigests, string(s.hexBuf[:]))
+	s.batchOffsets = append(s.batchOffsets, offset)
+	s.chunkCount++
+	if len(s.batchDigests) >= pbsAppendBatchSize {
+		return s.flushBatch()
+	}
+	return nil
+}
+
+func (s *pbsPayloadSink) putRaw(offset uint64, raw []byte) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	if s.localKnown == nil {
+		s.localKnown = make(map[[32]byte]bool, len(s.session.knownChunks))
+		for d := range s.session.knownChunks {
+			s.localKnown[d] = true
+		}
+	}
+	digest := chunkDigest(raw, s.session.config.CryptConfig)
+	if s.localKnown[digest] || s.session.knownChunks[digest] {
+		return s.appendIndex(offset, digest, uint64(len(raw)))
+	}
+	blob, err := encodeChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
+	if err != nil {
+		return err
+	}
+	hex.Encode(s.hexBuf[:], digest[:])
+	if err := s.proto.dynamicChunkUpload(s.wid, string(s.hexBuf[:]), len(raw), len(blob), blob); err != nil {
+		return err
+	}
+	s.localKnown[digest] = true
+	s.session.knownChunks[digest] = true
+	return s.appendIndex(offset, digest, uint64(len(raw)))
+}
+
+func (s *pbsPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
+	cur := offset
+	for _, c := range inj.Chunks {
+		s.session.knownChunks[c.Digest] = true
+		if err := s.appendIndex(cur, c.Digest, c.Size); err != nil {
+			return err
+		}
+		cur += c.Size
+	}
+	return s.flushBatch()
 }
 func (s *pbsSession) UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error) {
 	metaResult, err := s.UploadArchive(ctx, metadataName, metadataData)

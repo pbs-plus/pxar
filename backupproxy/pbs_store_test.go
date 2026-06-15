@@ -52,7 +52,9 @@ func (m *mockPBSProtocol) dynamicIndexCreate(archiveName string) (uint64, error)
 
 func (m *mockPBSProtocol) dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error {
 	if _, exists := m.chunks[digest]; !exists {
-		m.chunks[digest] = data
+		// Copy: the real protocol serialises the bytes over the wire; the mock
+		// simulates a server-side store and must own an independent copy.
+		m.chunks[digest] = append([]byte(nil), data...)
 	}
 	if idx, ok := m.indexes[wid]; ok {
 		idx.chunks = append(idx.chunks, mockChunkRef{digest: digest})

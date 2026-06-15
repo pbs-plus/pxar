@@ -44,6 +44,28 @@ func encodeChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) ([]
 	return result, nil
 }
 
+// borrowChunkBlob encodes a chunk as a PBS blob into a pooled buffer and returns
+// the encoded slice together with the pool handle. The encoded slice aliases
+// the pooled buffer — callers MUST consume it synchronously and then call
+// datastore.PutBlobBuf(bp). This eliminates the per-chunk copy that
+// encodeChunkBlob performs, which is the dominant allocation in the upload
+// hot path (the blob is always consumed synchronously: HTTP/2 framer write for
+// remote uploads, os.WriteFile for local chunk stores).
+func borrowChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) (encoded []byte, bp *[]byte, err error) {
+	bp = datastore.BlobBufPool.Get().(*[]byte)
+	dst := (*bp)[:0]
+	if cc != nil {
+		encoded, err = datastore.EncodeEncryptedBlobTo(dst, chunk, cc, compress)
+	} else {
+		encoded, err = encodeChunkBlobTo(dst, chunk, compress)
+	}
+	if err != nil {
+		datastore.PutBlobBuf(bp)
+		return nil, nil, err
+	}
+	return encoded, bp, nil
+}
+
 // encodeChunkBlobTo encodes a chunk as a PBS blob into dst, without allocating.
 // The returned slice is a sub-slice of the provided buffer.
 func encodeChunkBlobTo(dst []byte, chunk []byte, compress bool) ([]byte, error) {
@@ -202,13 +224,14 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 
 		digest := chunkDigest(chunk, s.config.CryptConfig)
 
-		storeData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
+		storeData, bp, err := borrowChunkBlob(chunk, s.compress, s.config.CryptConfig)
 		if err != nil {
 			return nil, err
 		}
-
-		if _, _, err := s.store.InsertChunk(digest, storeData); err != nil {
-			return nil, fmt.Errorf("store chunk: %w", err)
+		_, _, insErr := s.store.InsertChunk(digest, storeData)
+		datastore.PutBlobBuf(bp)
+		if insErr != nil {
+			return nil, fmt.Errorf("store chunk: %w", insErr)
 		}
 
 		totalOffset += uint64(len(chunk))
@@ -327,12 +350,14 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 	}
 	digest := chunkDigest(raw, s.session.config.CryptConfig)
 	if !s.localKnown[digest] {
-		storeData, err := encodeChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
+		storeData, bp, err := borrowChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
 		if err != nil {
 			return err
 		}
-		if _, _, err := s.session.store.InsertChunk(digest, storeData); err != nil {
-			return fmt.Errorf("store chunk: %w", err)
+		_, _, insErr := s.session.store.InsertChunk(digest, storeData)
+		datastore.PutBlobBuf(bp)
+		if insErr != nil {
+			return fmt.Errorf("store chunk: %w", insErr)
 		}
 		s.localKnown[digest] = true
 	}

@@ -3,9 +3,17 @@ package backupproxy
 import (
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/pbs-plus/pxar/buzhash"
 )
+
+// chunkBufPool reuses the payload-chunking backing slab across uploads so the
+// large (~272 KiB) buffer is amortised to zero allocations after warmup. The
+// pool stores *[]byte so the full-capacity slice header survives Get/Put.
+var chunkBufPool = sync.Pool{
+	New: func() any { bp := make([]byte, 0, 1); return &bp },
+}
 
 // payloadSink receives emitted chunks during interleaved payload upload. It is
 // the seam between the shared boundary-aware interleaving logic and the
@@ -50,42 +58,76 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 		return totalSize, nil
 	}
 
-	// Pump raw payload bytes from newData into a selectable channel so the
-	// chunking loop can interleave injected chunks without ever blocking on a
-	// read while an injection is pending. This decouples the (blocking) io.Reader
-	// from the boundary-aware chunker, mirroring how the Rust async ChunkStream
-	// polls its input stream and a separate boundaries channel concurrently.
+	// Reusable backing buffer for the entire stream. Raw payload bytes are
+	// read directly into its free tail capacity and compacted (unconsumed data
+	// slid to the front) when the consumed prefix grows, so there are zero
+	// per-read allocations. This mirrors the zero-alloc Chunker design (one buf
+	// + one spill slab) instead of allocating a fresh 256 KiB buffer per Read
+	// and copying via append.
 	const readSize = 256 * 1024
-	rawCh := make(chan []byte, 4)
-	readErr := make(chan error, 1)
-	go func() {
-		defer close(rawCh)
-		for {
-			buf := make([]byte, readSize)
-			n, e := newData.Read(buf)
-			if n > 0 {
-				rawCh <- buf[:n]
-			}
-			if e != nil {
-				if e != io.EOF {
-					readErr <- e
-				}
-				return
-			}
-		}
-	}()
+	bufCap := readSize + cfg.MaxChunkSize
 
-	scanner := buzhash.NewScanner(cfg)
+	// Pool the backing slab across uploads: a backup session calls this once
+	// per archive, so the pool amortises the large allocation to effectively
+	// zero after warmup. Pool stores a *[]byte so the full-capacity header is
+	// preserved across Get/Put (a plain []byte would lose capacity when Put as
+	// a sub-slice).
+	bp := chunkBufPool.Get().(*[]byte)
+	if cap(*bp) < bufCap {
+		*bp = make([]byte, bufCap)
+	}
+	backing := (*bp)[:bufCap]
+	defer chunkBufPool.Put(bp)
+	var bufStart, bufEnd int // valid unconsumed data = backing[bufStart:bufEnd]
+
+	var scanner buzhash.Scanner
+	scanner.Config = cfg
+
 	var (
-		buffer    []byte
-		scanPos   int
-		pending   *InjectChunks
-		injClosed bool
-		rawDone   bool
+		scanPos    int
+		pending    InjectChunks
+		hasPending bool
+		injClosed  bool
+		rawDone    bool
 	)
 
+	// readMore reads raw bytes directly into backing's free tail, compacting
+	// first to reclaim the consumed prefix. This replaces the per-read
+	// make([]byte, readSize) + channel-send + append-copy of the old design.
+	readMore := func() error {
+		if bufStart > 0 {
+			if bufEnd > bufStart {
+				copy(backing, backing[bufStart:bufEnd])
+			}
+			bufEnd -= bufStart
+			bufStart = 0
+		}
+		if cap(backing)-bufEnd < readSize {
+			// Carryover alone exceeds capacity (only when MaxChunkSize is huge);
+			// grow the slab and remember it in the pooled header so a larger
+			// buffer is reused on the next call.
+			newCap := cap(backing)
+			for newCap < bufEnd+readSize {
+				newCap *= 2
+			}
+			nb := make([]byte, newCap)
+			copy(nb, backing[:bufEnd])
+			backing = nb
+			*bp = nb
+		}
+		n, e := newData.Read(backing[bufEnd:cap(backing)])
+		bufEnd += n
+		if e != nil {
+			if e != io.EOF {
+				return e
+			}
+			rawDone = true
+		}
+		return nil
+	}
+
 	peekInjection := func() {
-		if pending != nil || injClosed {
+		if hasPending || injClosed {
 			return
 		}
 		select {
@@ -93,16 +135,17 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 			if !ok {
 				injClosed = true
 			} else {
-				pending = &inj
+				pending = inj
+				hasPending = true
 			}
 		default:
 		}
 	}
 
 	applyInjection := func() error {
-		inj := *pending
-		boundary := pending.Boundary
-		pending = nil
+		inj := pending
+		boundary := inj.Boundary
+		hasPending = false
 		if err := sink.putInjection(boundary, inj); err != nil {
 			return err
 		}
@@ -113,15 +156,21 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 	for {
 		peekInjection()
 
-		// Determine the next natural chunk boundary within the unscanned buffer,
-		// as a full-stream offset (totalSize + position within buffer).
+		// Snapshot the valid (unconsumed) window into the reusable backing slab.
+		// All chunk slices handed to the sink reference this slab; the sink must
+		// consume them synchronously (the existing contract) since the slab is
+		// compacted/overwritten on the next read.
+		valid := backing[bufStart:bufEnd]
+
+		// Determine the next natural chunk boundary within the unscanned window,
+		// as a full-stream offset (totalSize + position within valid).
 		pos := 0
-		if scanPos < len(buffer) {
-			pos = scanner.Scan(buffer[scanPos:])
+		if scanPos < len(valid) {
+			pos = scanner.Scan(valid[scanPos:])
 		}
 		var chunkBoundary uint64
 		if pos == 0 {
-			chunkBoundary = totalSize + uint64(len(buffer))
+			chunkBoundary = totalSize + uint64(len(valid))
 		} else {
 			chunkBoundary = totalSize + uint64(scanPos+pos)
 		}
@@ -130,20 +179,20 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 		// boundary handling: emit the real bytes up to the boundary (skipping if
 		// empty), then apply the injected chunks. This guarantees injected
 		// chunks start exactly at offset == inj.Boundary.
-		if pending != nil {
+		if hasPending {
 			if pending.Boundary < totalSize {
 				return 0, fmt.Errorf("invalid injection boundary %d < offset %d", pending.Boundary, totalSize)
 			}
 			if pending.Boundary <= chunkBoundary {
 				splitLen := pending.Boundary - totalSize
 				if splitLen > 0 {
-					if err := sink.putRaw(totalSize, buffer[:splitLen]); err != nil {
+					if err := sink.putRaw(totalSize, valid[:splitLen]); err != nil {
 						return 0, err
 					}
 					totalSize += splitLen
-					buffer = buffer[splitLen:]
-				} else if len(buffer) > 0 {
-					buffer = buffer[0:0]
+					bufStart += int(splitLen)
+				} else if bufStart < bufEnd {
+					bufStart = bufEnd
 				}
 				scanPos = 0
 				scanner.Reset()
@@ -159,28 +208,30 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 		// No forced boundary applies yet — emit a natural chunk if one was found.
 		if pos != 0 {
 			chunkLen := scanPos + pos
-			if err := sink.putRaw(totalSize, buffer[:chunkLen]); err != nil {
+			if err := sink.putRaw(totalSize, valid[:chunkLen]); err != nil {
 				return 0, err
 			}
 			totalSize += uint64(chunkLen)
-			buffer = buffer[chunkLen:]
+			bufStart += chunkLen
 			scanPos = 0
 			scanner.Reset()
 			continue
 		}
 
-		// No boundary in the current buffer — need more data. Mark scanned range
+		// No boundary in the current window — need more data. Mark scanned range
 		// and read more raw bytes (or apply pending injection at stream end).
-		scanPos = len(buffer)
+		scanPos = len(valid)
 
-		if pending != nil && rawDone {
+		if hasPending && rawDone {
 			// Stream ended but a forced boundary still lies ahead: emit the
 			// remaining tail, then the injection.
-			if err := sink.putRaw(totalSize, buffer); err != nil {
-				return 0, err
+			if len(valid) > 0 {
+				if err := sink.putRaw(totalSize, valid); err != nil {
+					return 0, err
+				}
+				totalSize += uint64(len(valid))
+				bufStart = bufEnd
 			}
-			totalSize += uint64(len(buffer))
-			buffer = buffer[0:0]
 			scanPos = 0
 			if err := applyInjection(); err != nil {
 				return 0, err
@@ -196,7 +247,7 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 			// Raw stream finished: drain remaining injections non-blockingly (each
 			// must now be at totalSize, since all preceding raw bytes are emitted).
 			peekInjection()
-			if pending != nil {
+			if hasPending {
 				if pending.Boundary != totalSize {
 					return 0, fmt.Errorf("invalid injection boundary %d != offset %d", pending.Boundary, totalSize)
 				}
@@ -208,36 +259,27 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 			break
 		}
 
-		// Block only for more raw payload bytes. Injections are received
-		// non-blockingly via peekInjection at the top of the loop — this mirrors
-		// the Rust ChunkStream, which polls its byte stream (blocking) and peeks
-		// the boundaries channel (try_recv, non-blocking). Receiving an injection
-		// here while one is already pending would wrongly apply it before its
-		// boundary, so the boundaries channel is never selected directly.
-		b, ok := <-rawCh
-		if !ok {
-			rawDone = true
-			select {
-			case e := <-readErr:
-				return 0, fmt.Errorf("read payload: %w", e)
-			default:
-			}
-		} else {
-			buffer = append(buffer, b...)
+		// Read raw payload bytes directly into the reusable backing slab. No
+		// goroutine, no channel, no per-read allocation. Injections are received
+		// non-blockingly via peekInjection at the top of the loop. The caller's
+		// io.Reader (e.g. chanReader) already multiplexes data/injections, so a
+		// second pump goroutine would only add allocation churn.
+		if err := readMore(); err != nil {
+			return 0, fmt.Errorf("read payload: %w", err)
 		}
 	}
 
 	// Flush any remaining real bytes as the final tail chunk.
-	if len(buffer) > 0 {
-		if err := sink.putRaw(totalSize, buffer); err != nil {
+	if tail := backing[bufStart:bufEnd]; len(tail) > 0 {
+		if err := sink.putRaw(totalSize, tail); err != nil {
 			return 0, err
 		}
-		totalSize += uint64(len(buffer))
+		totalSize += uint64(len(tail))
 	}
 
 	// After the raw stream ends there must be no unconsumed injection.
 	peekInjection()
-	if pending != nil {
+	if hasPending {
 		if pending.Boundary != totalSize {
 			return 0, fmt.Errorf("invalid injection boundary %d != offset %d", pending.Boundary, totalSize)
 		}

@@ -12,12 +12,12 @@ type Scanner struct {
 	window     [WindowSize]byte
 	windowSize int
 	chunkSize  int
-	config     Config
+	Config     Config
 }
 
 // NewScanner creates a Scanner for the given config.
 func NewScanner(config Config) *Scanner {
-	return &Scanner{config: config}
+	return &Scanner{Config: config}
 }
 
 // shallBreak mirrors Rust ChunkerImpl::shall_break (fast, non-modulo form):
@@ -27,13 +27,13 @@ func NewScanner(config Config) *Scanner {
 // where mask = avg*2-1 and minimum = mask-2. It also enforces the absolute
 // min/max chunk sizes. This matches Chunker's boundary test.
 func (s *Scanner) shallBreak() bool {
-	if s.chunkSize >= s.config.MaxChunkSize {
+	if s.chunkSize >= s.Config.MaxChunkSize {
 		return true
 	}
-	if s.chunkSize < s.config.MinChunkSize {
+	if s.chunkSize < s.Config.MinChunkSize {
 		return false
 	}
-	return (s.h & s.config.Mask) >= s.config.Threshold
+	return (s.h & s.Config.Mask) >= s.Config.Threshold
 }
 
 // Scan scans data for a chunk boundary, mirroring ChunkerImpl::scan exactly.

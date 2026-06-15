@@ -303,12 +303,14 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 		exists := s.knownChunks != nil && s.knownChunks[digest]
 
 		if !exists {
-			blobData, err := encodeChunkBlob(chunk, s.compress, s.config.CryptConfig)
+			blobData, bp, err := borrowChunkBlob(chunk, s.compress, s.config.CryptConfig)
 			if err != nil {
 				return nil, err
 			}
 
-			if err := s.proto.dynamicChunkUpload(wid, hexDigest, len(chunk), len(blobData), blobData); err != nil {
+			err = s.proto.dynamicChunkUpload(wid, hexDigest, len(chunk), len(blobData), blobData)
+			datastore.PutBlobBuf(bp)
+			if err != nil {
 				return nil, err
 			}
 
@@ -376,10 +378,12 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 	}
 
 	sink := &pbsPayloadSink{
-		session: s,
-		proto:   s.proto,
-		wid:     wid,
-		idx:     datastore.NewDynamicIndexWriter(time.Now().Unix()),
+		session:      s,
+		proto:        s.proto,
+		wid:          wid,
+		idx:          datastore.NewDynamicIndexWriter(time.Now().Unix()),
+		batchDigests: make([]string, 0, pbsAppendBatchSize),
+		batchOffsets: make([]uint64, 0, pbsAppendBatchSize),
 	}
 	totalSize, err := interleavePayload(s.chunkCfg, newData, injections, sink)
 	if err != nil {
@@ -469,12 +473,14 @@ func (s *pbsPayloadSink) putRaw(offset uint64, raw []byte) error {
 	if s.localKnown[digest] || s.session.knownChunks[digest] {
 		return s.appendIndex(offset, digest, uint64(len(raw)))
 	}
-	blob, err := encodeChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
+	blob, bp, err := borrowChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
 	if err != nil {
 		return err
 	}
 	hex.Encode(s.hexBuf[:], digest[:])
-	if err := s.proto.dynamicChunkUpload(s.wid, string(s.hexBuf[:]), len(raw), len(blob), blob); err != nil {
+	err = s.proto.dynamicChunkUpload(s.wid, string(s.hexBuf[:]), len(raw), len(blob), blob)
+	datastore.PutBlobBuf(bp)
+	if err != nil {
 		return err
 	}
 	s.localKnown[digest] = true

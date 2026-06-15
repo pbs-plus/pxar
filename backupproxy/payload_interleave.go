@@ -191,8 +191,6 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 					}
 					totalSize += splitLen
 					bufStart += int(splitLen)
-				} else if bufStart < bufEnd {
-					bufStart = bufEnd
 				}
 				scanPos = 0
 				scanner.Reset()

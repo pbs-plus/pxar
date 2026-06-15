@@ -269,3 +269,90 @@ func (s *captureSink) putInjection(offset uint64, inj InjectChunks) error {
 	}
 	return nil
 }
+
+// TestInterleavePayloadBackToBackInjections verifies that two injections with
+// consecutive boundary offsets (back-to-back, with real data already buffered
+// before them) are handled correctly. This catches a regression where
+// splitLen==0 at an injection boundary would discard the remaining buffered
+// real data instead of keeping it for processing after the injections.
+func TestInterleavePayloadBackToBackInjections(t *testing.T) {
+	cfg, err := buzhash.NewConfig(4 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	injSize1 := uint64(100)
+	injSize2 := uint64(200)
+	injDig1 := [32]byte{0x31}
+	injDig2 := [32]byte{0x32}
+
+	// Layout: [1000 bytes real][inj1 at 1000][inj2 at 1100][10000 bytes real]
+	// Both injections land WITHIN data that's already buffered from a single
+	// read, exercising the splitLen==0 path for inj2 while 10000 bytes of real
+	// data remain in the buffer. A single bytes.Reader ensures all data is read
+	// in one Read() call so the buffer spans both injection boundaries.
+	realBefore := make([]byte, 1000)
+	for i := range realBefore {
+		realBefore[i] = byte(i)
+	}
+	realAfter := make([]byte, 10000)
+	for i := range realAfter {
+		realAfter[i] = byte(i + 128)
+	}
+	// Use a single reader so readMore() fills the entire buffer at once, causing
+	// the second injection to see splitLen==0 with real data still pending.
+	newData := bytes.NewReader(append(realBefore, realAfter...))
+
+	injections := make(chan InjectChunks, 2)
+	injections <- InjectChunks{
+		Chunks:   []KnownChunkRef{{Digest: injDig1, Size: injSize1}},
+		Size:     injSize1,
+		Boundary: 1000,
+	}
+	injections <- InjectChunks{
+		Chunks:   []KnownChunkRef{{Digest: injDig2, Size: injSize2}},
+		Size:     injSize2,
+		Boundary: 1000 + injSize1, // immediately after inj1's virtual region
+	}
+	close(injections)
+
+	type rec struct {
+		offset uint64
+		size   uint64
+		kind   string // "inj" or "raw"
+	}
+	var records []rec
+	sink := &captureSink{onRaw: func(off uint64, raw []byte) {
+		records = append(records, rec{off, uint64(len(raw)), "raw"})
+	}, onInj: func(off uint64, inj InjectChunks) {
+		for _, c := range inj.Chunks {
+			records = append(records, rec{off, c.Size, "inj"})
+		}
+	}}
+
+	total, err := interleavePayload(cfg, newData, injections, sink)
+	if err != nil {
+		t.Fatalf("interleavePayload: %v", err)
+	}
+
+	wantTotal := 1000 + injSize1 + injSize2 + 10000
+	if total != wantTotal {
+		t.Fatalf("total = %d, want %d", total, wantTotal)
+	}
+
+	// All 500 bytes of real data after the injections must be emitted.
+	var realAfterBytes uint64
+	sawInj2 := false
+	for _, r := range records {
+		if r.kind == "inj" && r.offset == 1000+injSize1 {
+			sawInj2 = true
+			continue
+		}
+		if sawInj2 && r.kind == "raw" {
+			realAfterBytes += r.size
+		}
+	}
+	if realAfterBytes != 10000 {
+		t.Errorf("real bytes after injections = %d, want 10000 (back-to-back injection discarded buffered data)", realAfterBytes)
+	}
+}

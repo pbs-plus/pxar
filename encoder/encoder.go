@@ -318,10 +318,17 @@ func (e *Encoder) AddFile(metadata *pxar.Metadata, name string, content []byte) 
 	endOffset := e.currentState().writePosition
 
 	s := e.currentState()
+	itemSize := endOffset - fileOffset
+	// In split archives the payload is written to the payload stream, so the
+	// archive write position does not include the file content. The goodbye
+	// item size must be file_size + meta_size, matching Rust's create_file_do.
+	if e.payloadOut != nil {
+		itemSize += uint64(len(content))
+	}
 	s.items = append(s.items, format.GoodbyeItem{
 		Hash:   format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))),
 		Offset: fileOffset,
-		Size:   endOffset - fileOffset,
+		Size:   itemSize,
 	})
 
 	return LinkOffset(fileOffset), nil
@@ -377,6 +384,7 @@ func (e *Encoder) CreateFile(metadata *pxar.Metadata, name string, size uint64) 
 		enc:         e,
 		goodbyeItem: format.GoodbyeItem{Hash: format.HashFilename(unsafe.Slice(unsafe.StringData(name), len(name))), Offset: fileOffset},
 		remaining:   size,
+		fileSize:    size,
 	}, nil
 }
 
@@ -385,6 +393,7 @@ type FileWriter struct {
 	enc         *Encoder
 	goodbyeItem format.GoodbyeItem
 	remaining   uint64
+	fileSize    uint64
 }
 
 // FileOffset returns the file's offset for use with AddHardlink.
@@ -455,7 +464,16 @@ func (fw *FileWriter) Close() error {
 		return fmt.Errorf("incomplete file: %d bytes remaining", fw.remaining)
 	}
 	s := fw.enc.currentState()
-	fw.goodbyeItem.Size = s.writePosition - fw.goodbyeItem.Offset
+	metaSize := s.writePosition - fw.goodbyeItem.Offset
+	// In split archives the payload is written to the payload stream and does
+	// not advance the archive write position. The goodbye item size must cover
+	// the file size plus the metadata (FILENAME+ENTRY+PAYLOAD_REF), matching
+	// the Rust reference's create_file_do: size = file_size + meta_size.
+	if fw.enc.payloadOut != nil {
+		fw.goodbyeItem.Size = fw.fileSize + metaSize
+	} else {
+		fw.goodbyeItem.Size = metaSize
+	}
 	s.items = append(s.items, fw.goodbyeItem)
 	return nil
 }

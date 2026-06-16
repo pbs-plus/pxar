@@ -117,3 +117,23 @@ func TestEnforceFIFOEOFIsError(t *testing.T) {
 		t.Errorf("error %q does not match rust 'unexpected EOF in entry'", err.Error())
 	}
 }
+
+func TestEnforceMissingRootGoodbyeIsError(t *testing.T) {
+	// Rust: a nested directory's GOODBYE present but the root directory's
+	// GOODBYE missing (stream ends) is premature -> "unexpected EOF".
+	// At the directory-item position a FILENAME or GOODBYE is mandatory.
+	var b bytes.Buffer
+	b.Write(mkRaw(format.PXAREntry, statBytes(format.ModeIFDIR|0o755)))
+	b.Write(mkRaw(format.PXARFilename, []byte("sub\x00")))
+	b.Write(mkRaw(format.PXAREntry, statBytes(format.ModeIFDIR|0o755)))
+	gb := make([]byte, 24)
+	binary.LittleEndian.PutUint64(gb, format.PXARGoodbyeTailMarker)
+	b.Write(mkRaw(format.PXARGoodbye, gb))
+	err := firstNextErr(t, b.Bytes())
+	if err == nil || err == io.EOF {
+		t.Fatalf("expected 'unexpected EOF' for missing root goodbye, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Errorf("error %q does not match rust 'unexpected EOF'", err.Error())
+	}
+}

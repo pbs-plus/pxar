@@ -171,7 +171,7 @@ func (d *Decoder) readBegin() (*pxar.Entry, error) {
 }
 
 func (d *Decoder) handleDefault() (*pxar.Entry, error) {
-	h, err := d.readHeader()
+	h, err := d.readHeaderRequired()
 	if err != nil {
 		return nil, err
 	}

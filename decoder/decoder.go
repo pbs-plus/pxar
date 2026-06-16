@@ -104,7 +104,7 @@ func (d *Decoder) Contents() io.Reader {
 }
 
 func (d *Decoder) readBegin() (*pxar.Entry, error) {
-	h, err := d.readHeader()
+	h, err := d.readHeaderRequired()
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (d *Decoder) readBegin() (*pxar.Entry, error) {
 			return nil, err
 		}
 
-		h2, err := d.readHeader()
+		h2, err := d.readHeaderRequired()
 		if err != nil {
 			return nil, err
 		}
@@ -130,7 +130,7 @@ func (d *Decoder) readBegin() (*pxar.Entry, error) {
 				return nil, err
 			}
 
-			h3, err := d.readHeader()
+			h3, err := d.readHeaderRequired()
 			if err != nil {
 				return nil, err
 			}
@@ -622,6 +622,19 @@ func checkItemSize(what string, contentSize, expected uint64) error {
 		return fmt.Errorf("bad %s size: %d (expected %d)", what, contentSize, expected)
 	}
 	return nil
+}
+
+// readHeaderRequired reads a header, converting a clean EOF into an
+// "unexpected EOF" error. This mirrors the Rust reference, where a header is
+// only allowed to be missing at a well-formed archive end (the root directory's
+// GOODBYE table). A missing header while a structural entry is expected is
+// premature and therefore an error, not a clean end.
+func (d *Decoder) readHeaderRequired() (format.Header, error) {
+	h, err := d.readHeader()
+	if err == io.EOF {
+		return h, fmt.Errorf("unexpected EOF")
+	}
+	return h, err
 }
 
 func (d *Decoder) readHeader() (format.Header, error) {

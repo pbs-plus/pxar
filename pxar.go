@@ -206,8 +206,12 @@ func (m Metadata) ExtendedMetadataEqual(other Metadata) bool {
 	return true
 }
 
+// xAttrEqual mirrors the Rust reference's XAttr PartialEq, which compares
+// names only (self.name() == other.name()), ignoring the value. This feeds
+// into the derived PartialEq on Metadata, so two xattrs sharing a name but
+// differing in value are considered equal.
 func xAttrEqual(a, b format.XAttr) bool {
-	return a.NameLen == b.NameLen && string(a.Data) == string(b.Data)
+	return a.NameLen == b.NameLen && string(a.Name()) == string(b.Name())
 }
 
 func aclEqual(a, b ACL) bool {

@@ -350,6 +350,82 @@ func TestRoundTripEncodeDecode(t *testing.T) {
 	}
 }
 
+// TestRoundTripMetadataStat verifies that every Stat field survives a full
+// encode->decode round trip byte-for-byte, across a range of mtimes including
+// epoch, post-epoch, and pre-epoch (carry-encoded) values. This guards the
+// metadata pipeline (marshalStatInto <-> UnmarshalStatBytes) against sign /
+// carry / field-offset regressions.
+func TestRoundTripMetadataStat(t *testing.T) {
+	cases := []struct {
+		name  string
+		mtime format.StatxTimestamp
+	}{
+		{"epoch", format.NewStatxTimestamp(0, 0)},
+		{"post-epoch", format.NewStatxTimestamp(1430487000, 1_000_000)},
+		{"post-epoch-max-nanos", format.NewStatxTimestamp(1_700_000_000, 999_999_999)},
+		{"pre-epoch-exact", format.NewStatxTimestamp(-305112600, 0)},
+		{"pre-epoch-carry", format.NewStatxTimestamp(-305112601, 999_000_000)},
+		{"far-past", format.NewStatxTimestamp(-62167219200, 123_456_789)}, // year 0001
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			want := format.Stat{
+				Mode:  format.ModeIFREG | 0o644,
+				Flags: 0xDEADBEEF,
+				UID:   1000,
+				GID:   1000,
+				Mtime: tt.mtime,
+			}
+
+			var buf bytes.Buffer
+			enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
+			meta := &pxar.Metadata{Stat: want}
+			if _, err := enc.AddFile(meta, "f.txt", []byte("x")); err != nil {
+				t.Fatalf("AddFile: %v", err)
+			}
+			enc.Close()
+
+			dec := NewDecoder(bytes.NewReader(buf.Bytes()), nil)
+			var got *format.Stat
+			for {
+				e, err := dec.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("Next: %v", err)
+				}
+				if e.Kind == pxar.KindFile && e.FileName() == "f.txt" {
+					s := e.Metadata.Stat
+					got = &s
+					break
+				}
+			}
+			if got == nil {
+				t.Fatalf("decoded entry not found")
+			}
+
+			if got.Mode != want.Mode {
+				t.Errorf("Mode = %#x, want %#x", got.Mode, want.Mode)
+			}
+			if got.Flags != want.Flags {
+				t.Errorf("Flags = %#x, want %#x", got.Flags, want.Flags)
+			}
+			if got.UID != want.UID {
+				t.Errorf("UID = %d, want %d", got.UID, want.UID)
+			}
+			if got.GID != want.GID {
+				t.Errorf("GID = %d, want %d", got.GID, want.GID)
+			}
+			if got.Mtime != want.Mtime {
+				t.Errorf("Mtime = {%d, %d}, want {%d, %d}",
+					got.Mtime.Secs, got.Mtime.Nanos, want.Mtime.Secs, want.Mtime.Nanos)
+			}
+		})
+	}
+}
+
 func TestDecodeV2Archive(t *testing.T) {
 	var archiveBuf bytes.Buffer
 	var payloadBuf bytes.Buffer

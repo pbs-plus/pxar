@@ -307,6 +307,37 @@ func TestMetadataErrorMessagesAreDescriptive(t *testing.T) {
 	}
 }
 
+// --- FILENAME must be NUL-terminated (Rust errors if missing) ---
+
+// buildArchiveWithFilename builds a root dir whose child filename is exactly
+// `name` (no added NUL) followed by `rest`. Lets us test missing-terminator
+// behavior without the helpers that always append a NUL.
+func buildArchiveWithFilename(name []byte, rest []byte) []byte {
+	var buf bytes.Buffer
+	buf.Write(hdr(format.PXAREntry, statBytes(format.ModeIFDIR|0o755)))
+	buf.Write(hdr(format.PXARFilename, name))
+	buf.Write(rest)
+	return buf.Bytes()
+}
+
+func TestFilenameMissingTerminator(t *testing.T) {
+	// Rust: handle_file_entry pops the last byte and requires it to be 0;
+	// otherwise it bails with "illegal path found (missing terminating zero)".
+	// A FILENAME of "f" (1 byte, no NUL) must therefore be rejected.
+	rest := hdr(format.PXAREntry, statBytes(format.ModeIFREG|0o644))
+	archive := buildArchiveWithFilename([]byte("f"), rest)
+	err := decodeOneFile(t, archive)
+	if err == nil {
+		t.Fatalf("expected error for FILENAME missing NUL terminator, got nil")
+	}
+	if isPanic(err) {
+		t.Fatalf("decoder panicked instead of returning error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "terminating") {
+		t.Errorf("error %q does not mention missing terminator", err.Error())
+	}
+}
+
 // --- well-formed round trip mirrors of the Rust probe2 cases ---
 
 func buildCompleteArchive(extra []byte) []byte {

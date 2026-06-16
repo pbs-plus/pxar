@@ -224,9 +224,14 @@ func (d *Decoder) handleFilename() (*pxar.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > 0 && data[len(data)-1] == 0 {
-		data = data[:len(data)-1]
+	// Mirrors the Rust reference: filenames are NUL-terminated and the
+	// terminating NUL is mandatory. A missing terminator is rejected rather
+	// than silently accepted, matching handle_file_entry in proxmox-pxar:
+	//   if data.pop() != Some(0) { io_bail!("illegal path found (missing terminating zero)"); }
+	if len(data) == 0 || data[len(data)-1] != 0 {
+		return nil, fmt.Errorf("illegal path found (missing terminating zero)")
 	}
+	data = data[:len(data)-1]
 	if err := format.CheckFilename(data); err != nil {
 		return nil, err
 	}

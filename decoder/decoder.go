@@ -393,12 +393,18 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		nameLen := 0
+		// Mirrors the Rust reference: the xattr payload is `name\0value` and
+		// the separating NUL is mandatory. A missing separator is a malformed
+		// archive, not a silently-misparsed entry.
+		nameLen := -1
 		for i, b := range data {
 			if b == 0 {
 				nameLen = i
 				break
 			}
+		}
+		if nameLen < 0 {
+			return false, fmt.Errorf("missing value separator in xattr")
 		}
 		entry.Metadata.XAttrs = append(entry.Metadata.XAttrs, format.XAttr{Data: data, NameLen: nameLen})
 		return false, nil
@@ -406,6 +412,9 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 	case format.PXARACLUser:
 		data, err := d.readContent()
 		if err != nil {
+			return false, err
+		}
+		if err := checkItemSize("acl user", h.ContentSize(), 16); err != nil {
 			return false, err
 		}
 		entry.Metadata.ACL.Users = append(entry.Metadata.ACL.Users, format.ACLUser{
@@ -419,6 +428,9 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		if err := checkItemSize("acl group", h.ContentSize(), 16); err != nil {
+			return false, err
+		}
 		entry.Metadata.ACL.Groups = append(entry.Metadata.ACL.Groups, format.ACLGroup{
 			GID:         binary.LittleEndian.Uint64(data[0:]),
 			Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
@@ -426,18 +438,30 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		return false, nil
 
 	case format.PXARACLGroupObj:
+		if err := checkItemSize("acl group object", h.ContentSize(), 8); err != nil {
+			return false, err
+		}
 		data, err := d.readContent()
 		if err != nil {
 			return false, err
+		}
+		if entry.Metadata.ACL.GroupObj != nil {
+			return false, fmt.Errorf("multiple acl group object entries detected")
 		}
 		perms := format.ACLPermissions(binary.LittleEndian.Uint64(data))
 		entry.Metadata.ACL.GroupObj = &format.ACLGroupObject{Permissions: perms}
 		return false, nil
 
 	case format.PXARACLDefault:
+		if err := checkItemSize("acl default", h.ContentSize(), 32); err != nil {
+			return false, err
+		}
 		data, err := d.readContent()
 		if err != nil {
 			return false, err
+		}
+		if entry.Metadata.ACL.Default != nil {
+			return false, fmt.Errorf("multiple acl default entries detected")
 		}
 		df := format.UnmarshalACLDefault(data)
 		entry.Metadata.ACL.Default = &df
@@ -446,6 +470,9 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 	case format.PXARACLDefaultUser:
 		data, err := d.readContent()
 		if err != nil {
+			return false, err
+		}
+		if err := checkItemSize("acl user", h.ContentSize(), 16); err != nil {
 			return false, err
 		}
 		entry.Metadata.ACL.DefaultUsers = append(entry.Metadata.ACL.DefaultUsers, format.ACLUser{
@@ -459,6 +486,9 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		if err := checkItemSize("acl group", h.ContentSize(), 16); err != nil {
+			return false, err
+		}
 		entry.Metadata.ACL.DefaultGroups = append(entry.Metadata.ACL.DefaultGroups, format.ACLGroup{
 			GID:         binary.LittleEndian.Uint64(data[0:]),
 			Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
@@ -470,13 +500,22 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		if entry.Metadata.FCaps != nil {
+			return false, fmt.Errorf("multiple file capability entries detected")
+		}
 		entry.Metadata.FCaps = data
 		return false, nil
 
 	case format.PXARQuotaProjID:
+		if err := checkItemSize("quota project id", h.ContentSize(), 8); err != nil {
+			return false, err
+		}
 		data, err := d.readContent()
 		if err != nil {
 			return false, err
+		}
+		if entry.Metadata.QuotaProjectID != nil {
+			return false, fmt.Errorf("multiple quota project id entries detected")
 		}
 		id := binary.LittleEndian.Uint64(data)
 		entry.Metadata.QuotaProjectID = &id
@@ -496,6 +535,9 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		return true, nil
 
 	case format.PXARDevice:
+		if err := checkItemSize("device", h.ContentSize(), 16); err != nil {
+			return false, err
+		}
 		data, err := d.readContent()
 		if err != nil {
 			return false, err
@@ -518,6 +560,9 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		return true, nil
 
 	case format.PXARPayloadRef:
+		if err := checkItemSize("payload ref", h.ContentSize(), 16); err != nil {
+			return false, err
+		}
 		data, err := d.readContent()
 		if err != nil {
 			return false, err
@@ -546,6 +591,16 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 	default:
 		return false, fmt.Errorf("unexpected item type: %s", h.String())
 	}
+}
+
+// checkItemSize mirrors the Rust reference's read_simple_entry size check:
+// a fixed-size metadata item's content size must exactly equal the expected
+// struct size, otherwise the archive is malformed.
+func checkItemSize(what string, contentSize, expected uint64) error {
+	if contentSize != expected {
+		return fmt.Errorf("bad %s size: %d (expected %d)", what, contentSize, expected)
+	}
+	return nil
 }
 
 func (d *Decoder) readHeader() (format.Header, error) {

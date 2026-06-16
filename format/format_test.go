@@ -352,6 +352,101 @@ func TestStatxTimestampNegativeDuration(t *testing.T) {
 	}
 }
 
+// TestStatxTimestampFromDurationNegative mirrors Rust's test_statx_timestamp:
+// a point in time 305112600.001s BEFORE the epoch must serialize (via the
+// statx carry convention) to {secs:-305112601, nanos:999_000_000}, and the
+// exact-second boundary to {secs:-305112600, nanos:0}.
+//
+// Rust source: src/format/mod.rs StatxTimestamp::from_duration_before_epoch.
+func TestStatxTimestampFromDurationNegative(t *testing.T) {
+	// 305112600 seconds + 1ms before the epoch, expressed as a negative duration.
+	negDur := -(305112600*time.Second + 1*time.Millisecond)
+	ts := NewStatxTimestampFromDuration(negDur)
+
+	// Rust: from_duration_before_epoch with subsec_nanos != 0 gives
+	//   secs = -(as_secs) - 1 = -305112601
+	//   nanos = 1_000_000_000 - subsec_nanos = 999_000_000
+	if ts.Secs != -305112601 {
+		t.Errorf("neg-with-subsec Secs = %d, want -305112601", ts.Secs)
+	}
+	if ts.Nanos != 999_000_000 {
+		t.Errorf("neg-with-subsec Nanos = %d, want 999000000", ts.Nanos)
+	}
+
+	// Exact second boundary before epoch: subsec == 0 => no carry.
+	negExact := -(305112600 * time.Second)
+	ts2 := NewStatxTimestampFromDuration(negExact)
+	if ts2.Secs != -305112600 {
+		t.Errorf("neg-exact Secs = %d, want -305112600", ts2.Secs)
+	}
+	if ts2.Nanos != 0 {
+		t.Errorf("neg-exact Nanos = %d, want 0", ts2.Nanos)
+	}
+}
+
+// TestStatxTimestampDurationRoundTripSigned verifies that
+// NewStatxTimestampFromDuration and Duration are exact inverses across the
+// full signed range, including pre-epoch (negative) values. Currently the
+// encoder truncates/wraps for negative durations, breaking the round trip.
+func TestStatxTimestampDurationRoundTripSigned(t *testing.T) {
+	cases := []time.Duration{
+		0,
+		1 * time.Nanosecond,
+		1 * time.Millisecond,
+		1430487000*time.Second + 1*time.Millisecond,
+		-(1 * time.Nanosecond),
+		-(1 * time.Millisecond),
+		-(305112600*time.Second + 1*time.Millisecond), // pre-epoch with subsec
+		-(305112600 * time.Second),                    // pre-epoch exact second
+	}
+	for _, d := range cases {
+		ts := NewStatxTimestampFromDuration(d)
+		got := ts.Duration()
+		if got != d {
+			t.Errorf("round-trip failed for %v: encoded=%+v decoded=%v", d, ts, got)
+		}
+	}
+}
+
+// TestStatxTimestampTimeRoundTrip mirrors Rust's test_statx_timestamp end to
+// end: converting a SystemTime (time.Time) to a StatxTimestamp and back must
+// reproduce the original instant for both post- and pre-epoch times, with the
+// intermediate encoding matching the known statx carry values.
+func TestStatxTimestampTimeRoundTrip(t *testing.T) {
+	epoch := time.Unix(0, 0).UTC()
+
+	// MAY_1_2015_1530, 1ms sub-second: post-epoch.
+	post := epoch.Add(1430487000*time.Second + 1*time.Millisecond)
+	tx := NewStatxTimestampFromTime(post)
+	if tx.Secs != 1430487000 || tx.Nanos != 1_000_000 {
+		t.Errorf("post-epoch encode = {%d, %d}, want {1430487000, 1000000}", tx.Secs, tx.Nanos)
+	}
+	if got := tx.Time(); !got.Equal(post) {
+		t.Errorf("post-epoch round-trip = %v, want %v", got, post)
+	}
+
+	// MAY_1_1960_1530, 1ms sub-second: pre-epoch. Rust encodes this as
+	// {secs:-305112601, nanos:999_000_000}.
+	pre := epoch.Add(-(305112600*time.Second + 1*time.Millisecond))
+	tx2 := NewStatxTimestampFromTime(pre)
+	if tx2.Secs != -305112601 || tx2.Nanos != 999_000_000 {
+		t.Errorf("pre-epoch encode = {%d, %d}, want {-305112601, 999000000}", tx2.Secs, tx2.Nanos)
+	}
+	if got := tx2.Time(); !got.Equal(pre) {
+		t.Errorf("pre-epoch round-trip = %v, want %v", got, pre)
+	}
+
+	// Pre-epoch exact second boundary: sub-second is zero, no carry.
+	preExact := epoch.Add(-(305112600 * time.Second))
+	tx3 := NewStatxTimestampFromTime(preExact)
+	if tx3.Secs != -305112600 || tx3.Nanos != 0 {
+		t.Errorf("pre-epoch exact encode = {%d, %d}, want {-305112600, 0}", tx3.Secs, tx3.Nanos)
+	}
+	if got := tx3.Time(); !got.Equal(preExact) {
+		t.Errorf("pre-epoch exact round-trip = %v, want %v", got, preExact)
+	}
+}
+
 // TestStatMarshalUnmarshalRoundTrip verifies that Stat marshals to exactly 40 bytes
 // with _pad=0 and round-trips correctly. Mirrors Rust's Endian trait behavior.
 func TestStatMarshalUnmarshalRoundTrip(t *testing.T) {

@@ -211,17 +211,53 @@ func NewStatxTimestamp(secs int64, nanos uint32) StatxTimestamp {
 	return StatxTimestamp{Secs: secs, Nanos: nanos}
 }
 
-// NewStatxTimestampFromDuration creates a timestamp from a positive duration.
+// NewStatxTimestampFromDuration creates a timestamp from a signed duration
+// relative to the unix epoch. A positive duration denotes a point in time
+// after the epoch; a negative duration denotes a point in time before it.
+//
+// For pre-epoch values this applies the statx carry convention used by the
+// pxar wire format and Linux's struct statx_timestamp: a non-zero sub-second
+// remainder is represented as (secs-1, 1e9-nanos) so that the value stays
+// monotonically ordered. This mirrors Rust's
+// StatxTimestamp::from_duration_since_epoch / from_duration_before_epoch.
 func NewStatxTimestampFromDuration(d time.Duration) StatxTimestamp {
-	return StatxTimestamp{
-		Secs:  int64(d / time.Second),
-		Nanos: uint32(d % time.Second),
+	if d >= 0 {
+		return StatxTimestamp{
+			Secs:  int64(d / time.Second),
+			Nanos: uint32(d % time.Second),
+		}
 	}
+	// Magnitude of the negative offset (always non-negative).
+	mag := -d
+	secs := int64(mag / time.Second)
+	nanos := uint32(mag % time.Second)
+	if nanos == 0 {
+		return StatxTimestamp{Secs: -secs, Nanos: 0}
+	}
+	return StatxTimestamp{Secs: -secs - 1, Nanos: 1_000_000_000 - nanos}
 }
 
-// Duration converts the timestamp to a duration since epoch.
+// NewStatxTimestampFromTime creates a timestamp from a point in time,
+// equivalent to Rust's From<SystemTime> for StatxTimestamp. It works for any
+// time representable as Unix seconds (no time.Duration overflow), including
+// times well before the epoch.
+func NewStatxTimestampFromTime(t time.Time) StatxTimestamp {
+	return StatxTimestamp{Secs: t.Unix(), Nanos: uint32(t.Nanosecond())}
+}
+
+// Duration converts the timestamp to a signed duration since the epoch. The
+// result, added to the epoch, yields the original point in time for both post-
+// and pre-epoch timestamps. It is the exact inverse of
+// NewStatxTimestampFromDuration across the full signed range.
 func (ts StatxTimestamp) Duration() time.Duration {
 	return time.Duration(ts.Secs)*time.Second + time.Duration(ts.Nanos)*time.Nanosecond
+}
+
+// Time converts the timestamp to a time.Time relative to the unix epoch,
+// equivalent to Rust's StatxTimestamp::system_time. It is the exact inverse of
+// NewStatxTimestampFromTime for both post- and pre-epoch timestamps.
+func (ts StatxTimestamp) Time() time.Time {
+	return time.Unix(ts.Secs, int64(ts.Nanos))
 }
 
 // Stat contains file metadata similar to Unix stat. 40 bytes.

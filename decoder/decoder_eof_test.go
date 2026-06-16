@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/pbs-plus/pxar/format"
@@ -73,5 +74,46 @@ func TestEnforceTruncatedStatIsError(t *testing.T) {
 	err := firstNextErr(t, b)
 	if err == nil || err == io.EOF {
 		t.Fatalf("expected 'unexpected EOF' for truncated stat, got %v", err)
+	}
+}
+
+func TestEnforceFileNoPayloadTerminatorIsError(t *testing.T) {
+	// Rust: a regular file entry whose item stream ends without a terminating
+	// FILENAME/GOODBYE/PAYLOAD is premature: "unexpected EOF in entry".
+	var b bytes.Buffer
+	b.Write(mkRaw(format.PXAREntry, statBytes(format.ModeIFDIR|0o755)))
+	b.Write(mkRaw(format.PXARFilename, []byte("f\x00")))
+	b.Write(mkRaw(format.PXAREntry, statBytes(format.ModeIFREG|0o644)))
+	err := firstNextErr(t, b.Bytes())
+	if err == nil || err == io.EOF {
+		t.Fatalf("expected 'unexpected EOF in entry' for unterminated file, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Errorf("error %q does not match rust 'unexpected EOF in entry'", err.Error())
+	}
+}
+
+func TestEnforceRootFileNoPayloadIsError(t *testing.T) {
+	// Rust: a root regular-file ENTRY with no payload/terminator ->
+	// "unexpected EOF in entry".
+	err := firstNextErr(t, mkRaw(format.PXAREntry, statBytes(format.ModeIFREG|0o644)))
+	if err == nil || err == io.EOF {
+		t.Fatalf("expected 'unexpected EOF in entry' for root file, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Errorf("error %q does not match rust 'unexpected EOF in entry'", err.Error())
+	}
+}
+
+func TestEnforceFIFOEOFIsError(t *testing.T) {
+	// Rust sequential decoder (eof_after_entry=false): a FIFO entry with no
+	// terminating item still errors "unexpected EOF in entry". Only the
+	// accessor's ranged-reader mode accepts EOF on FIFO/Socket.
+	err := firstNextErr(t, mkRaw(format.PXAREntry, statBytes(format.ModeIFIFO|0o644)))
+	if err == nil || err == io.EOF {
+		t.Fatalf("expected 'unexpected EOF in entry' for unterminated FIFO, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Errorf("error %q does not match rust 'unexpected EOF in entry'", err.Error())
 	}
 }

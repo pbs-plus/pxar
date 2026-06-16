@@ -332,7 +332,7 @@ func (d *Decoder) readEntry() (*pxar.Entry, error) {
 	if len(statData) != 40 {
 		return nil, fmt.Errorf("invalid stat size: %d", len(statData))
 	}
-	return d.finishEntry(format.UnmarshalStatBytes(statData), false)
+	return d.finishEntry(format.UnmarshalStatBytes(statData))
 }
 
 func (d *Decoder) readEntryV1() (*pxar.Entry, error) {
@@ -343,13 +343,13 @@ func (d *Decoder) readEntryV1() (*pxar.Entry, error) {
 	if len(data) != 32 {
 		return nil, fmt.Errorf("invalid stat_v1 size: %d", len(data))
 	}
-	return d.finishEntry(format.UnmarshalStatV1Bytes(data).ToStat(), true)
+	return d.finishEntry(format.UnmarshalStatV1Bytes(data).ToStat())
 }
 
 // finishEntry reads remaining attributes for an entry after the stat has been
-// parsed. isV1 controls EOF behavior: V1 treats stream EOF as end-of-entry
-// without checking for FIFO/Socket types.
-func (d *Decoder) finishEntry(stat format.Stat, isV1 bool) (*pxar.Entry, error) {
+// parsed. A clean EOF while reading items is treated as a premature end
+// ("unexpected EOF in entry"), matching the Rust sequential decoder.
+func (d *Decoder) finishEntry(stat format.Stat) (*pxar.Entry, error) {
 	entry := &pxar.Entry{
 		Path:     d.path,
 		Metadata: pxar.Metadata{Stat: stat},
@@ -366,18 +366,13 @@ func (d *Decoder) finishEntry(stat format.Stat, isV1 bool) (*pxar.Entry, error) 
 		h, err := d.readHeader()
 		if err != nil {
 			if err == io.EOF {
-				if isV1 {
-					break
-				}
-				if stat.IsFIFO() {
-					entry.Kind = pxar.KindFIFO
-					return entry, nil
-				}
-				if stat.IsSocket() {
-					entry.Kind = pxar.KindSocket
-					return entry, nil
-				}
-				return nil, io.EOF
+				// Mirrors the Rust reference's sequential decoder (eof_after_entry
+				// == false): an entry's item stream must be terminated by a
+				// PAYLOAD/SYMLINK/DEVICE/FILENAME/GOODBYE. A clean EOF here is
+				// premature and is rejected with 'unexpected EOF in entry'. (The
+				// accessor's ranged-reader mode accepts EOF on FIFO/Socket, but the
+				// sequential Decoder does not.)
+				return nil, fmt.Errorf("unexpected EOF in entry")
 			}
 			return nil, err
 		}

@@ -256,8 +256,18 @@ func (d *Decoder) readEntryFromCurrentHeader() (*pxar.Entry, error) {
 		return d.readEntry()
 	case format.PXAREntryV1:
 		return d.readEntryV1()
+	case format.Version:
+		// Mirrors the Rust reference: a FORMAT_VERSION entry is only valid at the
+		// stream's Begin position (handled in readBegin). Mid-stream occurrence is
+		// rejected with the same message as proxmox-pxar.
+		return nil, fmt.Errorf("Got format version entry at unexpected position") //nolint:staticcheck // exact match to rust pxar
+	case format.PXARPrelude:
+		// Mirrors the Rust reference: a PRELUDE is only valid at the Prelude state
+		// (immediately following a FORMAT_VERSION). Anywhere else is rejected with
+		// the same message as proxmox-pxar.
+		return nil, fmt.Errorf("Got format version entry at unexpected position") //nolint:staticcheck // exact match to rust pxar
 	default:
-		return nil, fmt.Errorf("unexpected entry header: %s", d.header.String())
+		return nil, fmt.Errorf("expected pxar entry of type 'Entry', got: %s", d.header.String())
 	}
 }
 
@@ -593,8 +603,14 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 		}
 		return true, nil
 
+	case format.PXARHardlink:
+		// Mirrors the Rust reference: a HARDLINK appearing as an attribute
+		// (mid-entry, after the ENTRY) is not allowed. Only a "dangling" HARDLINK
+		// in place of an ENTRY is valid.
+		return false, fmt.Errorf("encountered unexpected hardlink entry")
+
 	default:
-		return false, fmt.Errorf("unexpected item type: %s", h.String())
+		return false, fmt.Errorf("unexpected entry type: %s", h.String())
 	}
 }
 

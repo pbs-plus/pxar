@@ -160,6 +160,11 @@ func (cr *chanReader) Read(p []byte) (int, error) {
 	return 0, io.EOF
 }
 
+// WriteHardlink writes a hard link entry with an explicit target offset.
+func (w *RemoteDedupWriter) WriteHardlink(name string, target string, targetOffset encoder.LinkOffset) error {
+	return w.inner.WriteHardlink(name, target, targetOffset)
+}
+
 func (w *RemoteDedupWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) error {
 	if len(chunks) == 0 {
 		return nil

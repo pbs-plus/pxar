@@ -502,9 +502,8 @@ const (
 	pbsAppendBatchSize = 1024 // dynamic_index append batch (matches Rust)
 	// pbsUploadQueueCap is the capacity of the appendCh channel, which bounds
 	// the number of chunks queued between the producer (putRaw) and the append
-	// worker. Rust's append_chunk_queue uses mpsc::channel(64). We use 256 to
-	// match the eventCh/dataCh buffer scale (128 MB total pipeline buffering).
-	pbsUploadQueueCap = 256
+	// worker. Matches Rust's append_chunk_queue mpsc::channel(64).
+	pbsUploadQueueCap = 64
 )
 
 // flushBatch sends the accumulated dynamic-index appends to the server. Called

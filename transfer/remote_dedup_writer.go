@@ -73,7 +73,7 @@ func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.dirDepth = 1
 	opts.Format = format.FormatVersion2
 
-	w.eventCh = make(chan streamEvent, 256)
+	w.eventCh = make(chan streamEvent, 10)
 	w.uploadRes = make(chan uploadResult, 1)
 
 	go w.uploadPayload()
@@ -103,7 +103,7 @@ func (w *RemoteDedupWriter) setEncErr(err error) {
 
 func (w *RemoteDedupWriter) uploadPayload() {
 	injectCh := make(chan backupproxy.InjectChunks, 64)
-	dataCh := make(chan streamEvent, 256)
+	dataCh := make(chan streamEvent, 10)
 
 	go func() {
 		defer close(injectCh)

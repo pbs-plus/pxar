@@ -254,7 +254,7 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 	if s.knownChunks == nil {
 		s.knownChunks = make(map[[32]byte]bool)
 
-		if s.config.PreviousBackup != nil {
+		if s.config.PreviousBackup != nil && !s.config.IgnoreNewerPrevious {
 			prev := s.config.PreviousBackup
 
 			// Register previous chunks server-side via the backup protocol.
@@ -394,8 +394,10 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 		s.knownChunks = make(map[[32]byte]bool, 16)
 	}
 
-	if _, err := s.proto.downloadPrevious(name); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: download previous for chunk registration: %v\n", err)
+	if !s.config.IgnoreNewerPrevious {
+		if _, err := s.proto.downloadPrevious(name); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: download previous for chunk registration: %v\n", err)
+		}
 	}
 
 	wid, err := s.proto.dynamicIndexCreate(name)

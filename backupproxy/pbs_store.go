@@ -22,6 +22,11 @@ type pbsBackupProtocol interface {
 	dynamicIndexCreate(archiveName string) (uint64, error)
 	dynamicChunkUpload(wid uint64, digest string, size, encodedSize int, data []byte) error
 	pipelineChunkUploads(wid uint64, chunks []chunkUploadReq) error
+	// dynamicChunkUploadAsync fires a chunk upload and returns a completer that
+	// blocks until the upload finishes, returning its error. It enables
+	// continuous pipelined uploads (many in flight, awaited in order) faithful
+	// to proxmox-backup's async h2 client.
+	dynamicChunkUploadAsync(wid uint64, digest string, size, encodedSize int, data []byte) func() error
 	dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error
 	dynamicIndexClose(wid uint64, chunkCount int, size uint64, csum string) error
 	blobUpload(fileName string, encodedSize int, data []byte) error
@@ -73,35 +78,52 @@ func (p *h2Protocol) dynamicChunkUpload(wid uint64, digest string, size, encoded
 	}})
 }
 
-// pipelineChunkUploads sends multiple chunk upload requests concurrently over H2.
-// All requests are sent before any responses are read (pipelining), matching
-// the Rust PBS client's behavior where h2.send_request is called without awaiting.
-// Returns the first error encountered, or nil.
+// dynamicChunkUploadAsync fires a chunk upload on its own H2 stream and returns
+// a completer. The body is streamed asynchronously under flow control by the
+// conn, so the caller is not blocked and many uploads can be in flight at once.
+func (p *h2Protocol) dynamicChunkUploadAsync(wid uint64, digest string, size, encodedSize int, data []byte) func() error {
+	params := url.Values{}
+	params.Set("wid", strconv.FormatUint(wid, 10))
+	params.Set("digest", digest)
+	params.Set("size", strconv.Itoa(size))
+	params.Set("encoded-size", strconv.Itoa(encodedSize))
+	st, err := p.conn.sendRequest("POST", "dynamic_chunk", params, data, "application/octet-stream")
+	if err != nil {
+		return func() error { return fmt.Errorf("upload chunk %s: %w", digest, err) }
+	}
+	return func() error {
+		if _, err := st.Wait(); err != nil {
+			return fmt.Errorf("upload chunk %s: %w", digest, err)
+		}
+		return nil
+	}
+}
+
+// pipelineChunkUploads sends multiple chunk upload requests concurrently over
+// H2. With the flow-control-aware conn, sendRequest fires each request's body
+// asynchronously (bounded by the peer's receive windows), so all chunks are
+// uploaded in parallel over multiplexed streams — matching the Rust PBS client
+// where h2.send_request is called without awaiting. Returns the first error.
 func (p *h2Protocol) pipelineChunkUploads(wid uint64, chunks []chunkUploadReq) error {
 	if len(chunks) == 0 {
 		return nil
 	}
-
-	entries := make([]pipelineEntry, len(chunks))
+	streams := make([]*stream, len(chunks))
 	for i, c := range chunks {
 		params := url.Values{}
 		params.Set("wid", strconv.FormatUint(wid, 10))
 		params.Set("digest", c.digest)
 		params.Set("size", strconv.Itoa(c.size))
 		params.Set("encoded-size", strconv.Itoa(c.encodedSize))
-		entries[i] = pipelineEntry{
-			method:      "POST",
-			path:        "dynamic_chunk",
-			params:      params,
-			body:        c.data,
-			contentType: "application/octet-stream",
+		st, err := p.conn.sendRequest("POST", "dynamic_chunk", params, c.data, "application/octet-stream")
+		if err != nil {
+			return fmt.Errorf("upload chunk %s: %w", c.digest, err)
 		}
+		streams[i] = st
 	}
-
-	results := p.conn.pipeline(entries)
-	for i, r := range results {
-		if r.err != nil {
-			return fmt.Errorf("upload chunk %s: %w", chunks[i].digest, r.err)
+	for i, st := range streams {
+		if _, err := st.Wait(); err != nil {
+			return fmt.Errorf("upload chunk %s: %w", chunks[i].digest, err)
 		}
 	}
 	return nil
@@ -384,13 +406,20 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 		idx:          datastore.NewDynamicIndexWriter(time.Now().Unix()),
 		batchDigests: make([]string, 0, pbsAppendBatchSize),
 		batchOffsets: make([]uint64, 0, pbsAppendBatchSize),
+		uploadSem:    make(chan struct{}, pbsMaxInflight),
+		appendCh:     make(chan appendJob, pbsAppendBatchSize),
+		appendDone:   make(chan error, 1),
 	}
+	go sink.appendWorker()
+
 	totalSize, err := interleavePayload(s.chunkCfg, newData, injections, sink)
+	close(sink.appendCh)
+	workerErr := <-sink.appendDone
 	if err != nil {
 		return nil, err
 	}
-	if err := sink.flushBatch(); err != nil {
-		return nil, fmt.Errorf("append final batch: %w", err)
+	if workerErr != nil {
+		return nil, workerErr
 	}
 
 	if _, err := sink.idx.Finish(); err != nil {
@@ -411,26 +440,64 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 	return result, nil
 }
 
-// pbsPayloadSink implements payloadSink for the PBS backup protocol. It uploads
-// unknown chunks, batches dynamic-index appends, and records every chunk (new,
-// dedup-known, and injected) in one shared DynamicIndexWriter so the index and
-// its checksum match proxmox-backup's compute_csum (end_offset || digest).
+// pbsPayloadSink implements payloadSink for the PBS backup protocol. It is the
+// faithful Go counterpart of proxmox-backup's backup_writer.rs upload pipeline:
+//
+//   - The producer (interleavePayload -> putRaw) records the local index
+//     checksum (idx.Add) in production/offset order and enqueues an appendJob
+//     per chunk. New chunks are encoded into owned pooled blobs and their
+//     upload is fired asynchronously (dynamicChunkUploadAsync) — not awaited
+//     inline — so many uploads stream concurrently over H2 multiplexing. A
+//     semaphore (pbsMaxInflight) bounds in-flight blobs (memory and the H2
+//     in-flight depth), matching the Rust upload_queue capacity of 64.
+//   - A single appendWorker drains appendCh in offset order, awaits each new
+//     chunk's upload completion, then appends it to the server dynamic index
+//     in batches (pbsAppendBatchSize). PBS dynamic_append requires the chunk to
+//     exist first (server lookup_chunk), so appends strictly follow uploads —
+//     matching Rust's append_chunk_queue + merge_known_chunks batching.
+//
+// The shared DynamicIndexWriter (idx) records every chunk (new, dedup-known,
+// injected) so the index checksum matches proxmox-backup's compute_csum
+// (end_offset || digest).
 type pbsPayloadSink struct {
 	session *pbsSession
 	proto   pbsBackupProtocol
 	wid     uint64
 	idx     *datastore.DynamicIndexWriter
 
+	// Server-side index append state, owned exclusively by appendWorker.
 	batchDigests []string
 	batchOffsets []uint64
 	chunkCount   int
 
-	localKnown map[[32]byte]bool
-	hexBuf     [64]byte
+	localKnown map[[32]byte]bool // producer-owned: dedup hit cache
+	hexBuf     [64]byte          // worker-owned: digest hex for server appends
+
+	// Continuous pipelined upload/append pipeline.
+	uploadSem  chan struct{}  // bounds in-flight new-chunk blobs
+	appendCh   chan appendJob // ordered chunk stream from producer to worker
+	appendDone chan error     // worker result
 }
 
-const pbsAppendBatchSize = 1024
+// appendJob is one chunk to be recorded in the server dynamic index, in offset
+// order. For new chunks, await is the upload completer and bp is the blob's
+// pool handle (returned after the upload completes); for dedup-known and
+// injected chunks they are nil (the chunk already exists on the server).
+type appendJob struct {
+	digest [32]byte
+	offset uint64
+	size   uint64
+	await  func() error // new chunks: blocks until upload done; nil for known/injected
+	bp     *[]byte      // new chunks: pool handle to return after upload; nil otherwise
+}
 
+const (
+	pbsAppendBatchSize = 1024 // dynamic_index append batch (matches Rust)
+	pbsMaxInflight     = 4    // in-flight chunk uploads; bounds memory (cap*maxChunk) and, for tape sources, keeps the read burst under the drive buffer to avoid backhitching. Rust's upload_queue is 64 (disk backups / fast servers); 4 is the tape-safe default that also minimizes in-order head-of-line blocking on serialized stores.
+)
+
+// flushBatch sends the accumulated dynamic-index appends to the server. Called
+// only by appendWorker.
 func (s *pbsPayloadSink) flushBatch() error {
 	if len(s.batchDigests) == 0 {
 		return nil
@@ -443,15 +510,13 @@ func (s *pbsPayloadSink) flushBatch() error {
 	return nil
 }
 
-// appendIndex records one chunk at [offset, offset+size) in the shared index.
-// The local index stores end offsets (matching PBS add_chunk); the server
-// appends the start offset. This keeps the index checksum identical to PBS.
-func (s *pbsPayloadSink) appendIndex(offset uint64, digest [32]byte, size uint64) error {
-	endOffset := offset + size
-	s.idx.Add(endOffset, digest)
-	hex.Encode(s.hexBuf[:], digest[:])
+// appendOne records one chunk in the server dynamic-index append batch,
+// flushing when the batch reaches pbsAppendBatchSize. Called only by
+// appendWorker, in offset order.
+func (s *pbsPayloadSink) appendOne(j *appendJob) error {
+	hex.Encode(s.hexBuf[:], j.digest[:])
 	s.batchDigests = append(s.batchDigests, string(s.hexBuf[:]))
-	s.batchOffsets = append(s.batchOffsets, offset)
+	s.batchOffsets = append(s.batchOffsets, j.offset)
 	s.chunkCount++
 	if len(s.batchDigests) >= pbsAppendBatchSize {
 		return s.flushBatch()
@@ -470,34 +535,90 @@ func (s *pbsPayloadSink) putRaw(offset uint64, raw []byte) error {
 		}
 	}
 	digest := chunkDigest(raw, s.session.config.CryptConfig)
+	size := uint64(len(raw))
+	// Local checksum is recorded in production/offset order (matching
+	// proxmox-backup's index_csum computed in the stream). The server index
+	// append happens later, in appendWorker, after the upload completes.
+	s.idx.Add(offset+size, digest)
+
 	if s.localKnown[digest] || s.session.knownChunks[digest] {
-		return s.appendIndex(offset, digest, uint64(len(raw)))
+		s.appendCh <- appendJob{digest: digest, offset: offset, size: size}
+		return nil
 	}
+
+	// New chunk: encode into an owned pooled blob, fire the upload asynchronously
+	// (the conn streams the body under flow control in its own goroutine), and
+	// enqueue an append job whose awaiter the worker will call in order. The
+	// semaphore bounds in-flight blobs so memory and the H2 in-flight depth stay
+	// capped; the worker releases the slot after the upload completes.
+	s.uploadSem <- struct{}{}
 	blob, bp, err := borrowChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
 	if err != nil {
+		<-s.uploadSem
 		return err
 	}
-	hex.Encode(s.hexBuf[:], digest[:])
-	err = s.proto.dynamicChunkUpload(s.wid, string(s.hexBuf[:]), len(raw), len(blob), blob)
-	datastore.PutBlobBuf(bp)
-	if err != nil {
-		return err
-	}
+	var hexBuf [64]byte
+	hex.Encode(hexBuf[:], digest[:])
+	await := s.proto.dynamicChunkUploadAsync(s.wid, string(hexBuf[:]), len(raw), len(blob), blob)
 	s.localKnown[digest] = true
 	s.session.knownChunks[digest] = true
-	return s.appendIndex(offset, digest, uint64(len(raw)))
+	s.appendCh <- appendJob{digest: digest, offset: offset, size: size, await: await, bp: bp}
+	return nil
 }
 
 func (s *pbsPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 	cur := offset
 	for _, c := range inj.Chunks {
 		s.session.knownChunks[c.Digest] = true
-		if err := s.appendIndex(cur, c.Digest, c.Size); err != nil {
-			return err
-		}
+		s.idx.Add(cur+c.Size, c.Digest) // local checksum, production order
+		s.appendCh <- appendJob{digest: c.Digest, offset: cur, size: c.Size}
 		cur += c.Size
 	}
-	return s.flushBatch()
+	return nil
+}
+
+// appendWorker drains appendCh in offset order, awaiting each new chunk's
+// upload and appending every chunk to the server dynamic index in batches
+// (pbsAppendBatchSize) after its upload completes (PBS requires the chunk to
+// exist before dynamic_append). This is the faithful Go counterpart of
+// proxmox-backup's append_chunk_queue: uploads were fired concurrently by
+// putRaw; here the completers are awaited in FIFO order and the index is
+// appended after each upload, preserving offset order for the index checksum.
+//
+// On the first error the worker records it (via the produced error on
+// appendDone) and continues draining, releasing blob buffers and semaphore
+// slots so the producer does not deadlock.
+func (s *pbsPayloadSink) appendWorker() {
+	var firstErr error
+	for job := range s.appendCh {
+		if firstErr != nil {
+			if job.await != nil {
+				_ = job.await()
+				datastore.PutBlobBuf(job.bp)
+				<-s.uploadSem
+			}
+			continue
+		}
+		if job.await != nil {
+			if err := job.await(); err != nil {
+				firstErr = err
+				datastore.PutBlobBuf(job.bp)
+				<-s.uploadSem
+				continue
+			}
+			datastore.PutBlobBuf(job.bp)
+			<-s.uploadSem
+		}
+		if err := s.appendOne(&job); err != nil {
+			firstErr = err
+		}
+	}
+	if firstErr == nil {
+		if err := s.flushBatch(); err != nil {
+			firstErr = err
+		}
+	}
+	s.appendDone <- firstErr
 }
 func (s *pbsSession) UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error) {
 	metaResult, err := s.UploadArchive(ctx, metadataName, metadataData)

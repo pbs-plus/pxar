@@ -71,6 +71,11 @@ func (m *mockPBSProtocol) pipelineChunkUploads(wid uint64, chunks []chunkUploadR
 	return nil
 }
 
+func (m *mockPBSProtocol) dynamicChunkUploadAsync(wid uint64, digest string, size, encodedSize int, data []byte) func() error {
+	err := m.dynamicChunkUpload(wid, digest, size, encodedSize, data)
+	return func() error { return err }
+}
+
 func (m *mockPBSProtocol) dynamicIndexAppend(wid uint64, digests []string, offsets []uint64) error {
 	if idx, ok := m.indexes[wid]; ok {
 		idx.appended = true

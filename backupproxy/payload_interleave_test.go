@@ -47,6 +47,10 @@ func (p *appendCaptureProtocol) pipelineChunkUploads(_ uint64, chunks []chunkUpl
 	}
 	return nil
 }
+func (p *appendCaptureProtocol) dynamicChunkUploadAsync(_ uint64, digest string, size, encodedSize int, data []byte) func() error {
+	err := p.dynamicChunkUpload(0, digest, size, encodedSize, data)
+	return func() error { return err }
+}
 func (p *appendCaptureProtocol) dynamicIndexAppend(_ uint64, digests []string, offsets []uint64) error {
 	p.mu.Lock()
 	for i, d := range digests {

@@ -93,8 +93,10 @@ func (p *h2Protocol) dynamicChunkUploadAsync(wid uint64, digest string, size, en
 	}
 	return func() error {
 		if _, err := st.Wait(); err != nil {
+			st.release()
 			return fmt.Errorf("upload chunk %s: %w", digest, err)
 		}
+		st.release()
 		return nil
 	}
 }
@@ -123,8 +125,10 @@ func (p *h2Protocol) pipelineChunkUploads(wid uint64, chunks []chunkUploadReq) e
 	}
 	for i, st := range streams {
 		if _, err := st.Wait(); err != nil {
+			st.release()
 			return fmt.Errorf("upload chunk %s: %w", chunks[i].digest, err)
 		}
+		st.release()
 	}
 	return nil
 }

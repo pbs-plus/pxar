@@ -61,6 +61,19 @@ type pbsH2Conn struct {
 	streamsMu sync.Mutex
 	streams   map[uint32]*stream
 
+	// streamSlots bounds the number of concurrently open streams to the peer's
+	// SETTINGS_MAX_CONCURRENT_STREAMS (faithful to the h2 crate's
+	// SendRequest::ready(), which waits for a stream slot). nil if the peer did
+	// not advertise a limit. Acquired in sendRequest before opening a stream,
+	// released in finishStream.
+	streamSlots chan struct{}
+
+	// streamPool reuses stream structs (and their response buffers) across
+	// requests, the Go-flavored counterpart of the Rust client's bytes::Bytes
+	// buffer reuse. The done channel is recreated per use (a closed channel
+	// cannot be reused); the hdrBuf/dataBuf retain capacity across uses.
+	streamPool sync.Pool
+
 	// Our receive-side flow control for response data (e.g. previous-index
 	// downloads). The reader replenishes by sending WINDOW_UPDATE when the
 	// window drops below half.
@@ -82,10 +95,33 @@ type stream struct {
 
 	done chan struct{} // closed when the response is complete
 	err  error
+
+	pool *pbsH2Conn // owning pool for release (nil if not pooled)
 }
 
-func newStream(id uint32, recvInit int64) *stream {
-	return &stream{id: id, done: make(chan struct{}), recvWin: recvInit}
+// newStream returns a stream for a new request, reusing a pooled struct and
+// its response buffers (capacity retained) when available. The done channel is
+// always fresh (a closed channel cannot be reused).
+func (c *pbsH2Conn) newStream(id uint32, recvInit int64) *stream {
+	s, _ := c.streamPool.Get().(*stream)
+	s.id = id
+	s.status = 0
+	s.recvWin = recvInit
+	s.err = nil
+	s.pool = c
+	s.hdrBuf.Reset()
+	s.dataBuf.Reset()
+	s.done = make(chan struct{})
+	return s
+}
+
+// release returns the stream to the pool after the caller has consumed the
+// response (Wait/WaitRaw). It must not be called twice or before the response
+// is read.
+func (s *stream) release() {
+	if s.pool != nil {
+		s.pool.streamPool.Put(s)
+	}
 }
 
 // dialPBSH2 establishes an H2 connection to PBS via HTTP/1.1 upgrade and starts
@@ -162,8 +198,8 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 	framer.SetMaxReadFrameSize(1 << 24) // 16 MiB
 
 	const (
-		targetWindow   = 1 << 30 // 1 GiB
-		targetMaxFrame = 1 << 22 // 4 MiB
+		targetWindow   = (1 << 31) - 2 // ~2 GiB, matches proxmox-backup's h2 builder (initial_connection_window_size = initial_window_size)
+		targetMaxFrame = 1 << 22       // 4 MiB, matches proxmox-backup's max_frame_size
 	)
 
 	if err := framer.WriteSettings(
@@ -179,10 +215,12 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 	}
 
 	// Read server SETTINGS and our SETTINGS ACK. Capture the peer's initial
-	// stream window (SettingInitialWindowSize) and max frame size so send-side
-	// flow control is correct.
-	maxFrame := uint32(1 << 14) // default 16384
-	peerInitWin := int64(65535) // RFC 7540 default initial window
+	// stream window (SettingInitialWindowSize), max frame size, and max
+	// concurrent streams so send-side flow control and stream concurrency are
+	// correct (matching the h2 crate's ready()/capacity handling).
+	maxFrame := uint32(1 << 14)  // default 16384
+	peerInitWin := int64(65535)  // RFC 7540 default initial window
+	var peerMaxConcurrent uint32 // 0 = unlimited (RFC default)
 	gotSettings := false
 	gotAck := false
 	for !gotSettings || !gotAck {
@@ -204,6 +242,9 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 		}
 		if v, ok := sf.Value(http2.SettingInitialWindowSize); ok {
 			peerInitWin = int64(v)
+		}
+		if v, ok := sf.Value(http2.SettingMaxConcurrentStreams); ok {
+			peerMaxConcurrent = v
 		}
 		if err := framer.WriteSettingsAck(); err != nil {
 			conn.Close()
@@ -228,6 +269,10 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 		streams:         make(map[uint32]*stream),
 		recvConnWin:     targetWindow,
 		recvConnInitial: targetWindow,
+	}
+	c.streamPool = sync.Pool{New: func() any { return &stream{} }}
+	if peerMaxConcurrent > 0 {
+		c.streamSlots = make(chan struct{}, peerMaxConcurrent)
 	}
 	c.sendCond = sync.NewCond(&c.sendMu)
 	go c.readLoop()
@@ -365,7 +410,16 @@ func (c *pbsH2Conn) finishStream(st *stream) {
 	}
 	delete(c.streams, st.id)
 	c.streamsMu.Unlock()
+	c.releaseSlot()
 	close(st.done)
+}
+
+// releaseSlot returns a MAX_CONCURRENT_STREAMS slot to the pool. nil when the
+// peer did not advertise a limit.
+func (c *pbsH2Conn) releaseSlot() {
+	if c.streamSlots != nil {
+		<-c.streamSlots
+	}
 }
 
 func (c *pbsH2Conn) streamLookup(id uint32) *stream {
@@ -388,6 +442,7 @@ func (c *pbsH2Conn) fail(err error) {
 	c.sendCond.Broadcast()
 	c.sendMu.Unlock()
 	c.streamsMu.Lock()
+	nStreams := len(c.streams)
 	for _, st := range c.streams {
 		if st.err == nil {
 			st.err = err
@@ -400,6 +455,11 @@ func (c *pbsH2Conn) fail(err error) {
 	}
 	c.streams = make(map[uint32]*stream)
 	c.streamsMu.Unlock()
+	// Release every stream's MAX_CONCURRENT_STREAMS slot so senders blocked in
+	// sendRequest's slot acquire unblock and observe the closed connection.
+	for i := 0; i < nStreams; i++ {
+		c.releaseSlot()
+	}
 }
 
 // sendRequest writes an H2 request on a new stream and returns its handle. The
@@ -414,6 +474,21 @@ func (c *pbsH2Conn) sendRequest(method, path string, params url.Values, body []b
 		return nil, errConnClosed
 	}
 
+	// Wait for a stream slot if the peer advertised MAX_CONCURRENT_STREAMS,
+	// faithful to the h2 crate's SendRequest::ready() which yields until a
+	// stream can be opened. The slot is held until the stream closes
+	// (finishStream), matching the server's concurrent-stream accounting.
+	if c.streamSlots != nil {
+		c.streamSlots <- struct{}{}
+		if c.closed.Load() {
+			c.releaseSlot()
+			if e := c.closeErr.Load(); e != nil {
+				return nil, *e
+			}
+			return nil, errConnClosed
+		}
+	}
+
 	fullPath := path
 	if len(params) > 0 {
 		fullPath += "?" + params.Encode()
@@ -421,7 +496,7 @@ func (c *pbsH2Conn) sendRequest(method, path string, params url.Values, body []b
 
 	c.writeMu.Lock()
 	id := c.allocID()
-	st := newStream(id, streamRecvInitial)
+	st := c.newStream(id, streamRecvInitial)
 	c.streamsMu.Lock()
 	c.streams[id] = st
 	c.streamsMu.Unlock()
@@ -453,12 +528,13 @@ func (c *pbsH2Conn) sendRequest(method, path string, params url.Values, body []b
 		c.sendMu.Lock()
 		delete(c.peerStreamWin, id)
 		c.sendMu.Unlock()
+		c.releaseSlot()
 		return nil, fmt.Errorf("write HEADERS: %w", err)
 	}
 
 	if body != nil {
 		go func() {
-			if err := c.writeBody(id, body); err != nil && !c.closed.Load() {
+			if err := c.writeBody(st, body); err != nil && !c.closed.Load() {
 				st.err = err
 				c.finishStream(st)
 			}
@@ -471,16 +547,16 @@ func (c *pbsH2Conn) sendRequest(method, path string, params url.Values, body []b
 // credit (connection + stream window) before each frame. This is what lets
 // bodies larger than the peer's initial window proceed without deadlocking:
 // the reader delivers WINDOW_UPDATEs while we are blocked here.
-func (c *pbsH2Conn) writeBody(id uint32, body []byte) error {
+func (c *pbsH2Conn) writeBody(st *stream, body []byte) error {
 	max := int(c.maxFrameSize)
 	for len(body) > 0 {
 		n := min(len(body), max)
 		end := len(body) == n
-		if err := c.awaitSendWindow(id, int64(n)); err != nil {
+		if err := c.awaitSendWindow(st, int64(n)); err != nil {
 			return err
 		}
 		c.writeMu.Lock()
-		err := c.framer.WriteData(id, end, body[:n])
+		err := c.framer.WriteData(st.id, end, body[:n])
 		c.writeMu.Unlock()
 		if err != nil {
 			return fmt.Errorf("write DATA: %w", err)
@@ -492,8 +568,9 @@ func (c *pbsH2Conn) writeBody(id uint32, body []byte) error {
 
 // awaitSendWindow blocks until the peer allows sending n more bytes on both the
 // connection and the stream window, then deducts n from both. Returns on
-// connection close.
-func (c *pbsH2Conn) awaitSendWindow(id uint32, n int64) error {
+// connection close or if the stream is reset (st.done closed) -- faithful to
+// the Rust PipeToSendStream's poll_reset check.
+func (c *pbsH2Conn) awaitSendWindow(st *stream, n int64) error {
 	if n == 0 {
 		return nil
 	}
@@ -506,14 +583,21 @@ func (c *pbsH2Conn) awaitSendWindow(id uint32, n int64) error {
 			}
 			return errConnClosed
 		}
-		if c.peerConnWin >= n && c.peerStreamWin[id] >= n {
+		// Per-stream reset check: if the reader closed st.done (RST_STREAM or
+		// connection failure), abort the send with the stream's error.
+		select {
+		case <-st.done:
+			if st.err != nil {
+				return fmt.Errorf("send aborted: %w", st.err)
+			}
+			return fmt.Errorf("send aborted: stream closed")
+		default:
+		}
+		if c.peerConnWin >= n && c.peerStreamWin[st.id] >= n {
 			c.peerConnWin -= n
-			c.peerStreamWin[id] -= n
+			c.peerStreamWin[st.id] -= n
 			return nil
 		}
-		// The window is too small for this single frame. Wait for updates; if
-		// the peer never opens enough window (shouldn't happen for valid H2),
-		// the connection-close path wakes us.
 		c.sendCond.Wait()
 	}
 }
@@ -558,7 +642,9 @@ func (c *pbsH2Conn) do(method, path string, params url.Values, body []byte, cont
 	if err != nil {
 		return nil, err
 	}
-	return st.Wait()
+	data, err := st.Wait()
+	st.release()
+	return data, err
 }
 
 // doRaw sends a body-less request and returns the raw response body (for binary

@@ -14,6 +14,23 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
+// RemoteDedupWriter writes a split pxar archive (v2), uploading the payload
+// stream to PBS with chunk-level deduplication.
+//
+// Architecture (faithful to Rust's pxar create + backup_writer pipeline):
+//
+//	Encoder ──(io.Pipe)──> interleavePayload ──> putRaw ──> appendCh ──> appendWorker ──> PBS
+//	               ▲
+//	         bufio.Writer (256 KiB)
+//
+// The encoder writes to a bufio.Writer that flushes into an io.Pipe. The
+// upload goroutine reads from the pipe via interleavePayload. This is a
+// pull-based stream: the chunker pulls bytes from the encoder through the
+// pipe; the encoder blocks when the pipe buffer is full (natural backpressure).
+// InjectChunks (dedup boundaries) are sent through a separate channel.
+//
+// This replaces the previous push-based design (eventCh→dataCh→chanReader)
+// which added ~66% idle time from channel synchronization overhead.
 type RemoteDedupWriter struct {
 	session     backupproxy.BackupSession
 	ctx         context.Context
@@ -24,16 +41,22 @@ type RemoteDedupWriter struct {
 	dirDepth    int
 	lastRefOff  *uint64
 
-	eventCh   chan streamEvent
-	encErr    error
-	encMu     sync.Mutex
-	uploadRes chan uploadResult
-}
+	// Pipe connecting encoder output to the chunker/uploader.
+	pr *io.PipeReader
+	pw *io.PipeWriter
 
-type streamEvent struct {
-	injection *backupproxy.InjectChunks
-	data      []byte
-	err       error
+	// Injection channel for dedup boundary markers.
+	injectCh chan backupproxy.InjectChunks
+
+	// Result from the upload goroutine.
+	uploadRes chan uploadResult
+
+	// bufio writer wrapping the pipe for the encoder.
+	payloadBuf *bufio.Writer
+
+	mu      sync.Mutex
+	encErr  error
+	started bool
 }
 
 type uploadResult struct {
@@ -54,150 +77,70 @@ func NewRemoteDedupWriter(
 	}, nil
 }
 
-type eventWriter struct {
-	ch chan<- streamEvent
-}
-
-func (ew *eventWriter) Write(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	buf := make([]byte, len(p))
-	copy(buf, p)
-	ew.ch <- streamEvent{data: buf}
-	return len(p), nil
-}
-
 func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.metaBuf.Reset()
 	w.dirDepth = 1
 	opts.Format = format.FormatVersion2
 
-	w.eventCh = make(chan streamEvent, 10)
+	w.pr, w.pw = io.Pipe()
+	w.injectCh = make(chan backupproxy.InjectChunks, 64)
 	w.uploadRes = make(chan uploadResult, 1)
 
+	// bufio.Writer(256 KiB) reduces the number of pipe writes and gives the
+	// encoder a larger atomic write unit, matching Rust's encoder behaviour.
+	w.payloadBuf = bufio.NewWriterSize(w.pw, 256<<10)
+	w.inner = NewSplitStreamWriter(&w.metaBuf, w.payloadBuf)
+
 	go w.uploadPayload()
-
-	const bufSize = 256 * 1024
-	ew := &eventWriter{ch: w.eventCh}
-	payloadOut := bufio.NewWriterSize(ew, bufSize)
-
-	w.inner = NewSplitStreamWriter(&w.metaBuf, payloadOut)
+	w.started = true
 
 	return w.inner.Begin(rootMeta, opts)
 }
 
 func (w *RemoteDedupWriter) flushPayload() {
-	if sw, ok := w.inner.payloadOut.(*bufio.Writer); ok {
-		_ = sw.Flush()
+	if w.payloadBuf != nil {
+		_ = w.payloadBuf.Flush()
 	}
 }
 
-func (w *RemoteDedupWriter) setEncErr(err error) {
-	w.encMu.Lock()
-	if w.encErr == nil {
-		w.encErr = err
-	}
-	w.encMu.Unlock()
-}
-
+// uploadPayload runs in a goroutine. It reads raw payload bytes from the pipe
+// and injection markers from the channel, feeding them to interleavePayload.
 func (w *RemoteDedupWriter) uploadPayload() {
-	injectCh := make(chan backupproxy.InjectChunks, 64)
-	dataCh := make(chan streamEvent, 10)
-
-	go func() {
-		defer close(injectCh)
-		defer close(dataCh)
-		for ev := range w.eventCh {
-			if ev.injection != nil {
-				injectCh <- *ev.injection
-			} else {
-				dataCh <- ev
-			}
-		}
-	}()
-
-	cr := &chanReader{ch: dataCh}
-
+	// interleavePayload reads from the pipe (new data) and the injection
+	// channel (dedup boundaries). The pipe provides natural backpressure:
+	// when the chunker is slow, pipe writes block, which blocks the encoder.
 	result, err := w.session.UploadPayloadInterleaved(
 		w.ctx,
 		w.payloadName,
-		cr,
-		injectCh,
+		w.pr,
+		w.injectCh,
 	)
 	w.uploadRes <- uploadResult{result: result, err: err}
 }
 
-type chanReader struct {
-	ch  <-chan streamEvent
-	buf []byte
-	err error
-}
-
-func (cr *chanReader) Read(p []byte) (int, error) {
-	if cr.err != nil {
-		return 0, cr.err
-	}
-	if len(cr.buf) > 0 {
-		n := copy(p, cr.buf)
-		cr.buf = cr.buf[n:]
-		return n, nil
-	}
-	for ev := range cr.ch {
-		if ev.err != nil {
-			cr.err = ev.err
-			return 0, ev.err
-		}
-		if len(ev.data) == 0 {
-			continue
-		}
-		n := copy(p, ev.data)
-		if n < len(ev.data) {
-			cr.buf = ev.data[n:]
-		}
-		return n, nil
-	}
-	return 0, io.EOF
-}
-
-// WriteHardlink writes a hard link entry with an explicit target offset.
-func (w *RemoteDedupWriter) WriteHardlink(name string, target string, targetOffset encoder.LinkOffset) error {
-	return w.inner.WriteHardlink(name, target, targetOffset)
-}
+// ----- entry writing (called from main goroutine) -----
 
 func (w *RemoteDedupWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) error {
 	if len(chunks) == 0 {
 		return nil
 	}
+	enc := w.inner.Encoder()
+	if enc == nil {
+		return fmt.Errorf("encoder not initialized")
+	}
+	boundary := enc.PayloadPosition()
+	w.flushPayload()
 
 	totalSize := uint64(0)
 	for _, c := range chunks {
 		totalSize += c.Size
 	}
 
-	enc := w.inner.Encoder()
-	if enc == nil {
-		return fmt.Errorf("encoder not initialized")
+	w.injectCh <- backupproxy.InjectChunks{
+		Chunks:   chunks,
+		Size:     totalSize,
+		Boundary: boundary,
 	}
-
-	// Boundary is the absolute payload offset at which the injection occurs.
-	// It must be captured from the encoder BEFORE advancing, matching the
-	// Rust encoder's `injection_boundary = encoder.payload_position()` taken
-	// before `encoder.advance(size)`. The payload chunker uses it to splice
-	// injected chunks into the stream at the right place so offsets stay in
-	// sync with the rest of the archive.
-	boundary := enc.PayloadPosition()
-
-	w.flushPayload()
-
-	w.eventCh <- streamEvent{
-		injection: &backupproxy.InjectChunks{
-			Chunks:   chunks,
-			Size:     totalSize,
-			Boundary: boundary,
-		},
-	}
-
 	return enc.Advance(totalSize)
 }
 
@@ -214,6 +157,10 @@ func (w *RemoteDedupWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint6
 		return fmt.Errorf("payload offset %d is not strictly greater than last accepted offset %d", payloadOffset, *w.lastRefOff)
 	}
 	return w.inner.WriteEntryRef(entry, payloadOffset)
+}
+
+func (w *RemoteDedupWriter) WriteHardlink(name string, target string, targetOffset encoder.LinkOffset) error {
+	return w.inner.WriteHardlink(name, target, targetOffset)
 }
 
 func (w *RemoteDedupWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
@@ -234,7 +181,7 @@ func (w *RemoteDedupWriter) Finish() error {
 		if err := w.inner.EndDirectory(); err != nil {
 			w.setEncErr(err)
 			w.flushPayload()
-			close(w.eventCh)
+			_ = w.pw.CloseWithError(err)
 			<-w.uploadRes
 			return err
 		}
@@ -243,13 +190,14 @@ func (w *RemoteDedupWriter) Finish() error {
 	if err := w.inner.Finish(); err != nil {
 		w.setEncErr(err)
 		w.flushPayload()
-		close(w.eventCh)
+		_ = w.pw.CloseWithError(err)
 		<-w.uploadRes
 		return err
 	}
 
 	w.flushPayload()
-	close(w.eventCh)
+	_ = w.pw.Close()
+	close(w.injectCh)
 
 	res := <-w.uploadRes
 	if res.err != nil {
@@ -260,13 +208,10 @@ func (w *RemoteDedupWriter) Finish() error {
 	if err != nil {
 		return fmt.Errorf("upload metadata: %w", err)
 	}
-
 	return nil
 }
 
-func (w *RemoteDedupWriter) Close() error {
-	return nil
-}
+func (w *RemoteDedupWriter) Close() error { return nil }
 
 func (w *RemoteDedupWriter) Encoder() *encoder.Encoder {
 	return w.inner.Encoder()
@@ -277,4 +222,12 @@ func (w *RemoteDedupWriter) AdvancePayloadPosition(n uint64) error {
 		return enc.Advance(n)
 	}
 	return nil
+}
+
+func (w *RemoteDedupWriter) setEncErr(err error) {
+	w.mu.Lock()
+	if w.encErr == nil {
+		w.encErr = err
+	}
+	w.mu.Unlock()
 }

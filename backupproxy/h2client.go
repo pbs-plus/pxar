@@ -145,6 +145,9 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 	if cfg.Namespace != "" {
 		params.Set("ns", cfg.Namespace)
 	}
+	if cfg.Debug {
+		params.Set("debug", "1")
+	}
 	upgradePath := u.Path + "/backup?" + params.Encode()
 
 	tlsCfg := &tls.Config{

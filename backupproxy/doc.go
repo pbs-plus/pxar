@@ -123,6 +123,9 @@ type BackupConfig struct {
 	BackupTime     int64
 	DetectionMode  DetectionMode
 	Compress       bool
+	// Debug enables verbose server-side chunk-level logging in the PBS task log
+	// (matching proxmox-backup-client's --debug flag).
+	Debug bool
 }
 
 // PreviousBackupRef identifies a previous backup snapshot for metadata comparison.

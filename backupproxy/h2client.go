@@ -457,7 +457,7 @@ func (c *pbsH2Conn) fail(err error) {
 	c.streamsMu.Unlock()
 	// Release every stream's MAX_CONCURRENT_STREAMS slot so senders blocked in
 	// sendRequest's slot acquire unblock and observe the closed connection.
-	for i := 0; i < nStreams; i++ {
+	for range nStreams {
 		c.releaseSlot()
 	}
 }

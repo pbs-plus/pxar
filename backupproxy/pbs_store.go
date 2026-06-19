@@ -410,8 +410,7 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 		idx:          datastore.NewDynamicIndexWriter(time.Now().Unix()),
 		batchDigests: make([]string, 0, pbsAppendBatchSize),
 		batchOffsets: make([]uint64, 0, pbsAppendBatchSize),
-		uploadSem:    make(chan struct{}, pbsMaxInflight),
-		appendCh:     make(chan appendJob, pbsAppendBatchSize),
+		appendCh:     make(chan appendJob, pbsUploadQueueCap),
 		appendDone:   make(chan error, 1),
 	}
 	go sink.appendWorker()
@@ -451,9 +450,10 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 //     checksum (idx.Add) in production/offset order and enqueues an appendJob
 //     per chunk. New chunks are encoded into owned pooled blobs and their
 //     upload is fired asynchronously (dynamicChunkUploadAsync) — not awaited
-//     inline — so many uploads stream concurrently over H2 multiplexing. A
-//     semaphore (pbsMaxInflight) bounds in-flight blobs (memory and the H2
-//     in-flight depth), matching the Rust upload_queue capacity of 64.
+//     inline — so many uploads stream concurrently over H2 multiplexing.
+//     Backpressure is provided by appendCh (capacity pbsUploadQueueCap, matching
+//     Rust's upload_queue of 64) and the H2 connection's MAX_CONCURRENT_STREAMS
+//     stream slots — no separate semaphore is needed.
 //   - A single appendWorker drains appendCh in offset order, awaits each new
 //     chunk's upload completion, then appends it to the server dynamic index
 //     in batches (pbsAppendBatchSize). PBS dynamic_append requires the chunk to
@@ -478,7 +478,10 @@ type pbsPayloadSink struct {
 	hexBuf     [64]byte          // worker-owned: digest hex for server appends
 
 	// Continuous pipelined upload/append pipeline.
-	uploadSem  chan struct{}  // bounds in-flight new-chunk blobs
+	// Backpressure: appendCh bounds the queue between producer and append
+	// worker (matching Rust's upload_queue of 64). The H2 connection's
+	// MAX_CONCURRENT_STREAMS slot provides natural in-flight concurrency
+	// bounding — no separate semaphore is needed.
 	appendCh   chan appendJob // ordered chunk stream from producer to worker
 	appendDone chan error     // worker result
 }
@@ -497,7 +500,12 @@ type appendJob struct {
 
 const (
 	pbsAppendBatchSize = 1024 // dynamic_index append batch (matches Rust)
-	pbsMaxInflight     = 4    // in-flight chunk uploads; bounds memory (cap*maxChunk) and, for tape sources, keeps the read burst under the drive buffer to avoid backhitching. Rust's upload_queue is 64 (disk backups / fast servers); 4 is the tape-safe default that also minimizes in-order head-of-line blocking on serialized stores.
+	// pbsUploadQueueCap is the capacity of the appendCh channel, which bounds
+	// the number of chunks queued between the producer (putRaw) and the append
+	// worker. Rust's append_chunk_queue uses mpsc::channel(64); we match that.
+	// The H2 connection's MAX_CONCURRENT_STREAMS provides additional natural
+	// backpressure on in-flight uploads.
+	pbsUploadQueueCap = 64
 )
 
 // flushBatch sends the accumulated dynamic-index appends to the server. Called
@@ -552,13 +560,12 @@ func (s *pbsPayloadSink) putRaw(offset uint64, raw []byte) error {
 
 	// New chunk: encode into an owned pooled blob, fire the upload asynchronously
 	// (the conn streams the body under flow control in its own goroutine), and
-	// enqueue an append job whose awaiter the worker will call in order. The
-	// semaphore bounds in-flight blobs so memory and the H2 in-flight depth stay
-	// capped; the worker releases the slot after the upload completes.
-	s.uploadSem <- struct{}{}
+	// enqueue an append job whose awaiter the worker will call in order.
+	// Backpressure is provided by appendCh (capacity pbsUploadQueueCap, matching
+	// Rust's upload_queue of 64) and the H2 connection's MAX_CONCURRENT_STREAMS
+	// stream slots — no separate semaphore is needed.
 	blob, bp, err := borrowChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
 	if err != nil {
-		<-s.uploadSem
 		return err
 	}
 	var hexBuf [64]byte
@@ -590,8 +597,8 @@ func (s *pbsPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 // appended after each upload, preserving offset order for the index checksum.
 //
 // On the first error the worker records it (via the produced error on
-// appendDone) and continues draining, releasing blob buffers and semaphore
-// slots so the producer does not deadlock.
+// appendDone) and continues draining, releasing blob buffers so the producer
+// does not deadlock.
 func (s *pbsPayloadSink) appendWorker() {
 	var firstErr error
 	for job := range s.appendCh {
@@ -599,7 +606,6 @@ func (s *pbsPayloadSink) appendWorker() {
 			if job.await != nil {
 				_ = job.await()
 				datastore.PutBlobBuf(job.bp)
-				<-s.uploadSem
 			}
 			continue
 		}
@@ -607,11 +613,9 @@ func (s *pbsPayloadSink) appendWorker() {
 			if err := job.await(); err != nil {
 				firstErr = err
 				datastore.PutBlobBuf(job.bp)
-				<-s.uploadSem
 				continue
 			}
 			datastore.PutBlobBuf(job.bp)
-			<-s.uploadSem
 		}
 		if err := s.appendOne(&job); err != nil {
 			firstErr = err

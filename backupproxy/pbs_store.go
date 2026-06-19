@@ -554,8 +554,15 @@ func (s *pbsPayloadSink) putRaw(offset uint64, raw []byte) error {
 	s.idx.Add(offset+size, digest)
 
 	if s.localKnown[digest] || s.session.knownChunks[digest] {
+		if s.session.config.Debug {
+			fmt.Fprintf(os.Stderr, "[putRaw] offset=%d size=%d dedup (known)\n", offset, size)
+		}
 		s.appendCh <- appendJob{digest: digest, offset: offset, size: size}
 		return nil
+	}
+
+	if s.session.config.Debug {
+		fmt.Fprintf(os.Stderr, "[putRaw] offset=%d size=%d NEW → upload\n", offset, size)
 	}
 
 	// New chunk: encode into an owned pooled blob, fire the upload asynchronously
@@ -600,8 +607,11 @@ func (s *pbsPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 // appendDone) and continues draining, releasing blob buffers so the producer
 // does not deadlock.
 func (s *pbsPayloadSink) appendWorker() {
+	debug := s.session.config.Debug
 	var firstErr error
+	queued := 0
 	for job := range s.appendCh {
+		queued++
 		if firstErr != nil {
 			if job.await != nil {
 				_ = job.await()
@@ -610,10 +620,20 @@ func (s *pbsPayloadSink) appendWorker() {
 			continue
 		}
 		if job.await != nil {
+			if debug {
+				fmt.Fprintf(os.Stderr, "[appendWorker] awaiting chunk offset=%d size=%d (q=%d)\n", job.offset, job.size, len(s.appendCh))
+			}
+			t0 := time.Now()
 			if err := job.await(); err != nil {
+				if debug {
+					fmt.Fprintf(os.Stderr, "[appendWorker] chunk upload FAILED after %v: %v\n", time.Since(t0).Round(time.Millisecond), err)
+				}
 				firstErr = err
 				datastore.PutBlobBuf(job.bp)
 				continue
+			}
+			if debug {
+				fmt.Fprintf(os.Stderr, "[appendWorker] chunk upload OK offset=%d took %v\n", job.offset, time.Since(t0).Round(time.Millisecond))
 			}
 			datastore.PutBlobBuf(job.bp)
 		}

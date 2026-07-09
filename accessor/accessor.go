@@ -96,6 +96,12 @@ func (a *Accessor) ReadRoot() (*pxar.Entry, error) {
 	return a.readRootLocked()
 }
 
+func (a *Accessor) ReadRootFull() (*pxar.Entry, error) {
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	return a.readRootFullLocked()
+}
+
 // readRootLocked reads the root entry without acquiring metaMu.
 func (a *Accessor) readRootLocked() (*pxar.Entry, error) {
 	if _, err := a.reader.Seek(0, io.SeekStart); err != nil {
@@ -167,6 +173,178 @@ func (a *Accessor) readRootLocked() (*pxar.Entry, error) {
 			a.goodbyeCache[int64(entry.ContentOffset)] = int64(entry.ContentOffset)
 			a.goodbyeMu.Unlock()
 			return entry, nil
+		default:
+			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
+				return nil, err
+			}
+		}
+	}
+}
+
+func (a *Accessor) readRootFullLocked() (*pxar.Entry, error) {
+	if _, err := a.reader.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	h, err := a.readHeader()
+	if err != nil {
+		return nil, err
+	}
+
+	if h.Type == format.Version {
+		if _, err := a.reader.Seek(int64(h.ContentSize()), io.SeekCurrent); err != nil {
+			return nil, err
+		}
+		h, err = a.readHeader()
+		if err != nil {
+			return nil, err
+		}
+
+		if h.Type == format.PXARPrelude {
+			if _, err := a.reader.Seek(int64(h.ContentSize()), io.SeekCurrent); err != nil {
+				return nil, err
+			}
+			h, err = a.readHeader()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if h.Type != format.PXAREntry {
+		return nil, fmt.Errorf("expected ENTRY header, got %s", h.String())
+	}
+
+	stat, err := a.readStat()
+	if err != nil {
+		return nil, err
+	}
+
+	entry := &pxar.Entry{
+		Path:     "/",
+		Metadata: pxar.Metadata{Stat: stat},
+		Kind:     pxar.KindDirectory,
+	}
+
+	if _, err := a.reader.Seek(int64(h.ContentSize())-40, io.SeekCurrent); err != nil {
+		return nil, err
+	}
+
+	for {
+		posBefore, _ := a.reader.Seek(0, io.SeekCurrent)
+		h2, err := a.readHeader()
+		if err != nil {
+			return nil, err
+		}
+		switch h2.Type {
+		case format.PXARFilename:
+			entry.ContentOffset = uint64(posBefore)
+			a.cacheRootGoodbyeFromEnd(int64(entry.ContentOffset))
+			return entry, nil
+		case format.PXARGoodbye:
+			entry.ContentOffset = uint64(posBefore)
+			a.goodbyeMu.Lock()
+			a.goodbyeCache[int64(entry.ContentOffset)] = int64(entry.ContentOffset)
+			a.goodbyeMu.Unlock()
+			return entry, nil
+
+		case format.PXARXAttr:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			cp := make([]byte, len(data))
+			copy(cp, data)
+			nameLen := 0
+			for i, b := range data {
+				if b == 0 {
+					nameLen = i
+					break
+				}
+			}
+			entry.Metadata.XAttrs = append(entry.Metadata.XAttrs, format.XAttr{Data: cp, NameLen: nameLen})
+		case format.PXARFCaps:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			cp := make([]byte, len(data))
+			copy(cp, data)
+			entry.Metadata.FCaps = cp
+		case format.PXARACLUser:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 16 {
+				entry.Metadata.ACL.Users = append(entry.Metadata.ACL.Users, format.ACLUser{
+					UID:         binary.LittleEndian.Uint64(data[0:]),
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+				})
+			}
+		case format.PXARACLGroup:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 16 {
+				entry.Metadata.ACL.Groups = append(entry.Metadata.ACL.Groups, format.ACLGroup{
+					GID:         binary.LittleEndian.Uint64(data[0:]),
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+				})
+			}
+		case format.PXARACLGroupObj:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 8 {
+				obj := format.ACLGroupObject{
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[0:])),
+				}
+				entry.Metadata.ACL.GroupObj = &obj
+			}
+		case format.PXARACLDefault:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 32 {
+				def := format.ACLDefault{
+					UserObjPermissions:  format.ACLPermissions(binary.LittleEndian.Uint64(data[0:])),
+					GroupObjPermissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+					OtherPermissions:    format.ACLPermissions(binary.LittleEndian.Uint64(data[16:])),
+					MaskPermissions:     format.ACLPermissions(binary.LittleEndian.Uint64(data[24:])),
+				}
+				entry.Metadata.ACL.Default = &def
+			}
+		case format.PXARACLDefaultUser:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 16 {
+				entry.Metadata.ACL.DefaultUsers = append(entry.Metadata.ACL.DefaultUsers, format.ACLUser{
+					UID:         binary.LittleEndian.Uint64(data[0:]),
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+				})
+			}
+		case format.PXARACLDefaultGroup:
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
+				return nil, err
+			}
+			if len(data) >= 16 {
+				entry.Metadata.ACL.DefaultGroups = append(entry.Metadata.ACL.DefaultGroups, format.ACLGroup{
+					GID:         binary.LittleEndian.Uint64(data[0:]),
+					Permissions: format.ACLPermissions(binary.LittleEndian.Uint64(data[8:])),
+				})
+			}
+		case format.PXARQuotaProjID:
+			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
+				return nil, err
+			}
+
 		default:
 			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
 				return nil, err

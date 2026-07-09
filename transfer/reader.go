@@ -13,8 +13,9 @@ import (
 
 // ArchiveReader provides unified read access to any pxar archive format.
 type ArchiveReader interface {
-	// ReadRoot returns the root directory entry.
 	ReadRoot() (*pxar.Entry, error)
+
+	ReadRootFull() (*pxar.Entry, error)
 
 	// Lookup finds an entry by archive-internal path.
 	Lookup(path string) (*pxar.Entry, error)
@@ -67,6 +68,10 @@ func NewSplitFileReader(metaReader, payloadReader io.ReadSeeker) *FileReader {
 
 func (r *FileReader) ReadRoot() (*pxar.Entry, error) {
 	return r.accessor.ReadRoot()
+}
+
+func (r *FileReader) ReadRootFull() (*pxar.Entry, error) {
+	return r.accessor.ReadRootFull()
 }
 
 func (r *FileReader) Lookup(path string) (*pxar.Entry, error) {
@@ -174,6 +179,10 @@ func (r *ChunkedReader) ReaderAt() io.ReaderAt {
 
 func (r *ChunkedReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
+}
+
+func (r *ChunkedReader) ReadRootFull() (*pxar.Entry, error) {
+	return r.inner.ReadRootFull()
 }
 
 func (r *ChunkedReader) Lookup(path string) (*pxar.Entry, error) {
@@ -331,6 +340,10 @@ func (r *SplitReader) PayloadReaderAt() io.ReaderAt {
 
 func (r *SplitReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
+}
+
+func (r *SplitReader) ReadRootFull() (*pxar.Entry, error) {
+	return r.inner.ReadRootFull()
 }
 
 func (r *SplitReader) Lookup(path string) (*pxar.Entry, error) {

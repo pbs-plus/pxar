@@ -650,7 +650,7 @@ func TestLocalFS_CacheMissFallback_ListXAttrs(t *testing.T) {
 	}
 
 	// Force heavy cache pressure so xattr.txt entry is evicted
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		_, _ = fs.Lookup("hello.txt")
 		_, _ = fs.Lookup("xattr.txt")
 	}
@@ -693,7 +693,7 @@ func TestLocalFS_CacheMissFallback_GetAttr(t *testing.T) {
 	}
 
 	// Force cache pressure
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		_, _ = fs.Lookup("xattr.txt")
 	}
 

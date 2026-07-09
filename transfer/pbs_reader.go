@@ -96,6 +96,10 @@ func (r *PBSReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
 }
 
+func (r *PBSReader) ReadRootFull() (*pxar.Entry, error) {
+	return r.inner.ReadRootFull()
+}
+
 func (r *PBSReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }

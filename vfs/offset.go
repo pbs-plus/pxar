@@ -85,6 +85,8 @@ type LocalFS struct {
 	rangeOrder    []uint64
 	maxCache      int
 
+	rootEntry *pxar.Entry
+
 	files   int64
 	folders int64
 	bytes   int64
@@ -250,6 +252,21 @@ func (fs *LocalFS) ReadLink(entryStart uint64) ([]byte, error) {
 
 func (fs *LocalFS) ListXAttrs(entryStart uint64) (map[string][]byte, error) {
 	e := fs.getCachedEntry(entryStart)
+
+	if entryStart == 0 {
+		if e != nil && len(e.Metadata.XAttrs) > 0 {
+			return pxar.EntryXAttrs(e), nil
+		}
+		fs.metaMu.Lock()
+		root, err := fs.reader.ReadRootFull()
+		fs.metaMu.Unlock()
+		if err != nil {
+			return nil, nil
+		}
+		fs.cacheEntry(root)
+		return pxar.EntryXAttrs(root), nil
+	}
+
 	if e == nil {
 		fs.metaMu.Lock()
 		var err error
@@ -261,8 +278,6 @@ func (fs *LocalFS) ListXAttrs(entryStart uint64) (map[string][]byte, error) {
 		fs.cacheEntry(e)
 	}
 
-	// If the cached entry has no xattrs but might have them
-	// (loaded with Minimal), re-read the full entry.
 	if len(e.Metadata.XAttrs) == 0 && e.Metadata.FCaps == nil {
 		fs.metaMu.Lock()
 		full, err := fs.reader.ReadEntryAt(int64(entryStart))
@@ -301,6 +316,9 @@ func (fs *LocalFS) Reader() transfer.ArchiveReader {
 
 func (fs *LocalFS) cacheEntry(e *pxar.Entry) {
 	fs.cacheMu.Lock()
+	if e.FileOffset == 0 {
+		fs.rootEntry = e
+	}
 	fs.entryCache[e.FileOffset] = e
 	fs.entryOrder = append(fs.entryOrder, e.FileOffset)
 	if e.IsRegularFile() && e.ContentOffset > 0 {
@@ -329,6 +347,9 @@ func (fs *LocalFS) evictToLimit() {
 func (fs *LocalFS) getCachedEntry(offset uint64) *pxar.Entry {
 	fs.cacheMu.RLock()
 	e := fs.entryCache[offset]
+	if e == nil && offset == 0 {
+		e = fs.rootEntry
+	}
 	fs.cacheMu.RUnlock()
 	return e
 }

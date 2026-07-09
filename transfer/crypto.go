@@ -81,6 +81,10 @@ func (r *DecryptingReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
 }
 
+func (r *DecryptingReader) ReadRootFull() (*pxar.Entry, error) {
+	return r.inner.ReadRootFull()
+}
+
 func (r *DecryptingReader) Lookup(path string) (*pxar.Entry, error) {
 	return r.inner.Lookup(path)
 }

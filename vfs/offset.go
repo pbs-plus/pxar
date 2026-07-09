@@ -69,35 +69,48 @@ type StatsProvider interface {
 
 // --- LocalFS ---
 
-// LocalFS implements FileSystem backed by a transfer.ArchiveReader.
-// It maintains offset-based caches for entry lookup, content lookup, and
-// directory range resolution — matching the PBS wire protocol patterns.
+const defaultMaxCacheEntries = 4096
+
 type LocalFS struct {
 	reader transfer.ArchiveReader
 
-	// metaMu serializes metadata stream access (Seek + Read is not thread-safe).
 	metaMu sync.Mutex
 
-	// Offset caches
 	cacheMu       sync.RWMutex
-	entryCache    map[uint64]*pxar.Entry // FileOffset -> Entry
-	contentCache  map[uint64]*pxar.Entry // ContentOffset -> Entry
-	rangeToOffset map[uint64]uint64      // EntryRangeEnd -> ContentOffset
+	entryCache    map[uint64]*pxar.Entry
+	contentCache  map[uint64]*pxar.Entry
+	rangeToOffset map[uint64]uint64
+	entryOrder    []uint64
+	contentOrder  []uint64
+	rangeOrder    []uint64
+	maxCache      int
 
-	// Stats (no lock needed for atomic field updates)
 	files   int64
 	folders int64
 	bytes   int64
 }
 
-// NewLocalFS creates an offset-based filesystem backed by an ArchiveReader.
 func NewLocalFS(reader transfer.ArchiveReader) *LocalFS {
 	return &LocalFS{
 		reader:        reader,
 		entryCache:    make(map[uint64]*pxar.Entry, 256),
 		contentCache:  make(map[uint64]*pxar.Entry, 64),
 		rangeToOffset: make(map[uint64]uint64, 64),
+		entryOrder:    make([]uint64, 0, 256),
+		contentOrder:  make([]uint64, 0, 64),
+		rangeOrder:    make([]uint64, 0, 64),
+		maxCache:      defaultMaxCacheEntries,
 	}
+}
+
+func (fs *LocalFS) SetMaxCache(n int) *LocalFS {
+	fs.cacheMu.Lock()
+	defer fs.cacheMu.Unlock()
+	fs.maxCache = n
+	if n > 0 {
+		fs.evictToLimit()
+	}
+	return fs
 }
 
 // Stats returns current read progress statistics.
@@ -258,8 +271,15 @@ func (fs *LocalFS) ListXAttrs(entryStart uint64) (map[string][]byte, error) {
 	return pxar.EntryXAttrs(e), nil
 }
 
-// Close releases all resources.
 func (fs *LocalFS) Close() error {
+	fs.cacheMu.Lock()
+	fs.entryCache = nil
+	fs.contentCache = nil
+	fs.rangeToOffset = nil
+	fs.entryOrder = nil
+	fs.contentOrder = nil
+	fs.rangeOrder = nil
+	fs.cacheMu.Unlock()
 	if fs.reader != nil {
 		return fs.reader.Close()
 	}
@@ -276,13 +296,38 @@ func (fs *LocalFS) Reader() transfer.ArchiveReader {
 func (fs *LocalFS) cacheEntry(e *pxar.Entry) {
 	fs.cacheMu.Lock()
 	fs.entryCache[e.FileOffset] = e
+	fs.entryOrder = append(fs.entryOrder, e.FileOffset)
 	if e.IsRegularFile() && e.ContentOffset > 0 {
 		fs.contentCache[e.ContentOffset] = e
+		fs.contentOrder = append(fs.contentOrder, e.ContentOffset)
 	}
 	if e.IsDir() && e.ContentOffset > 0 {
-		fs.rangeToOffset[e.FileOffset+e.FileSize] = e.ContentOffset
+		key := e.FileOffset + e.FileSize
+		fs.rangeToOffset[key] = e.ContentOffset
+		fs.rangeOrder = append(fs.rangeOrder, key)
+	}
+	if fs.maxCache > 0 {
+		fs.evictToLimit()
 	}
 	fs.cacheMu.Unlock()
+}
+
+func (fs *LocalFS) evictToLimit() {
+	for len(fs.entryCache) > fs.maxCache && len(fs.entryOrder) > 0 {
+		key := fs.entryOrder[0]
+		fs.entryOrder = fs.entryOrder[1:]
+		delete(fs.entryCache, key)
+	}
+	for len(fs.contentCache) > fs.maxCache && len(fs.contentOrder) > 0 {
+		key := fs.contentOrder[0]
+		fs.contentOrder = fs.contentOrder[1:]
+		delete(fs.contentCache, key)
+	}
+	for len(fs.rangeToOffset) > fs.maxCache && len(fs.rangeOrder) > 0 {
+		key := fs.rangeOrder[0]
+		fs.rangeOrder = fs.rangeOrder[1:]
+		delete(fs.rangeToOffset, key)
+	}
 }
 
 func (fs *LocalFS) getCachedEntry(offset uint64) *pxar.Entry {

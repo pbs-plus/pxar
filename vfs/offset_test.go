@@ -541,3 +541,81 @@ func (t *testTransport) CallStream(_ context.Context, method string, req any) (i
 }
 
 func (t *testTransport) Close() error { return nil }
+
+func TestLocalFS_CacheEviction(t *testing.T) {
+	ar := buildTestArchive(t)
+	defer ar.Close()
+
+	fs := vfs.NewLocalFS(ar)
+	fs.SetMaxCache(2) // very small limit
+	defer fs.Close()
+
+	// Access root to populate cache
+	root, err := fs.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ReadDir populates cache with entries
+	_, err = fs.ReadDir(root.ContentOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Access more entries to trigger eviction
+	_, err = fs.Lookup("hello.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fs.Lookup("xattr.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The caches should not exceed maxCache (2 entries each)
+	// We can't directly inspect the internal maps, but we verify
+	// that lookups still work after eviction
+	fi, err := fs.Lookup("hello.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Name() != "hello.txt" {
+		t.Errorf("expected hello.txt, got %q", fi.Name())
+	}
+}
+
+func TestLocalFS_SetMaxCacheZero(t *testing.T) {
+	ar := buildTestArchive(t)
+	defer ar.Close()
+
+	fs := vfs.NewLocalFS(ar)
+	fs.SetMaxCache(0) // unlimited
+	defer fs.Close()
+
+	root, err := fs.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(root.ContentOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) < 3 {
+		t.Errorf("expected at least 3 entries, got %d", len(entries))
+	}
+}
+
+func TestLocalFS_CloseClearsCaches(t *testing.T) {
+	ar := buildTestArchive(t)
+	fs := vfs.NewLocalFS(ar)
+
+	_, err := fs.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Close should clear caches and not panic
+	if err := fs.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

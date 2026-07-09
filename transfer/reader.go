@@ -356,11 +356,15 @@ func (r *SplitReader) ReadCatalog(fn func(CatalogEntry) error) error {
 	return readCatalog(r.inner, fn)
 }
 
-// SetPayloadCacheSize adjusts the payload chunk cache size. See
-// ReadSeeker.SetCacheSize for details.
 func (r *SplitReader) SetPayloadCacheSize(n int) {
 	if r.payloadLazy != nil {
 		r.payloadLazy.SetCacheSize(n)
+	}
+}
+
+func (r *SplitReader) SetMetaCacheSize(n int) {
+	if r.metaLazy != nil {
+		r.metaLazy.SetCacheSize(n)
 	}
 }
 

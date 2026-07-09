@@ -248,11 +248,17 @@ func (fs *LocalFS) ReadLink(entryStart uint64) ([]byte, error) {
 	return nil, fmt.Errorf("symlink entry at offset %d has no target", entryStart)
 }
 
-// ListXAttrs returns extended attributes for an entry by offset.
 func (fs *LocalFS) ListXAttrs(entryStart uint64) (map[string][]byte, error) {
 	e := fs.getCachedEntry(entryStart)
 	if e == nil {
-		return nil, fmt.Errorf("entry at offset %d not found", entryStart)
+		fs.metaMu.Lock()
+		var err error
+		e, err = fs.reader.ReadEntryAt(int64(entryStart))
+		fs.metaMu.Unlock()
+		if err != nil {
+			return nil, fmt.Errorf("entry at offset %d: %w", entryStart, err)
+		}
+		fs.cacheEntry(e)
 	}
 
 	// If the cached entry has no xattrs but might have them
@@ -317,16 +323,6 @@ func (fs *LocalFS) evictToLimit() {
 		key := fs.entryOrder[0]
 		fs.entryOrder = fs.entryOrder[1:]
 		delete(fs.entryCache, key)
-	}
-	for len(fs.contentCache) > fs.maxCache && len(fs.contentOrder) > 0 {
-		key := fs.contentOrder[0]
-		fs.contentOrder = fs.contentOrder[1:]
-		delete(fs.contentCache, key)
-	}
-	for len(fs.rangeToOffset) > fs.maxCache && len(fs.rangeOrder) > 0 {
-		key := fs.rangeOrder[0]
-		fs.rangeOrder = fs.rangeOrder[1:]
-		delete(fs.rangeToOffset, key)
 	}
 }
 

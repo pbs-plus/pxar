@@ -619,3 +619,90 @@ func TestLocalFS_CloseClearsCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLocalFS_CacheMissFallback_ListXAttrs(t *testing.T) {
+	ar := buildTestArchive(t)
+	defer ar.Close()
+
+	fs := vfs.NewLocalFS(ar).SetMaxCache(1) // aggressive eviction
+	defer fs.Close()
+
+	// ReadDir populates the cache, then evicts as new entries come in.
+	root, err := fs.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(root.ContentOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Find xattr.txt entry offset
+	var xattrOffset uint64
+	for _, e := range entries {
+		if e.Name() == "xattr.txt" {
+			xattrOffset = e.EntryRangeStart
+			break
+		}
+	}
+	if xattrOffset == 0 {
+		t.Fatal("xattr.txt not found")
+	}
+
+	// Force heavy cache pressure so xattr.txt entry is evicted
+	for i := 0; i < 100; i++ {
+		_, _ = fs.Lookup("hello.txt")
+		_, _ = fs.Lookup("xattr.txt")
+	}
+
+	// ListXAttrs should still work via re-read fallback
+	xattrs, err := fs.ListXAttrs(xattrOffset)
+	if err != nil {
+		t.Fatalf("ListXAttrs cache-miss fallback failed: %v", err)
+	}
+	if len(xattrs) == 0 {
+		t.Error("expected xattrs")
+	}
+	if string(xattrs["user.foo"]) != "bar" {
+		t.Errorf("expected user.foo=bar, got %q", string(xattrs["user.foo"]))
+	}
+}
+
+func TestLocalFS_CacheMissFallback_GetAttr(t *testing.T) {
+	ar := buildTestArchive(t)
+	defer ar.Close()
+
+	fs := vfs.NewLocalFS(ar).SetMaxCache(1)
+	defer fs.Close()
+
+	root, err := fs.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(root.ContentOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var helloOffset uint64
+	for _, e := range entries {
+		if e.Name() == "hello.txt" {
+			helloOffset = e.EntryRangeStart
+			break
+		}
+	}
+
+	// Force cache pressure
+	for i := 0; i < 100; i++ {
+		_, _ = fs.Lookup("xattr.txt")
+	}
+
+	// GetAttr should still work via re-read fallback
+	fi, err := fs.GetAttr(helloOffset)
+	if err != nil {
+		t.Fatalf("GetAttr cache-miss fallback failed: %v", err)
+	}
+	if fi.Name() != "hello.txt" {
+		t.Errorf("expected hello.txt, got %q", fi.Name())
+	}
+}

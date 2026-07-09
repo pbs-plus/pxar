@@ -109,6 +109,50 @@ func TestFS_Root(t *testing.T) {
 	if root.Name() != "/" {
 		t.Errorf("root name should be /, got %q", root.Name())
 	}
+
+	xattrs, err := fs.ListXAttrs(root.EntryRangeStart)
+	if err != nil {
+		t.Fatalf("ListXAttrs for root: %v", err)
+	}
+	if len(xattrs) != 0 {
+		t.Errorf("expected no xattrs for root, got %d", len(xattrs))
+	}
+}
+
+func TestFS_RootXAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	dirXattrMeta := dirMeta(0o755)
+	dirXattrMeta.XAttrs = append(dirXattrMeta.XAttrs, format.NewXAttr([]byte("user.rootfoo"), []byte("rootbar")))
+	dirXattrMeta.XAttrs = append(dirXattrMeta.XAttrs, format.NewXAttr([]byte("user.lastwritetime"), []byte("1700000000")))
+
+	enc := encoder.NewEncoder(&buf, nil, dirXattrMeta, nil)
+	_, _ = enc.AddFile(fileMeta(0o644, 1000, 1000), "hello.txt", []byte("hello"))
+	_ = enc.Close()
+
+	ar := transfer.NewFileReader(bytes.NewReader(buf.Bytes()))
+	defer ar.Close()
+
+	fs := vfs.NewLocalFS(ar)
+	defer fs.Close()
+
+	root, err := fs.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	xattrs, err := fs.ListXAttrs(root.EntryRangeStart)
+	if err != nil {
+		t.Fatalf("ListXAttrs for root: %v", err)
+	}
+	if len(xattrs) == 0 {
+		t.Error("expected xattrs on root directory")
+	}
+	if string(xattrs["user.rootfoo"]) != "rootbar" {
+		t.Errorf("expected user.rootfoo=rootbar, got %q", string(xattrs["user.rootfoo"]))
+	}
+	if string(xattrs["user.lastwritetime"]) != "1700000000" {
+		t.Errorf("expected user.lastwritetime=1700000000, got %q", string(xattrs["user.lastwritetime"]))
+	}
 }
 
 func TestFS_Lookup(t *testing.T) {

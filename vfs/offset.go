@@ -174,6 +174,22 @@ func (fs *LocalFS) ReadDir(offset uint64) ([]pxar.FileInfo, error) {
 
 // GetAttr returns attributes for an entry by file offset.
 func (fs *LocalFS) GetAttr(entryStart uint64) (*pxar.FileInfo, error) {
+	if entryStart == 0 {
+		if e := fs.rootEntry; e != nil {
+			fs.incCount(e)
+			return pxar.EntryToFileInfo(e), nil
+		}
+		fs.metaMu.Lock()
+		root, err := fs.reader.ReadRoot()
+		fs.metaMu.Unlock()
+		if err != nil {
+			return nil, fmt.Errorf("root entry: %w", err)
+		}
+		fs.cacheEntry(root)
+		fs.incCount(root)
+		return pxar.EntryToFileInfo(root), nil
+	}
+
 	if e := fs.getCachedEntry(entryStart); e != nil {
 		fs.incCount(e)
 		return pxar.EntryToFileInfo(e), nil

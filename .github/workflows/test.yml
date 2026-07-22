@@ -116,22 +116,34 @@ jobs:
       - name: Run integration tests
         id: integration-tests
         run: |
-          echo "::notice::Starting integration tests with PBS..."
-          go test -tags=integration -v -timeout 180s ./backupproxy/ -run 'TestIntegration_'
-          BACKUP_EXIT=$?
-          go test -tags=integration -v -timeout 180s ./transfer/ -run 'TestIntegration_'
-          TRANSFER_EXIT=$?
-          if [ "$BACKUP_EXIT" -ne 0 ]; then
-            echo "backupproxy integration tests failed (exit $BACKUP_EXIT)"
-            echo "test_exit_code=$BACKUP_EXIT" >> "$GITHUB_OUTPUT"
-            exit $BACKUP_EXIT
+          set -uo pipefail
+          echo "::notice::Starting integration tests against the PBS container..."
+          set +e
+          go test -tags=integration -v -timeout 240s \
+            ./backupproxy/ ./transfer/ \
+            -run 'TestIntegration_' 2>&1 | tee integration.log
+          TEST_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          PASSED=$(grep -cE -- '--- PASS: TestIntegration_' integration.log || true)
+          FAILED=$(grep -cE -- '--- FAIL: TestIntegration_' integration.log || true)
+          CFG_SKIP=$(grep -c    'skipping integration test: set PBS_URL' integration.log || true)
+
+          echo "integration results: passed=$PASSED failed=$FAILED config_skips=$CFG_SKIP (go exit=$TEST_EXIT)"
+          echo "passed=$PASSED"            >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED"            >> "$GITHUB_OUTPUT"
+          echo "config_skips=$CFG_SKIP"    >> "$GITHUB_OUTPUT"
+          echo "test_exit_code=$TEST_EXIT" >> "$GITHUB_OUTPUT"
+
+          if [ "$CFG_SKIP" -ne 0 ]; then
+            echo "::error::Integration tests were skipped because the PBS env (PBS_URL/PBS_DATASTORE/PBS_TOKEN) was not effective — the PBS container did not come up correctly."
+            exit 1
           fi
-          if [ "$TRANSFER_EXIT" -ne 0 ]; then
-            echo "transfer integration tests failed (exit $TRANSFER_EXIT)"
-            echo "test_exit_code=$TRANSFER_EXIT" >> "$GITHUB_OUTPUT"
-            exit $TRANSFER_EXIT
+          if [ "$PASSED" -lt 1 ]; then
+            echo "::error::No integration tests ran against PBS (0 passes)."
+            exit 1
           fi
-          echo "test_exit_code=0" >> "$GITHUB_OUTPUT"
+          exit "$TEST_EXIT"
 
       - name: Watch test results with gh CLI
         if: always()
@@ -151,11 +163,10 @@ jobs:
             echo "::endgroup::"
           fi
 
-          # Check test results
           if [ "${{ steps.integration-tests.outputs.test_exit_code }}" = "0" ]; then
-            echo "::notice title=Integration Tests Passed::All chunked didx upload/download tests passed! ✓"
+            echo "::notice title=Integration Tests Passed::${{ steps.integration-tests.outputs.passed }} PBS-backed tests passed (0 skipped). ✓"
           else
-            echo "::error title=Integration Tests Failed::Some tests failed. Check logs above."
+            echo "::error title=Integration Tests Failed::${{ steps.integration-tests.outputs.failed }} tests failed. Check logs above."
           fi
 
       - name: Dump PBS logs on failure

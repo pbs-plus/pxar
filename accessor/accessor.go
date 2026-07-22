@@ -341,8 +341,13 @@ func (a *Accessor) readRootFullLocked() (*pxar.Entry, error) {
 				})
 			}
 		case format.PXARQuotaProjID:
-			if _, err := a.reader.Seek(int64(h2.ContentSize()), io.SeekCurrent); err != nil {
+			data := a.growBuf(int(h2.ContentSize()))
+			if _, err := io.ReadFull(a.reader, data); err != nil {
 				return nil, err
+			}
+			if len(data) >= 8 {
+				v := binary.LittleEndian.Uint64(data[0:])
+				entry.Metadata.QuotaProjectID = &v
 			}
 
 		default:

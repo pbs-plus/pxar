@@ -29,142 +29,133 @@ type CatalogTreeEntry struct {
 }
 
 type CatalogReader struct {
-	r   io.Reader
-	pos int64
+	r io.Reader
 }
 
 func NewCatalogReader(data []byte) *CatalogReader {
-	return &CatalogReader{r: bytes.NewReader(data), pos: 0}
+	return &CatalogReader{r: bytes.NewReader(data)}
 }
 
 func ReadCatalogTree(data []byte) (*CatalogTreeEntry, error) {
-	cr := NewCatalogReader(data)
+	if len(data) < 16 {
+		return nil, fmt.Errorf("catalog too short: %d bytes", len(data))
+	}
 
 	var magic [8]byte
-	if _, err := io.ReadFull(cr.r, magic[:]); err != nil {
-		return nil, fmt.Errorf("read magic: %w", err)
-	}
-	cr.pos += 8
-
+	copy(magic[:], data[0:8])
 	if magic != CatalogMagic {
 		return nil, fmt.Errorf("invalid catalog magic: %x", magic)
 	}
 
-	rootPosData := data[len(data)-8:]
-	rootPos := int64(binary.LittleEndian.Uint64(rootPosData))
-
-	return cr.readDir(data, rootPos)
+	rootStart := int64(binary.LittleEndian.Uint64(data[len(data)-8:]))
+	cr := &CatalogReader{r: bytes.NewReader(data)}
+	return cr.readDir(data, rootStart, "")
 }
 
-func (cr *CatalogReader) readDir(data []byte, dirStartPos int64) (*CatalogTreeEntry, error) {
-	if dirStartPos < 8 || dirStartPos >= int64(len(data))-8 {
-		return nil, fmt.Errorf("invalid dir position: %d", dirStartPos)
+func (cr *CatalogReader) readDir(data []byte, dirStart int64, name string) (*CatalogTreeEntry, error) {
+	if dirStart < 8 || dirStart >= int64(len(data))-8 {
+		return nil, fmt.Errorf("invalid dir position: %d", dirStart)
 	}
 
-	r := bytes.NewReader(data[dirStartPos:])
+	r := bytes.NewReader(data[dirStart:])
 
-	entryCount, err := catalogDecodeU64FromReader(r)
+	tableLen, err := catalogDecodeU64FromReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode table length: %w", err)
+	}
+	table := make([]byte, tableLen)
+	if _, err := io.ReadFull(r, table); err != nil {
+		return nil, fmt.Errorf("read dir block: %w", err)
+	}
+
+	tr := bytes.NewReader(table)
+	count, err := catalogDecodeU64FromReader(tr)
 	if err != nil {
 		return nil, fmt.Errorf("decode entry count: %w", err)
 	}
 
-	dirNameLen, err := catalogDecodeU64FromReader(r)
-	if err != nil {
-		return nil, fmt.Errorf("decode dir name len: %w", err)
-	}
+	node := &CatalogTreeEntry{EntryType: CatalogEntryTypeDir, Name: name}
 
-	dirName := make([]byte, dirNameLen)
-	if dirNameLen > 0 {
-		if _, err := io.ReadFull(r, dirName); err != nil {
-			return nil, fmt.Errorf("read dir name: %w", err)
-		}
-	}
-
-	root := &CatalogTreeEntry{
-		EntryType: CatalogEntryTypeDir,
-		Name:      string(dirName),
-	}
-
-	for i := range entryCount {
-		nameLen, err := catalogDecodeU64FromReader(r)
-		if err != nil {
-			return nil, fmt.Errorf("decode entry name len [%d]: %w", i, err)
-		}
-
+	for i := range count {
 		var entryTypeByte [1]byte
-		if _, err := io.ReadFull(r, entryTypeByte[:]); err != nil {
+		if _, err := io.ReadFull(tr, entryTypeByte[:]); err != nil {
 			return nil, fmt.Errorf("read entry type [%d]: %w", i, err)
 		}
 
-		name := make([]byte, nameLen)
-		if nameLen > 0 {
-			if _, err := io.ReadFull(r, name); err != nil {
-				return nil, fmt.Errorf("read entry name [%d]: %w", i, err)
-			}
+		nameLen, err := catalogDecodeU64FromReader(tr)
+		if err != nil {
+			return nil, fmt.Errorf("decode entry name len [%d]: %w", i, err)
+		}
+		if nameLen > 1<<20 {
+			return nil, fmt.Errorf("entry name too long: %d", nameLen)
+		}
+		entryName := make([]byte, nameLen)
+		if _, err := io.ReadFull(tr, entryName); err != nil {
+			return nil, fmt.Errorf("read entry name [%d]: %w", i, err)
 		}
 
 		switch entryTypeByte[0] {
 		case CatalogEntryFile:
-			size, err := catalogDecodeU64FromReader(r)
+			size, err := catalogDecodeU64FromReader(tr)
 			if err != nil {
-				return nil, fmt.Errorf("decode file size: %w", err)
+				return nil, fmt.Errorf("decode file size [%d]: %w", i, err)
 			}
-			mtime, err := catalogDecodeI64FromReader(r)
+			mtime, err := catalogDecodeI64FromReader(tr)
 			if err != nil {
-				return nil, fmt.Errorf("decode file mtime: %w", err)
+				return nil, fmt.Errorf("decode file mtime [%d]: %w", i, err)
 			}
-			root.Children = append(root.Children, CatalogTreeEntry{
+			node.Children = append(node.Children, CatalogTreeEntry{
 				EntryType: CatalogEntryTypeFile,
-				Name:      string(name),
+				Name:      string(entryName),
 				Size:      size,
 				Mtime:     mtime,
 			})
 
 		case CatalogEntryDir:
-			offset, err := catalogDecodeU64FromReader(r)
+			relOff, err := catalogDecodeU64FromReader(tr)
 			if err != nil {
-				return nil, fmt.Errorf("decode dir offset: %w", err)
+				return nil, fmt.Errorf("decode dir offset [%d]: %w", i, err)
 			}
-			childDir, err := cr.readDir(data, int64(offset))
+			childDir, err := cr.readDir(data, dirStart-int64(relOff), string(entryName))
 			if err != nil {
-				return nil, fmt.Errorf("decode child dir %q: %w", string(name), err)
+				return nil, fmt.Errorf("decode child dir %q: %w", string(entryName), err)
 			}
-			root.Children = append(root.Children, *childDir)
+			node.Children = append(node.Children, *childDir)
 
 		case CatalogEntrySymlink:
-			root.Children = append(root.Children, CatalogTreeEntry{
+			node.Children = append(node.Children, CatalogTreeEntry{
 				EntryType: CatalogEntryTypeSymlink,
-				Name:      string(name),
+				Name:      string(entryName),
 			})
 
 		case CatalogEntryHardlink:
-			root.Children = append(root.Children, CatalogTreeEntry{
+			node.Children = append(node.Children, CatalogTreeEntry{
 				EntryType: CatalogEntryTypeHardlink,
-				Name:      string(name),
+				Name:      string(entryName),
 			})
 
 		case CatalogEntryBlockDev:
-			root.Children = append(root.Children, CatalogTreeEntry{
+			node.Children = append(node.Children, CatalogTreeEntry{
 				EntryType: CatalogEntryTypeBlockDev,
-				Name:      string(name),
+				Name:      string(entryName),
 			})
 
 		case CatalogEntryCharDev:
-			root.Children = append(root.Children, CatalogTreeEntry{
+			node.Children = append(node.Children, CatalogTreeEntry{
 				EntryType: CatalogEntryTypeCharDev,
-				Name:      string(name),
+				Name:      string(entryName),
 			})
 
 		case CatalogEntryFifo:
-			root.Children = append(root.Children, CatalogTreeEntry{
+			node.Children = append(node.Children, CatalogTreeEntry{
 				EntryType: CatalogEntryTypeFifo,
-				Name:      string(name),
+				Name:      string(entryName),
 			})
 
 		case CatalogEntrySocket:
-			root.Children = append(root.Children, CatalogTreeEntry{
+			node.Children = append(node.Children, CatalogTreeEntry{
 				EntryType: CatalogEntryTypeSocket,
-				Name:      string(name),
+				Name:      string(entryName),
 			})
 
 		default:
@@ -172,7 +163,11 @@ func (cr *CatalogReader) readDir(data []byte, dirStartPos int64) (*CatalogTreeEn
 		}
 	}
 
-	return root, nil
+	if tr.Len() != 0 {
+		return nil, fmt.Errorf("unable to parse whole catalog data block: %d trailing bytes", tr.Len())
+	}
+
+	return node, nil
 }
 
 func catalogDecodeU64FromReader(r io.Reader) (uint64, error) {
@@ -193,7 +188,7 @@ func catalogDecodeU64FromReader(r io.Reader) (uint64, error) {
 func catalogDecodeI64FromReader(r io.Reader) (int64, error) {
 	var val uint64
 	negative := false
-	for i := range 10 {
+	for i := range 11 {
 		var b [1]byte
 		if _, err := io.ReadFull(r, b[:]); err != nil {
 			return 0, err
@@ -210,7 +205,7 @@ func catalogDecodeI64FromReader(r io.Reader) (int64, error) {
 		}
 	}
 	if !negative {
-		return int64(val), nil
+		return 0, fmt.Errorf("i64 varint overflow")
 	}
 	return -int64(val), nil
 }

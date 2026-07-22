@@ -19,11 +19,11 @@ const (
 )
 
 type catalogDirEntry struct {
-	name      string
-	size      uint64
-	mtime     int64
-	offset    int64
-	entryType byte
+	name       string
+	size       uint64
+	mtime      int64
+	childStart int64
+	entryType  byte
 }
 
 type catalogDirInfo struct {
@@ -31,16 +31,6 @@ type catalogDirInfo struct {
 	entries []catalogDirEntry
 }
 
-// CatalogWriter produces a pcat1 binary catalog stream compatible with
-// Proxmox Backup Server. Directories are written bottom-up: leaf directories
-// before their parents. Each directory block contains entries followed by a
-// trailer with metadata. The stream ends with an 8-byte little-endian root
-// directory offset.
-//
-// Block format: [entries...][entry_count(u64)][name_len(u64)][name(bytes)]
-// Entry format: [name_len(u64)][type(1)][name(bytes)][type-specific data...]
-// File extra:   [size(u64)][mtime(i64)]
-// Dir extra:    [offset(u64)] (offset from dir start in the stream)
 type CatalogWriter struct {
 	w        io.Writer
 	err      error
@@ -48,7 +38,6 @@ type CatalogWriter struct {
 	pos      int64
 }
 
-// NewCatalogWriter creates a catalog writer and writes the pcat1 magic header.
 func NewCatalogWriter(w io.Writer) *CatalogWriter {
 	cw := &CatalogWriter{w: w, pos: 0}
 	cw.write(CatalogMagic[:])
@@ -117,8 +106,6 @@ func (cw *CatalogWriter) AddSocket(name string) {
 	})
 }
 
-// EndDirectory encodes the current directory block and adds a Dir entry
-// to the parent directory.
 func (cw *CatalogWriter) EndDirectory() {
 	if cw.err != nil {
 		return
@@ -126,26 +113,19 @@ func (cw *CatalogWriter) EndDirectory() {
 	dir := cw.dirstack[len(cw.dirstack)-1]
 	cw.dirstack = cw.dirstack[:len(cw.dirstack)-1]
 
-	dirStart := cw.pos
-
-	catalogEncodeU64(cw, uint64(len(dir.entries)))
-	catalogEncodeU64(cw, uint64(len(dir.name)))
-	cw.writeString(dir.name)
-
-	cw.encodeEntries(dir.entries)
+	start := cw.pos
+	cw.writeDirBlock(dir, start)
 
 	if len(cw.dirstack) > 0 {
 		parent := &cw.dirstack[len(cw.dirstack)-1]
 		parent.entries = append(parent.entries, catalogDirEntry{
-			entryType: CatalogEntryDir,
-			name:      dir.name,
-			offset:    dirStart,
+			entryType:  CatalogEntryDir,
+			name:       dir.name,
+			childStart: start,
 		})
 	}
 }
 
-// Finish encodes the root directory block and writes the 8-byte
-// little-endian root directory offset at the end of the stream.
 func (cw *CatalogWriter) Finish() error {
 	if cw.err != nil {
 		return cw.err
@@ -154,12 +134,7 @@ func (cw *CatalogWriter) Finish() error {
 	cw.dirstack = cw.dirstack[:len(cw.dirstack)-1]
 
 	rootStart := cw.pos
-
-	catalogEncodeU64(cw, uint64(len(root.entries)))
-	catalogEncodeU64(cw, uint64(len(root.name)))
-	cw.writeString(root.name)
-
-	cw.encodeEntries(root.entries)
+	cw.writeDirBlock(root, rootStart)
 
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], uint64(rootStart))
@@ -168,20 +143,22 @@ func (cw *CatalogWriter) Finish() error {
 	return cw.err
 }
 
-func (cw *CatalogWriter) encodeEntries(entries []catalogDirEntry) {
-	for _, e := range entries {
-		catalogEncodeU64(cw, uint64(len(e.name)))
-		cw.writeByte(e.entryType)
-		cw.writeString(e.name)
-
+func (cw *CatalogWriter) writeDirBlock(dir catalogDirInfo, start int64) {
+	table := appendCatalogVarintU64(nil, uint64(len(dir.entries)))
+	for _, e := range dir.entries {
+		table = append(table, e.entryType)
+		table = appendCatalogVarintU64(table, uint64(len(e.name)))
+		table = append(table, e.name...)
 		switch e.entryType {
 		case CatalogEntryFile:
-			catalogEncodeU64(cw, e.size)
-			catalogEncodeI64(cw, e.mtime)
+			table = appendCatalogVarintU64(table, e.size)
+			table = appendCatalogVarintI64(table, e.mtime)
 		case CatalogEntryDir:
-			catalogEncodeU64(cw, uint64(e.offset))
+			table = appendCatalogVarintU64(table, uint64(start-e.childStart))
 		}
 	}
+	cw.write(appendCatalogVarintU64(nil, uint64(len(table))))
+	cw.write(table)
 }
 
 func (cw *CatalogWriter) write(data []byte) {
@@ -195,56 +172,34 @@ func (cw *CatalogWriter) write(data []byte) {
 	}
 }
 
-func (cw *CatalogWriter) writeByte(b byte) {
-	var buf [1]byte
-	buf[0] = b
-	cw.write(buf[:])
-}
-
-func (cw *CatalogWriter) writeString(s string) {
-	if len(s) > 0 {
-		cw.write([]byte(s))
-	}
-}
-
-// catalogEncodeU64 writes a u64 in custom variable-length encoding:
-// each byte carries 7 bits of data; the high bit signals more bytes follow.
-func catalogEncodeU64(cw *CatalogWriter, v uint64) {
-	if cw.err != nil {
-		return
-	}
+func appendCatalogVarintU64(buf []byte, v uint64) []byte {
 	for {
 		b := byte(v & 0x7f)
 		v >>= 7
 		if v != 0 {
 			b |= 0x80
 		}
-		cw.writeByte(b)
+		buf = append(buf, b)
 		if v == 0 {
-			break
+			return buf
 		}
 	}
 }
 
-// catalogEncodeI64 writes an i64. Positive values use the same encoding as u64.
-// Negative values OR each byte with 0x80 and terminate with 0x00.
-func catalogEncodeI64(cw *CatalogWriter, v int64) {
-	if cw.err != nil {
-		return
-	}
+func appendCatalogVarintI64(buf []byte, v int64) []byte {
 	if v >= 0 {
-		catalogEncodeU64(cw, uint64(v))
-		return
+		return appendCatalogVarintU64(buf, uint64(v))
 	}
 	enc := uint64(-v)
 	for {
 		b := byte(enc & 0x7f)
 		enc >>= 7
 		b |= 0x80
-		cw.writeByte(b)
+		buf = append(buf, b)
 		if enc == 0 {
 			break
 		}
 	}
-	cw.writeByte(0x00)
+	buf = append(buf, 0x00)
+	return buf
 }

@@ -47,8 +47,8 @@ func TestCatalogWriterFilesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadCatalogTree: %v", err)
 	}
-	if tree.Name != "root" {
-		t.Errorf("root name: got %q, want %q", tree.Name, "root")
+	if tree.Name != "" {
+		t.Errorf("root name: got %q, want empty (PBS root name is not stored)", tree.Name)
 	}
 	if len(tree.Children) != 2 {
 		t.Fatalf("root children: got %d, want 2", len(tree.Children))
@@ -89,8 +89,8 @@ func TestCatalogWriterNestedDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadCatalogTree: %v", err)
 	}
-	if tree.Name != "root" {
-		t.Errorf("root name: got %q", tree.Name)
+	if tree.Name != "" {
+		t.Errorf("root name: got %q, want empty", tree.Name)
 	}
 	if len(tree.Children) != 3 {
 		t.Fatalf("root children: got %d, want 3", len(tree.Children))
@@ -143,8 +143,8 @@ func TestCatalogWriterDeepNesting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadCatalogTree: %v", err)
 	}
-	if tree.Name != "a" {
-		t.Errorf("root: got %q", tree.Name)
+	if tree.Name != "" {
+		t.Errorf("root: got %q, want empty", tree.Name)
 	}
 	if len(tree.Children) != 1 || tree.Children[0].Name != "b" {
 		t.Errorf("a/b not found")

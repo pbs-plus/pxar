@@ -12,17 +12,22 @@ import (
 	"github.com/pbs-plus/pxar/format"
 )
 
-// Decoder reads pxar archives sequentially.
 type Decoder struct {
 	input    io.Reader
 	version  format.FormatVersion
 	state    decoderState
-	fixedBuf []byte // heap buffer for fixed-size reads (header/stat), avoids interface escape
+	fixedBuf []byte
 	header   format.Header
 	pathLens []int
 	path     string
 	payload  *limitedReader
-	pending  []*pxar.Entry // buffered entries for version/prelude
+	pending  []*pxar.Entry
+
+	payloadInput         io.Reader
+	payloadConsumed      uint64
+	payloadHeaderChecked bool
+	payloadSize          uint64
+	payloadStartChecked  bool
 }
 
 type decoderState int
@@ -54,15 +59,31 @@ func (lr *limitedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// NewDecoder creates a new pxar decoder.
 func NewDecoder(input io.Reader, payloadReader io.Reader) *Decoder {
 	return &Decoder{
-		input:    input,
-		state:    stateBegin,
-		version:  format.FormatVersion1,
-		path:     "/",
-		fixedBuf: make([]byte, 64),
+		input:        input,
+		payloadInput: payloadReader,
+		state:        stateBegin,
+		version:      format.FormatVersion1,
+		path:         "/",
+		fixedBuf:     make([]byte, 64),
 	}
+}
+
+func (d *Decoder) checkPayloadStartMarker() error {
+	if d.payloadInput == nil || d.payloadStartChecked {
+		return nil
+	}
+	h, err := d.readHeaderFrom(d.payloadInput)
+	if err != nil {
+		return fmt.Errorf("reading payload start marker: %w", err)
+	}
+	if h.Type != format.PXARPayloadStartMarker {
+		return fmt.Errorf("unexpected header in payload input: expected %#x, got %#x", format.PXARPayloadStartMarker, h.Type)
+	}
+	d.payloadConsumed = h.Size
+	d.payloadStartChecked = true
+	return nil
 }
 
 // Next returns the next entry, or io.EOF when done.
@@ -82,7 +103,11 @@ func (d *Decoder) Next() (*pxar.Entry, error) {
 	case stateDefault:
 		return d.handleDefault()
 	case stateInPayload:
-		d.skipPayload()
+		if d.payloadInput != nil {
+			d.payload = nil
+		} else {
+			d.skipPayload()
+		}
 		return d.handleDefault()
 	case stateInSpecialFile:
 		d.state = stateInDirectory
@@ -95,15 +120,53 @@ func (d *Decoder) Next() (*pxar.Entry, error) {
 	return nil, fmt.Errorf("unknown decoder state %d", d.state)
 }
 
-// Contents returns a reader for the current file's content.
 func (d *Decoder) Contents() io.Reader {
+	if d.payloadInput != nil && d.state == stateInPayload {
+		if !d.payloadHeaderChecked {
+			h, err := d.readHeaderFrom(d.payloadInput)
+			if err != nil {
+				return &errReader{err: fmt.Errorf("reading payload header: %w", err)}
+			}
+			d.payloadConsumed += format.HeaderSize
+			if h.Type != format.PXARPayload {
+				return &errReader{err: fmt.Errorf("unexpected header: expected %#x, got %#x", format.PXARPayload, h.Type)}
+			}
+			if h.ContentSize() != d.payloadSize {
+				return &errReader{err: fmt.Errorf("encountered size mismatch: expected %d, got %d", h.ContentSize(), d.payloadSize)}
+			}
+			d.payloadHeaderChecked = true
+			d.payload = &limitedReader{
+				reader: &countingReader{reader: d.payloadInput, count: &d.payloadConsumed},
+				remain: int64(d.payloadSize),
+			}
+		}
+		return d.payload
+	}
 	if d.payload != nil {
 		return d.payload
 	}
 	return nil
 }
 
+type errReader struct{ err error }
+
+func (r *errReader) Read([]byte) (int, error) { return 0, r.err }
+
+type countingReader struct {
+	reader io.Reader
+	count  *uint64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	*c.count += uint64(n)
+	return n, err
+}
+
 func (d *Decoder) readBegin() (*pxar.Entry, error) {
+	if err := d.checkPayloadStartMarker(); err != nil {
+		return nil, err
+	}
 	h, err := d.readHeaderRequired()
 	if err != nil {
 		return nil, err
@@ -312,7 +375,7 @@ func (d *Decoder) readHardlinkEntry() (*pxar.Entry, error) {
 	if len(data) <= 8 {
 		return nil, fmt.Errorf("hardlink entry too small")
 	}
-	_ = binary.LittleEndian.Uint64(data[:8])
+	offset := binary.LittleEndian.Uint64(data[:8])
 	target := data[8:]
 	if len(target) > 0 && target[len(target)-1] == 0 {
 		target = target[:len(target)-1]
@@ -321,6 +384,7 @@ func (d *Decoder) readHardlinkEntry() (*pxar.Entry, error) {
 		Kind:       pxar.KindHardlink,
 		Path:       d.path,
 		LinkTarget: string(target),
+		LinkOffset: offset,
 	}, nil
 }
 
@@ -578,6 +642,19 @@ func (d *Decoder) readCurrentItem(entry *pxar.Entry) (bool, error) {
 			return false, err
 		}
 		pr := format.UnmarshalPayloadRefBytes(data)
+		if d.payloadInput != nil {
+			if d.payloadConsumed > pr.Offset {
+				return false, fmt.Errorf("unexpected offset %d, smaller than already consumed payload %d", pr.Offset, d.payloadConsumed)
+			}
+			if toSkip := pr.Offset - d.payloadConsumed; toSkip > 0 {
+				if _, err := io.CopyN(io.Discard, d.payloadInput, int64(toSkip)); err != nil {
+					return false, fmt.Errorf("skipping payload: %w", err)
+				}
+				d.payloadConsumed = pr.Offset
+			}
+			d.payloadHeaderChecked = false
+			d.payloadSize = pr.Size
+		}
 		entry.Kind = pxar.KindFile
 		entry.FileSize = pr.Size
 		entry.PayloadOffset = pr.Offset
@@ -633,8 +710,12 @@ func (d *Decoder) readHeaderRequired() (format.Header, error) {
 }
 
 func (d *Decoder) readHeader() (format.Header, error) {
+	return d.readHeaderFrom(d.input)
+}
+
+func (d *Decoder) readHeaderFrom(r io.Reader) (format.Header, error) {
 	buf := d.fixedBuf[:16]
-	if _, err := io.ReadFull(d.input, buf); err != nil {
+	if _, err := io.ReadFull(r, buf); err != nil {
 		return format.Header{}, err
 	}
 	h := format.Header{

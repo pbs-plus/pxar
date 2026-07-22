@@ -139,6 +139,7 @@ func NewDynamicIndexWriter(ctime int64) *DynamicIndexWriter {
 	return &DynamicIndexWriter{
 		header: DynamicIndexHeader{
 			Magic: MagicDynamicChunkIndex,
+			UUID:  generateUUID(),
 			Ctime: ctime,
 		},
 		entries: make([]DynamicEntry, 0, 256),

@@ -3,6 +3,8 @@ package datastore
 import (
 	"encoding/binary"
 	"fmt"
+
+	cryptoRand "crypto/rand"
 )
 
 // Magic numbers from Proxmox Backup Server (file_formats.rs).
@@ -141,7 +143,14 @@ func UnmarshalFixedIndexHeader(data []byte) (FixedIndexHeader, error) {
 	return h, nil
 }
 
-// ErrUnknownBlobMagic is returned when blob data has an unrecognized magic number.
+func generateUUID() [16]byte {
+	var u [16]byte
+	_, _ = cryptoRand.Read(u[:])
+	u[6] = (u[6] & 0x0f) | 0x40
+	u[8] = (u[8] & 0x3f) | 0x80
+	return u
+}
+
 var ErrUnknownBlobMagic = fmt.Errorf("unknown blob magic")
 
 // BlobHeaderSizeFor returns the header size for the given blob magic.

@@ -2,7 +2,6 @@ package datastore
 
 import (
 	"bytes"
-	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
 )
@@ -120,6 +119,7 @@ func NewFixedIndexWriter(ctime int64, size, chunkSize uint64) (*FixedIndexWriter
 	return &FixedIndexWriter{
 		header: FixedIndexHeader{
 			Magic:     MagicFixedChunkIndex,
+			UUID:      generateUUID(),
 			Ctime:     ctime,
 			Size:      size,
 			ChunkSize: chunkSize,
@@ -140,24 +140,16 @@ func (w *FixedIndexWriter) Set(i int, digest [32]byte) {
 
 // Finish writes the complete index and returns raw bytes.
 func (w *FixedIndexWriter) Finish() ([]byte, error) {
-	// Compute index checksum
 	csum, _ := w.computeCsum()
 	w.header.IndexCsum = csum
-
-	// Generate random UUID matching PBS's Uuid::generate() (v4 random).
-	if _, err := rand.Read(w.header.UUID[:]); err != nil {
-		return nil, fmt.Errorf("generate uuid: %w", err)
-	}
 
 	var buf bytes.Buffer
 	buf.Grow(IndexHeaderSize + len(w.digests)*FixedDigestSize)
 
-	// Write header
 	var hdr [IndexHeaderSize]byte
 	w.header.MarshalTo(hdr[:])
 	buf.Write(hdr[:])
 
-	// Write digests
 	for _, d := range w.digests {
 		buf.Write(d[:])
 	}

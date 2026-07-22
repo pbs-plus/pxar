@@ -297,10 +297,8 @@ func encodeEncrypted(data []byte, cc *CryptConfig, compress bool) (magic [8]byte
 		return
 	}
 
-	iv = make([]byte, 16)
-	copy(iv, encrypted[:12])
-
-	ciphertext = encrypted[12 : len(encrypted)-16]
+	iv = encrypted[:16]
+	ciphertext = encrypted[16 : len(encrypted)-16]
 	tag = encrypted[len(encrypted)-16:]
 
 	return
@@ -380,10 +378,7 @@ func DecodeEncryptedBlob(raw []byte, cc *CryptConfig) ([]byte, error) {
 	copy(gcmData, ciphertext)
 	copy(gcmData[len(ciphertext):], tag)
 
-	nonce := make([]byte, cc.cipher.NonceSize())
-	copy(nonce, hdr.IV[:cc.cipher.NonceSize()])
-
-	decrypted, err := cc.cipher.Open(nil, nonce, gcmData, nil)
+	decrypted, err := cc.cipher.Open(nil, hdr.IV[:], gcmData, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt blob: %w", err)
 	}

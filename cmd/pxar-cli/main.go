@@ -439,8 +439,11 @@ func runKeygen() error {
 			return err2
 		}
 		fp := cc.Fingerprint()
+		now := time.Now().UTC().Format(time.RFC3339)
 		kc := &datastore.KeyConfig{
-			Kdf:         datastore.KeyDerivationConfig{Type: "none"},
+			Kdf:         nil,
+			Created:     now,
+			Modified:    now,
 			Data:        key[:],
 			Fingerprint: datastore.FormatFingerprint(fp),
 		}

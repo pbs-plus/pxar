@@ -6,9 +6,15 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/scrypt"
 )
 
 // fingerprintInput is SHA256("Proxmox Backup Encryption Key Fingerprint")
@@ -35,7 +41,7 @@ func NewCryptConfig(encKey [32]byte) (*CryptConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create AES cipher: %w", err)
 	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := cipher.NewGCMWithNonceSize(block, 16)
 	if err != nil {
 		return nil, fmt.Errorf("create GCM: %w", err)
 	}
@@ -50,8 +56,6 @@ func NewCryptConfig(encKey [32]byte) (*CryptConfig, error) {
 	}, nil
 }
 
-// Encrypt encrypts plaintext using AES-256-GCM with a random nonce.
-// Returns nonce + ciphertext (ciphertext includes the GCM tag).
 func (c *CryptConfig) Encrypt(plaintext []byte) ([]byte, error) {
 	nonce := make([]byte, c.cipher.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
@@ -103,23 +107,30 @@ func (c *CryptConfig) Fingerprint() [32]byte {
 	return [32]byte(h.Sum(nil))
 }
 
-// KeyConfig represents an encryption key file that can be stored on disk.
 type KeyConfig struct {
-	Created     string              `json:"created,omitempty"`
-	Modified    string              `json:"modified,omitempty"`
-	Fingerprint string              `json:"fingerprint,omitempty"`
-	Data        []byte              `json:"data"`
-	Kdf         KeyDerivationConfig `json:"kdf"`
+	Kdf         *KeyDerivationConfig `json:"kdf"`
+	Created     string               `json:"created"`
+	Modified    string               `json:"modified"`
+	Data        []byte               `json:"data"`
+	Fingerprint string               `json:"fingerprint,omitempty"`
+	Hint        string               `json:"hint,omitempty"`
 }
 
-// KeyDerivationConfig specifies the key derivation function parameters.
 type KeyDerivationConfig struct {
-	Type string `json:"type"` // "scrypt" or "pbkdf2" or "none"
-	Salt []byte `json:"salt,omitempty"`
-	N    int    `json:"n,omitempty"`    // scrypt: CPU cost
-	R    int    `json:"r,omitempty"`    // scrypt: block size
-	P    int    `json:"p,omitempty"`    // scrypt: parallelism
-	Iter int    `json:"iter,omitempty"` // pbkdf2: iterations
+	Scrypt *ScryptConfig `json:"Scrypt,omitempty"`
+	PBKDF2 *PBKDF2Config `json:"PBKDF2,omitempty"`
+}
+
+type ScryptConfig struct {
+	N    int    `json:"n"`
+	R    int    `json:"r"`
+	P    int    `json:"p"`
+	Salt []byte `json:"salt"`
+}
+
+type PBKDF2Config struct {
+	Iter int    `json:"iter"`
+	Salt []byte `json:"salt"`
 }
 
 // CreateRandomKey generates a random 32-byte encryption key.
@@ -131,9 +142,6 @@ func CreateRandomKey() ([32]byte, error) {
 	return key, nil
 }
 
-// GenerateKeyFile creates a new encrypted key file protected by a password.
-// This generates a random 32-byte key and encrypts it with AES-256-GCM
-// using a key derived from the password via PBKDF2.
 func GenerateKeyFile(password string) ([]byte, error) {
 	encKey, err := CreateRandomKey()
 	if err != nil {
@@ -145,26 +153,30 @@ func GenerateKeyFile(password string) ([]byte, error) {
 		return nil, fmt.Errorf("generate salt: %w", err)
 	}
 
-	derivedKey := pbkdf2DeriveKey([]byte(password), salt, 65535)
+	kdf := &KeyDerivationConfig{
+		Scrypt: &ScryptConfig{N: 65536, R: 8, P: 1, Salt: salt},
+	}
+	derivedKey, err := deriveKeyFromConfig(kdf, []byte(password))
+	if err != nil {
+		return nil, err
+	}
+
 	block, err := aes.NewCipher(derivedKey[:])
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := cipher.NewGCMWithNonceSize(block, 16)
 	if err != nil {
 		return nil, fmt.Errorf("create GCM: %w", err)
 	}
 
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, fmt.Errorf("generate nonce: %w", err)
+	iv := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, fmt.Errorf("generate iv: %w", err)
 	}
 
-	encryptedKey := aead.Seal(nil, nonce, encKey[:], nil)
+	encryptedKey := aead.Seal(nil, iv, encKey[:], nil)
 	gcmTagSize := aead.Overhead()
-
-	iv := make([]byte, 16)
-	copy(iv, nonce)
 
 	tag := encryptedKey[len(encryptedKey)-gcmTagSize:]
 	ciphertext := encryptedKey[:len(encryptedKey)-gcmTagSize]
@@ -180,12 +192,11 @@ func GenerateKeyFile(password string) ([]byte, error) {
 	}
 	fp := cc.Fingerprint()
 
+	now := time.Now().UTC().Format(time.RFC3339)
 	keyConfig := &KeyConfig{
-		Kdf: KeyDerivationConfig{
-			Type: "pbkdf2",
-			Salt: salt,
-			Iter: 65535,
-		},
+		Kdf:         kdf,
+		Created:     now,
+		Modified:    now,
 		Data:        configData,
 		Fingerprint: FormatFingerprint(fp),
 	}
@@ -200,7 +211,11 @@ func LoadKeyFile(data []byte, password string) (*CryptConfig, error) {
 		return nil, fmt.Errorf("parse key file: %w", err)
 	}
 
-	derivedKey, err := deriveKeyFromConfig(&keyConfig.Kdf, []byte(password))
+	if keyConfig.Kdf == nil {
+		return nil, fmt.Errorf("key file has no KDF; use LoadKeyFileNoPassword")
+	}
+
+	derivedKey, err := deriveKeyFromConfig(keyConfig.Kdf, []byte(password))
 	if err != nil {
 		return nil, fmt.Errorf("derive key: %w", err)
 	}
@@ -209,7 +224,7 @@ func LoadKeyFile(data []byte, password string) (*CryptConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := cipher.NewGCMWithNonceSize(block, 16)
 	if err != nil {
 		return nil, fmt.Errorf("create GCM: %w", err)
 	}
@@ -222,11 +237,8 @@ func LoadKeyFile(data []byte, password string) (*CryptConfig, error) {
 	tag := keyConfig.Data[16:32]
 	ciphertext := keyConfig.Data[32:]
 
-	// Reconstruct GCM seal format: nonce(12) + ciphertext + tag
-	nonce := make([]byte, aead.NonceSize())
-	copy(nonce, iv[:aead.NonceSize()])
+	nonce := iv
 
-	// GCM Open expects ciphertext || tag
 	gcmData := make([]byte, len(ciphertext)+len(tag))
 	copy(gcmData, ciphertext)
 	copy(gcmData[len(ciphertext):], tag)
@@ -258,15 +270,14 @@ func LoadKeyFile(data []byte, password string) (*CryptConfig, error) {
 	return cc, nil
 }
 
-// LoadKeyFileNoPassword loads a key file with "none" KDF (no encryption).
 func LoadKeyFileNoPassword(data []byte) (*CryptConfig, error) {
 	var keyConfig KeyConfig
 	if err := json.Unmarshal(data, &keyConfig); err != nil {
 		return nil, fmt.Errorf("parse key file: %w", err)
 	}
 
-	if keyConfig.Kdf.Type != "none" {
-		return nil, fmt.Errorf("key file requires password (kdf=%s)", keyConfig.Kdf.Type)
+	if keyConfig.Kdf != nil {
+		return nil, fmt.Errorf("key file requires password")
 	}
 
 	if len(keyConfig.Data) != 32 {
@@ -280,26 +291,33 @@ func LoadKeyFileNoPassword(data []byte) (*CryptConfig, error) {
 }
 
 func deriveKeyFromConfig(kdf *KeyDerivationConfig, password []byte) ([32]byte, error) {
-	switch kdf.Type {
-	case "pbkdf2":
-		iter := kdf.Iter
+	switch {
+	case kdf.PBKDF2 != nil:
+		iter := kdf.PBKDF2.Iter
 		if iter == 0 {
 			iter = 65535
 		}
 		var key [32]byte
-		pbkdf2DeriveFull(password, kdf.Salt, iter, key[:])
+		pbkdf2DeriveFull(password, kdf.PBKDF2.Salt, iter, key[:])
 		return key, nil
-	case "scrypt":
-		return [32]byte{}, fmt.Errorf("scrypt key derivation is not supported; use pbkdf2 key files")
+	case kdf.Scrypt != nil:
+		s := kdf.Scrypt
+		derived, err := scrypt.Key(password, s.Salt, s.N, s.R, s.P, 32)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("scrypt: %w", err)
+		}
+		return [32]byte(derived), nil
 	default:
-		return [32]byte{}, fmt.Errorf("unsupported KDF: %s", kdf.Type)
+		return [32]byte{}, fmt.Errorf("unsupported KDF")
 	}
 }
 
-// pbkdf2DeriveFull implements full PBKDF2-HMAC-SHA256 per RFC 2898.
 func pbkdf2DeriveFull(password, salt []byte, iterations int, out []byte) {
+	block1 := make([]byte, 0, len(salt)+4)
+	block1 = append(block1, salt...)
+	block1 = append(block1, 0, 0, 0, 1)
 	key := hmac.New(sha256.New, password)
-	key.Write(append(salt, 0, 0, 0, 1)) // block 1
+	key.Write(block1)
 	result := key.Sum(nil)
 
 	ubytes := make([]byte, len(result))
@@ -316,16 +334,6 @@ func pbkdf2DeriveFull(password, salt []byte, iterations int, out []byte) {
 	copy(out, result[:min(len(out), len(result))])
 }
 
-// scryptDerive implements scrypt key derivation.
-// pbkdf2DeriveKey is a convenience wrapper for deriving a 32-byte key.
-func pbkdf2DeriveKey(password []byte, salt []byte, iterations int) [32]byte {
-	var key [32]byte
-	pbkdf2DeriveFull(password, salt, iterations, key[:])
-	return key
-}
-
-// FormatFingerprint formats a 32-byte fingerprint as colon-separated hex,
-// matching PBS's fingerprint format (uppercase hex with colons).
 func FormatFingerprint(fp [32]byte) string {
 	s := make([]byte, 0, 32*3-1)
 	for i, b := range fp {
@@ -342,29 +350,127 @@ func hexDigit(b byte) byte {
 	if b < 10 {
 		return b + '0'
 	}
-	return b + 'A' - 10
+	return b + 'a' - 10
 }
 
-// SignManifest signs a manifest JSON using HMAC-SHA256 with the id_key.
-// The signature is computed over the canonical JSON with "signature" and
-// "unprotected" fields removed, matching PBS behavior.
-func SignManifest(manifest *Manifest, cc *CryptConfig) error {
-	temp := *manifest
-	temp.Signature = ""
-	temp.Unprotected = nil
-
-	canonical, err := json.Marshal(temp)
+func manifestSignature(manifest *Manifest, cc *CryptConfig) ([32]byte, error) {
+	raw, err := json.Marshal(manifest)
 	if err != nil {
-		return fmt.Errorf("marshal for signing: %w", err)
+		return [32]byte{}, fmt.Errorf("marshal for signing: %w", err)
 	}
 
-	tag := cc.AuthTag(canonical)
-	manifest.Signature = FormatFingerprint(tag)
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	var value map[string]any
+	if err := dec.Decode(&value); err != nil {
+		return [32]byte{}, fmt.Errorf("decode for signing: %w", err)
+	}
+	delete(value, "signature")
+	delete(value, "unprotected")
 
+	var sb strings.Builder
+	if err := writeCanonicalJSON(&sb, value); err != nil {
+		return [32]byte{}, fmt.Errorf("canonical json: %w", err)
+	}
+
+	return cc.AuthTag([]byte(sb.String())), nil
+}
+
+func writeCanonicalJSON(sb *strings.Builder, v any) error {
+	switch val := v.(type) {
+	case nil:
+		return fmt.Errorf("got unexpected null value")
+	case bool:
+		if val {
+			sb.WriteString("true")
+		} else {
+			sb.WriteString("false")
+		}
+	case json.Number:
+		sb.WriteString(val.String())
+	case string:
+		writeCanonicalString(sb, val)
+	case []any:
+		sb.WriteByte('[')
+		for i, item := range val {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			if err := writeCanonicalJSON(sb, item); err != nil {
+				return err
+			}
+		}
+		sb.WriteByte(']')
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		sb.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			writeCanonicalString(sb, k)
+			sb.WriteByte(':')
+			if err := writeCanonicalJSON(sb, val[k]); err != nil {
+				return err
+			}
+		}
+		sb.WriteByte('}')
+	default:
+		return fmt.Errorf("unexpected json value type %T", v)
+	}
+	return nil
+}
+
+func writeCanonicalString(sb *strings.Builder, s string) {
+	const hexChars = "0123456789abcdef"
+	sb.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"':
+			sb.WriteString(`\"`)
+		case c == '\\':
+			sb.WriteString(`\\`)
+		case c == '\b':
+			sb.WriteString(`\b`)
+		case c == '\t':
+			sb.WriteString(`\t`)
+		case c == '\n':
+			sb.WriteString(`\n`)
+		case c == '\f':
+			sb.WriteString(`\f`)
+		case c == '\r':
+			sb.WriteString(`\r`)
+		case c < 0x20:
+			sb.WriteString(`\u00`)
+			sb.WriteByte(hexChars[c>>4])
+			sb.WriteByte(hexChars[c&0xf])
+		default:
+			sb.WriteByte(c)
+		}
+	}
+	sb.WriteByte('"')
+}
+
+func SignManifest(manifest *Manifest, cc *CryptConfig) error {
+	tag, err := manifestSignature(manifest, cc)
+	if err != nil {
+		return err
+	}
+	manifest.Signature = hex.EncodeToString(tag[:])
+
+	unprotected := map[string]any{}
+	if len(manifest.Unprotected) > 0 {
+		if err := json.Unmarshal(manifest.Unprotected, &unprotected); err != nil {
+			return fmt.Errorf("parse unprotected: %w", err)
+		}
+	}
 	fp := cc.Fingerprint()
-	unprotected := &UnprotectedInfo{
-		KeyFingerprint: FormatFingerprint(fp),
-	}
+	unprotected["key-fingerprint"] = FormatFingerprint(fp)
 	unprotectedJSON, err := json.Marshal(unprotected)
 	if err != nil {
 		return fmt.Errorf("marshal unprotected: %w", err)
@@ -374,23 +480,16 @@ func SignManifest(manifest *Manifest, cc *CryptConfig) error {
 	return nil
 }
 
-// VerifyManifestSignature verifies the manifest signature.
 func VerifyManifestSignature(manifest *Manifest, cc *CryptConfig) error {
 	if manifest.Signature == "" {
 		return fmt.Errorf("manifest has no signature")
 	}
 
-	temp := *manifest
-	temp.Signature = ""
-	temp.Unprotected = nil
-
-	canonical, err := json.Marshal(temp)
+	tag, err := manifestSignature(manifest, cc)
 	if err != nil {
-		return fmt.Errorf("marshal for verification: %w", err)
+		return err
 	}
-
-	expectedTag := cc.AuthTag(canonical)
-	expectedSig := FormatFingerprint(expectedTag)
+	expectedSig := hex.EncodeToString(tag[:])
 
 	if manifest.Signature != expectedSig {
 		return fmt.Errorf("signature mismatch: expected %s, got %s", expectedSig, manifest.Signature)

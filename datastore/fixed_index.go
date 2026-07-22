@@ -70,13 +70,16 @@ func (r *FixedIndexReader) ChunkInfo(pos int) (ChunkInfo, bool) {
 	}, true
 }
 
-// ChunkFromOffset returns the chunk index for the given byte offset.
 func (r *FixedIndexReader) ChunkFromOffset(offset uint64) (int, bool) {
 	if offset >= r.size {
 		return 0, false
 	}
 	return int(offset / r.chunkSize), true
 }
+
+func (r *FixedIndexReader) UUID() [16]byte { return r.header.UUID }
+
+func (r *FixedIndexReader) IndexCsum() [32]byte { return r.header.IndexCsum }
 
 // IndexDigest returns the digest at position pos.
 func (r *FixedIndexReader) IndexDigest(pos int) ([32]byte, bool) {

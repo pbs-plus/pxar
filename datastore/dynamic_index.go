@@ -103,12 +103,22 @@ func (r *DynamicIndexReader) ChunkFromOffset(offset uint64) (int, bool) {
 	return lo, true
 }
 
-// IndexDigest returns the digest at position pos.
 func (r *DynamicIndexReader) IndexDigest(pos int) ([32]byte, bool) {
 	if pos < 0 || pos >= len(r.entries) {
 		return [32]byte{}, false
 	}
 	return r.entries[pos].Digest, true
+}
+
+func (r *DynamicIndexReader) UUID() [16]byte { return r.header.UUID }
+
+func (r *DynamicIndexReader) IndexCsum() [32]byte { return r.header.IndexCsum }
+
+func (r *DynamicIndexReader) LastEndOffset() uint64 {
+	if len(r.entries) == 0 {
+		return 0
+	}
+	return r.entries[len(r.entries)-1].EndOffset
 }
 
 func (r *DynamicIndexReader) ComputeCsum() ([32]byte, uint64) {

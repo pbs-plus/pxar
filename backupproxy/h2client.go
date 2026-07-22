@@ -35,6 +35,7 @@ type pbsH2Conn struct {
 	conn      net.Conn
 	framer    *http2.Framer
 	authority string
+	hdec      *hpack.Decoder
 
 	// --- write path (owned by writeLoop) ---
 	writeCh   chan writeJob
@@ -254,11 +255,10 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 		hdrBuf := new(bytes.Buffer)
 		enc := hpack.NewEncoder(hdrBuf)
 		dec := hpack.NewDecoder(4096, nil)
-		_ = enc
-		_ = dec
 
 		c := &pbsH2Conn{
 			conn:            conn,
+			hdec:            dec,
 			framer:          framer,
 			authority:       u.Host,
 			writeCh:         make(chan writeJob, 256),
@@ -398,7 +398,17 @@ func (c *pbsH2Conn) handleFrame(frame http2.Frame) {
 		}
 		st.hdrBuf.Write(f.HeaderBlockFragment())
 		if f.Flags.Has(http2.FlagHeadersEndHeaders) {
-			st.status = decodeStatus(st.hdrBuf.Bytes())
+			fields, derr := c.hdec.DecodeFull(st.hdrBuf.Bytes())
+			if derr != nil {
+				st.err = fmt.Errorf("decode response headers: %w", derr)
+			}
+			for _, hf := range fields {
+				if hf.Name == ":status" {
+					if s, perr := strconv.Atoi(hf.Value); perr == nil {
+						st.status = s
+					}
+				}
+			}
 		}
 		if f.StreamEnded() {
 			c.finishStream(st)
@@ -466,30 +476,6 @@ func (c *pbsH2Conn) handleFrame(frame http2.Frame) {
 	case *http2.GoAwayFrame:
 		c.fail(fmt.Errorf("server GOAWAY: error code %d", f.ErrCode))
 	}
-}
-
-func decodeStatus(hdrBlock []byte) int {
-	// Minimal HPACK decode: find :status pseudo-header.
-	// Format: each header field is (name_len, name, value_len, value) with
-	// Huffman coding possible. For :status we just look for the ASCII pattern.
-	// This is a simplified parser; for production use a full HPACK decoder.
-	if _, after, ok := bytes.Cut(hdrBlock, []byte(":status")); ok {
-		// The value follows the name. We look for 3 ASCII digits.
-		rest := after // skip ":status"
-		for len(rest) > 0 && (rest[0] < '0' || rest[0] > '9') {
-			rest = rest[1:]
-		}
-		if len(rest) >= 3 {
-			s := 0
-			for i := 0; i < 3 && i < len(rest) && rest[i] >= '0' && rest[i] <= '9'; i++ {
-				s = s*10 + int(rest[i]-'0')
-			}
-			if s >= 100 && s <= 599 {
-				return s
-			}
-		}
-	}
-	return 0
 }
 
 func (c *pbsH2Conn) finishStream(st *stream) {

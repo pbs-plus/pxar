@@ -111,18 +111,19 @@ func (r *DynamicIndexReader) IndexDigest(pos int) ([32]byte, bool) {
 	return r.entries[pos].Digest, true
 }
 
-// ComputeCsum computes the SHA-256 checksum over all entry data.
 func (r *DynamicIndexReader) ComputeCsum() ([32]byte, uint64) {
 	h := sha256.New()
 	var buf [DynamicEntrySize]byte
+	var chunkEnd uint64
 	for _, e := range r.entries {
 		binary.LittleEndian.PutUint64(buf[0:8], e.EndOffset)
 		copy(buf[8:40], e.Digest[:])
 		h.Write(buf[:])
+		chunkEnd = e.EndOffset
 	}
 	var sum [32]byte
 	h.Sum(sum[:0])
-	return sum, uint64(len(r.entries) * DynamicEntrySize)
+	return sum, chunkEnd
 }
 
 // DynamicIndexWriter builds a dynamic chunk index.

@@ -133,8 +133,8 @@ func TestDynamicIndexChecksumVerification(t *testing.T) {
 	}
 
 	csum, size := r.ComputeCsum()
-	if size != 80 { // 2 entries × 40 bytes
-		t.Errorf("csum size = %d, want 80", size)
+	if size != 2000 {
+		t.Errorf("csum size = %d, want 2000", size)
 	}
 	_ = csum
 }

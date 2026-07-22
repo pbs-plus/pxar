@@ -181,8 +181,8 @@ func TestFixedIndexComputeCsum(t *testing.T) {
 	r, _ := ParseFixedIndex(raw)
 
 	csum, sz := r.ComputeCsum()
-	if sz != 64 {
-		t.Errorf("csum size = %d, want 64", sz)
+	if sz != 1024 {
+		t.Errorf("csum size = %d, want 1024", sz)
 	}
 	_ = csum
 }

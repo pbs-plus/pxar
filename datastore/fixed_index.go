@@ -87,7 +87,6 @@ func (r *FixedIndexReader) IndexDigest(pos int) ([32]byte, bool) {
 	return r.digests[pos], true
 }
 
-// ComputeCsum computes the SHA-256 checksum over all digests.
 func (r *FixedIndexReader) ComputeCsum() ([32]byte, uint64) {
 	h := sha256.New()
 	for _, d := range r.digests {
@@ -95,7 +94,7 @@ func (r *FixedIndexReader) ComputeCsum() ([32]byte, uint64) {
 	}
 	var sum [32]byte
 	copy(sum[:], h.Sum(nil))
-	return sum, uint64(len(r.digests) * FixedDigestSize)
+	return sum, r.size
 }
 
 // FixedIndexWriter builds a fixed-size chunk index.

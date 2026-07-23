@@ -167,23 +167,11 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		}
 	}
 
-	for _, acl := range metadata.ACL.Users {
-		data := format.MarshalACLUserBytes(acl)
-		if e.err = e.writeHeader(format.PXARACLUser, uint64(len(data))); e.err != nil {
-			return e.err
-		}
-		if e.err = e.writeAll(data); e.err != nil {
-			return e.err
-		}
+	if e.err = e.writeACLUsers(format.PXARACLUser, metadata.ACL.Users); e.err != nil {
+		return e.err
 	}
-	for _, acl := range metadata.ACL.Groups {
-		data := format.MarshalACLGroupBytes(acl)
-		if e.err = e.writeHeader(format.PXARACLGroup, uint64(len(data))); e.err != nil {
-			return e.err
-		}
-		if e.err = e.writeAll(data); e.err != nil {
-			return e.err
-		}
+	if e.err = e.writeACLGroups(format.PXARACLGroup, metadata.ACL.Groups); e.err != nil {
+		return e.err
 	}
 	if metadata.ACL.GroupObj != nil {
 		data := format.MarshalACLGroupObjectBytes(*metadata.ACL.GroupObj)
@@ -203,23 +191,11 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 			return e.err
 		}
 	}
-	for _, acl := range metadata.ACL.DefaultUsers {
-		data := format.MarshalACLUserBytes(acl)
-		if e.err = e.writeHeader(format.PXARACLDefaultUser, uint64(len(data))); e.err != nil {
-			return e.err
-		}
-		if e.err = e.writeAll(data); e.err != nil {
-			return e.err
-		}
+	if e.err = e.writeACLUsers(format.PXARACLDefaultUser, metadata.ACL.DefaultUsers); e.err != nil {
+		return e.err
 	}
-	for _, acl := range metadata.ACL.DefaultGroups {
-		data := format.MarshalACLGroupBytes(acl)
-		if e.err = e.writeHeader(format.PXARACLDefaultGroup, uint64(len(data))); e.err != nil {
-			return e.err
-		}
-		if e.err = e.writeAll(data); e.err != nil {
-			return e.err
-		}
+	if e.err = e.writeACLGroups(format.PXARACLDefaultGroup, metadata.ACL.DefaultGroups); e.err != nil {
+		return e.err
 	}
 
 	if len(metadata.FCaps) > 0 {
@@ -242,6 +218,32 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		}
 	}
 
+	return nil
+}
+
+func (e *Encoder) writeACLUsers(htype uint64, users []format.ACLUser) error {
+	for _, u := range users {
+		data := format.MarshalACLUserBytes(u)
+		if e.err = e.writeHeader(htype, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
+	}
+	return nil
+}
+
+func (e *Encoder) writeACLGroups(htype uint64, groups []format.ACLGroup) error {
+	for _, g := range groups {
+		data := format.MarshalACLGroupBytes(g)
+		if e.err = e.writeHeader(htype, uint64(len(data))); e.err != nil {
+			return e.err
+		}
+		if e.err = e.writeAll(data); e.err != nil {
+			return e.err
+		}
+	}
 	return nil
 }
 

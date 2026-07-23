@@ -152,10 +152,7 @@ func runImageMode(t *testing.T, image []byte) {
 		t.Fatal(err)
 	}
 	for off := 0; off < len(image); off += chunkSize {
-		end := off + chunkSize
-		if end > len(image) {
-			end = len(image)
-		}
+		end := min(off+chunkSize, len(image))
 		d := sha256.Sum256(image[off:end])
 		w.Set(off/chunkSize, d)
 	}

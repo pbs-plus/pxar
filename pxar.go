@@ -42,6 +42,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/pbs-plus/pxar/format"
@@ -298,34 +299,35 @@ func NewMetadataBuilder(mode uint64) *MetadataBuilder {
 	}
 }
 
-// FileMetadata creates a builder for a regular file.
+func typeMetadata(mode, defaultType uint64) uint64 {
+	if mode&format.ModeIFMT != 0 {
+		return mode
+	}
+	return defaultType | mode
+}
+
 func FileMetadata(mode uint64) *MetadataBuilder {
-	return NewMetadataBuilder(format.ModeIFREG | (mode & ^format.ModeIFMT))
+	return NewMetadataBuilder(typeMetadata(mode, format.ModeIFREG))
 }
 
-// DirMetadata creates a builder for a directory.
 func DirMetadata(mode uint64) *MetadataBuilder {
-	return NewMetadataBuilder(format.ModeIFDIR | (mode & ^format.ModeIFMT))
+	return NewMetadataBuilder(typeMetadata(mode, format.ModeIFDIR))
 }
 
-// SymlinkMetadata creates a builder for a symlink.
 func SymlinkMetadata(mode uint64) *MetadataBuilder {
-	return NewMetadataBuilder(format.ModeIFLNK | (mode & ^format.ModeIFMT))
+	return NewMetadataBuilder(typeMetadata(mode, format.ModeIFLNK))
 }
 
-// DeviceMetadata creates a builder for a device.
 func DeviceMetadata(mode uint64) *MetadataBuilder {
-	return NewMetadataBuilder(format.ModeIFCHR | (mode & ^format.ModeIFMT))
+	return NewMetadataBuilder(typeMetadata(mode, format.ModeIFCHR))
 }
 
-// FIFOMetadata creates a builder for a FIFO.
 func FIFOMetadata(mode uint64) *MetadataBuilder {
-	return NewMetadataBuilder(format.ModeIFIFO | (mode & ^format.ModeIFMT))
+	return NewMetadataBuilder(typeMetadata(mode, format.ModeIFIFO))
 }
 
-// SocketMetadata creates a builder for a socket.
 func SocketMetadata(mode uint64) *MetadataBuilder {
-	return NewMetadataBuilder(format.ModeIFSOCK | (mode & ^format.ModeIFMT))
+	return NewMetadataBuilder(typeMetadata(mode, format.ModeIFSOCK))
 }
 
 // StMode sets the complete mode (type + permissions).
@@ -359,9 +361,18 @@ func (b *MetadataBuilder) Owner(uid, gid uint32) *MetadataBuilder {
 	return b
 }
 
-// Mtime sets the modification time.
 func (b *MetadataBuilder) Mtime(ts format.StatxTimestamp) *MetadataBuilder {
 	b.metadata.Stat.Mtime = ts
+	return b
+}
+
+func (b *MetadataBuilder) MtimeTime(t time.Time) *MetadataBuilder {
+	b.metadata.Stat.Mtime = format.NewStatxTimestampFromTime(t)
+	return b
+}
+
+func (b *MetadataBuilder) MtimeUnix(secs int64, nanos uint32) *MetadataBuilder {
+	b.metadata.Stat.Mtime = format.NewStatxTimestamp(secs, nanos)
 	return b
 }
 

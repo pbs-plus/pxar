@@ -37,9 +37,10 @@ type pbsH2Conn struct {
 	authority string
 	hdec      *hpack.Decoder
 
-	// --- write path (owned by writeLoop) ---
 	writeCh   chan writeJob
-	writeDone chan struct{} // closed when writeLoop exits
+	writeDone chan struct{}
+	readDone  chan struct{}
+	stopCh    chan struct{}
 
 	// --- stream ID allocation (owned by writeLoop) ---
 	nextID uint32
@@ -263,6 +264,8 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 			authority:       u.Host,
 			writeCh:         make(chan writeJob, 256),
 			writeDone:       make(chan struct{}),
+			readDone:        make(chan struct{}),
+			stopCh:          make(chan struct{}),
 			nextID:          1,
 			maxFrameSize:    maxFrame,
 			peerConnWin:     65535,
@@ -287,30 +290,36 @@ func dialPBSH2(ctx context.Context, rawURL, datastore, authToken string, cfg Bac
 	return nil, fmt.Errorf("unexpected: never received server SETTINGS")
 }
 
-// ----- write loop (single goroutine, no locks for frame writes) -----
-
 func (c *pbsH2Conn) writeLoop(enc *hpack.Encoder, hdrBuf *bytes.Buffer) {
 	defer close(c.writeDone)
-	for job := range c.writeCh {
-		switch job.kind {
-		case writeHeaders:
-			c.nextID += 2
-			// Stream and flow-control state already set by sendRequest caller.
-			c.writeMuFree(job)
-		case writeData:
-			if err := c.framer.WriteData(job.streamID, job.end, job.data); err != nil {
-				c.fail(fmt.Errorf("write DATA: %w", err))
+	for {
+		select {
+		case job, ok := <-c.writeCh:
+			if !ok {
+				return
 			}
-		case writeWindowUpdate:
-			c.framer.WriteWindowUpdate(job.streamID, uint32(job.data[0])<<24|uint32(job.data[1])<<16|uint32(job.data[2])<<8|uint32(job.data[3]))
-		case writeSettings:
-			// handled inline during setup
-		case writePingAck:
-			var ping [8]byte
-			copy(ping[:], job.data)
-			c.framer.WritePing(true, ping)
-		case writeGoAway:
-			c.framer.WriteGoAway(job.streamID, http2.ErrCodeNo, nil)
+			switch job.kind {
+			case writeHeaders:
+				c.nextID += 2
+				// Stream and flow-control state already set by sendRequest caller.
+				c.writeMuFree(job)
+			case writeData:
+				if err := c.framer.WriteData(job.streamID, job.end, job.data); err != nil {
+					c.fail(fmt.Errorf("write DATA: %w", err))
+				}
+			case writeWindowUpdate:
+				c.framer.WriteWindowUpdate(job.streamID, uint32(job.data[0])<<24|uint32(job.data[1])<<16|uint32(job.data[2])<<8|uint32(job.data[3]))
+			case writeSettings:
+				// handled inline during setup
+			case writePingAck:
+				var ping [8]byte
+				copy(ping[:], job.data)
+				c.framer.WritePing(true, ping)
+			case writeGoAway:
+				c.framer.WriteGoAway(job.streamID, http2.ErrCodeNo, nil)
+			}
+		case <-c.stopCh:
+			return
 		}
 	}
 }
@@ -366,6 +375,7 @@ func (c *pbsH2Conn) writeWindowUpdate(streamID uint32, incr uint32) {
 // ----- read loop -----
 
 func (c *pbsH2Conn) readLoop() {
+	defer close(c.readDone)
 	for {
 		frame, err := c.framer.ReadFrame()
 		if err != nil {
@@ -510,6 +520,7 @@ func (c *pbsH2Conn) fail(err error) {
 	e := err
 	c.closeErr.Store(&e)
 	_ = c.conn.Close()
+	close(c.stopCh)
 	c.sendMu.Lock()
 	c.sendCond.Broadcast()
 	c.sendMu.Unlock()
@@ -676,6 +687,8 @@ func (c *pbsH2Conn) doRaw(method, path string, params url.Values) ([]byte, error
 
 func (c *pbsH2Conn) close() error {
 	c.fail(errConnClosed)
+	<-c.writeDone
+	<-c.readDone
 	return c.conn.Close()
 }
 

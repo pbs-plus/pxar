@@ -9,6 +9,7 @@ require (
 )
 
 require (
+	go.uber.org/goleak v1.3.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )

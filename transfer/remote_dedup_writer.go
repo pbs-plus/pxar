@@ -176,13 +176,28 @@ func (w *RemoteDedupWriter) EndDirectory() error {
 	return w.inner.EndDirectory()
 }
 
+func (w *RemoteDedupWriter) cleanup(abort error) {
+	if !w.started {
+		return
+	}
+	w.started = false
+	if abort != nil {
+		_ = w.pw.CloseWithError(abort)
+	} else {
+		_ = w.pw.Close()
+	}
+	close(w.injectCh)
+	<-w.uploadRes
+}
+
+var ErrWriterAborted = fmt.Errorf("remote dedup writer: aborted before finish")
+
 func (w *RemoteDedupWriter) Finish() error {
 	for w.dirDepth > 1 {
 		if err := w.inner.EndDirectory(); err != nil {
 			w.setEncErr(err)
 			w.flushPayload()
-			_ = w.pw.CloseWithError(err)
-			<-w.uploadRes
+			w.cleanup(err)
 			return err
 		}
 		w.dirDepth--
@@ -190,8 +205,7 @@ func (w *RemoteDedupWriter) Finish() error {
 	if err := w.inner.Finish(); err != nil {
 		w.setEncErr(err)
 		w.flushPayload()
-		_ = w.pw.CloseWithError(err)
-		<-w.uploadRes
+		w.cleanup(err)
 		return err
 	}
 
@@ -200,6 +214,7 @@ func (w *RemoteDedupWriter) Finish() error {
 	close(w.injectCh)
 
 	res := <-w.uploadRes
+	w.started = false
 	if res.err != nil {
 		return fmt.Errorf("upload payload: %w", res.err)
 	}
@@ -211,7 +226,10 @@ func (w *RemoteDedupWriter) Finish() error {
 	return nil
 }
 
-func (w *RemoteDedupWriter) Close() error { return nil }
+func (w *RemoteDedupWriter) Close() error {
+	w.cleanup(ErrWriterAborted)
+	return nil
+}
 
 func (w *RemoteDedupWriter) Encoder() *encoder.Encoder {
 	return w.inner.Encoder()

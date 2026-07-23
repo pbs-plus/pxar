@@ -56,13 +56,17 @@ func cleanupBenchSnapshot(tb testing.TB, cfg PBSConfig, bc BackupConfig) {
 	req.Header.Set("Authorization", "PBSAPIToken "+cfg.AuthToken)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig.InsecureSkipVerify = true
+	transport.DisableKeepAlives = true
+	transport.MaxIdleConnsPerHost = -1
 	client := &http.Client{Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil {
+		transport.CloseIdleConnections()
 		tb.Logf("delete snapshot: %v", err)
 		return
 	}
 	resp.Body.Close()
+	transport.CloseIdleConnections()
 }
 
 func defaultBenchConfig(tb testing.TB) BackupConfig {

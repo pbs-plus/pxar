@@ -29,6 +29,7 @@ func (drainSession) UploadBlob(context.Context, string, []byte) error { return n
 func (drainSession) Finish(context.Context) (*datastore.Manifest, error) {
 	return &datastore.Manifest{}, nil
 }
+func (drainSession) Close() error { return nil }
 
 func TestRemoteDedupWriterAbandonNoLeak(t *testing.T) {
 	w, err := NewRemoteDedupWriter(context.Background(), drainSession{}, "root.mpxar.didx", "root.ppxar.didx")

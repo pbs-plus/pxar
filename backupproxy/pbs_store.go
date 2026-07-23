@@ -244,6 +244,7 @@ type pbsSession struct {
 	config      BackupConfig
 	chunkCfg    buzhash.Config
 	compress    bool
+	closed      bool
 }
 
 func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error) {
@@ -722,6 +723,8 @@ func (ps *PBSStore) NewPreviousSnapshotSource(ctx context.Context, backupType da
 }
 
 func (s *pbsSession) Finish(_ context.Context) (*datastore.Manifest, error) {
+	defer s.Close()
+
 	manifest := &datastore.Manifest{
 		BackupType: s.config.BackupType.String(),
 		BackupID:   s.config.BackupID,
@@ -758,6 +761,14 @@ func (s *pbsSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 		return nil, err
 	}
 
-	s.proto.close()
 	return manifest, nil
+}
+
+func (s *pbsSession) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	s.proto.close()
+	return nil
 }

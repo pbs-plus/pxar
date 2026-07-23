@@ -141,6 +141,7 @@ type BackupSession interface {
 	UploadBlob(ctx context.Context, name string, data []byte) error
 	UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error)
 	Finish(ctx context.Context) (*datastore.Manifest, error)
+	Close() error
 }
 
 // InjectChunks describes a batch of reused chunks to inject into the payload
@@ -405,6 +406,8 @@ func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 
 	return manifest, nil
 }
+
+func (s *localSession) Close() error { return nil }
 
 // ReadPreviousArchive reads an archive file from a previous local backup snapshot.
 func (ls *LocalStore) ReadPreviousArchive(_ context.Context, _ datastore.BackupType, _ string, _ int64, _, filename string) ([]byte, error) {

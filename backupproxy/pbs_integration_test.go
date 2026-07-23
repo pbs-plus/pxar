@@ -66,6 +66,8 @@ func pbsHTTPClient(t *testing.T) *http.Client {
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig.InsecureSkipVerify = true
+	transport.DisableKeepAlives = true
+	transport.MaxIdleConnsPerHost = -1
 	return &http.Client{Transport: transport}
 }
 
@@ -170,6 +172,7 @@ func TestIntegration_StartSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession failed: %v", err)
 	}
+	defer sess.Close()
 	if sess == nil {
 		t.Fatal("StartSession returned nil session")
 	}
@@ -194,6 +197,7 @@ func TestIntegration_FullBackupRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	// Upload archive
 	archiveResult, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData))
@@ -247,6 +251,7 @@ func TestIntegration_ChunkDeduplication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession 1: %v", err)
 	}
+	defer sess1.Close()
 
 	result1, err := sess1.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -268,6 +273,7 @@ func TestIntegration_ChunkDeduplication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession 2: %v", err)
 	}
+	defer sess2.Close()
 
 	result2, err := sess2.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -308,6 +314,7 @@ func TestIntegration_BlobUploadDownload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	// Upload a small archive so the snapshot has at least one file
 	smallData := make([]byte, 1024)
@@ -367,6 +374,7 @@ func TestIntegration_ManifestVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	archiveResult, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData))
 	if err != nil {
@@ -461,6 +469,7 @@ func TestIntegration_IndexReconstructionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -532,6 +541,7 @@ func TestIntegration_CompressedBlobRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -594,6 +604,7 @@ func TestIntegration_SmallInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -649,6 +660,7 @@ func TestIntegration_EmptyInputRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	_, err = sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader([]byte{}))
 	if err == nil {
@@ -676,6 +688,7 @@ func TestIntegration_ManifestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	archiveResult, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData))
 	if err != nil {
@@ -776,6 +789,7 @@ func TestIntegration_ChunkOffsetOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -834,6 +848,7 @@ func TestIntegration_LargeDataRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -895,6 +910,7 @@ func TestIntegration_PBSChecksumParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -960,6 +976,7 @@ func TestIntegration_MultipleArchivesPerSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	// Upload three different archives with different data
 	archives := []struct {
@@ -1114,6 +1131,7 @@ func TestIntegration_ChunkedDidxUploadDownload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -1202,6 +1220,7 @@ func TestIntegration_ChunkedDidxRestoreFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -1310,6 +1329,7 @@ func TestIntegration_ChunkedDidxRestoreRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -1389,6 +1409,7 @@ func TestIntegration_ChunkedDidxWithCompression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	result, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data))
 	if err != nil {
@@ -1471,6 +1492,7 @@ func TestIntegration_ChunkedDidxMultipleFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	for _, a := range archives {
 		data := make([]byte, a.size)
@@ -1559,6 +1581,7 @@ func TestIntegration_ChunkedDidxChunkCountAndSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(data)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -1737,6 +1760,7 @@ func TestIntegration_PBSVerifyDidx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if _, err := sess.UploadArchive(context.Background(), "root.pxar.didx", bytes.NewReader(archiveData)); err != nil {
 		t.Fatalf("UploadArchive: %v", err)
@@ -1772,6 +1796,7 @@ func TestIntegration_PBSVerifyBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	if err := sess.UploadBlob(context.Background(), "config.blob", blobData); err != nil {
 		t.Fatalf("UploadBlob: %v", err)
@@ -1802,6 +1827,7 @@ func TestIntegration_PBSSplitArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
+	defer sess.Close()
 
 	// Create metadata and payload streams for a split archive
 	metaData := make([]byte, 8*1024)

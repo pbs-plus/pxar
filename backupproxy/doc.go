@@ -23,9 +23,7 @@
 //   - CryptModeEncrypt: AES-256-GCM encryption + HMAC-SHA256 manifest signing
 //   - CryptModeSignOnly: no encryption, HMAC-SHA256 manifest signing
 //
-// Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM for
-// chunk encryption. Manifests are signed but never encrypted (PBS must read them).
-//
+
 // # Extended Metadata
 //
 // Extended attributes, POSIX ACLs, and file capabilities are collected via

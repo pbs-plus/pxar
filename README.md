@@ -344,6 +344,7 @@ For PBS remote stores, `RemoteDedupWriter` injects original chunks via `UploadPa
 ```go
 writer, _ := transfer.NewRemoteDedupWriter(ctx, session, metaName, payloadName)
 writer.Begin(&rootMeta, transfer.Options{Format: format.FormatVersion2})
+defer writer.Close() // reclaim the upload pipeline on any return path
 writer.WriteEntryRef(entry, payloadOffset) // monotonic offset validated
 writer.Finish()
 ```
@@ -560,7 +561,7 @@ The library supports three crypt modes:
 | `CryptModeEncrypt`  | AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing         |
 | `CryptModeSign`     | No encryption, but HMAC-SHA256 manifest signing for integrity verification |
 
-Encryption uses PBKDF2-HMAC-SHA256 for key derivation and AES-256-GCM (12-byte nonce, empty AAD) for chunk encryption. Manifests are always signed when a `CryptConfig` is provided — they are never encrypted, since PBS must be able to read the manifest. Chunk digests in encrypted mode use `SHA-256(data || id_key)` to prevent cross-key collisions.
+Encryption uses AES-256-GCM with a random 16-byte IV (matching PBS/OpenSSL; empty AAD) for chunk encryption. Encrypted key files are protected with scrypt (the PBS default) or PBKDF2; the signing/namespace `id_key` is derived from the 32-byte encryption key via PBKDF2-HMAC-SHA256. Manifests are always signed (HMAC-SHA256 over canonical JSON) when a `CryptConfig` is provided — they are never encrypted, since PBS must be able to read the manifest. Chunk digests in encrypted mode use `SHA-256(data || id_key)` to prevent cross-key collisions.
 
 #### Pluggable Transport
 
@@ -597,6 +598,7 @@ type BackupSession interface {
     UploadBlob(ctx context.Context, name string, data []byte) error
     UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error)
     Finish(ctx context.Context) (*datastore.Manifest, error)
+    Close() error // release the session (H2 connection) without finalizing; idempotent, safe after Finish
 }
 ```
 
@@ -695,8 +697,8 @@ target, _ := sess.Readlink(symlinkInode)
   - `IsEmpty()` — true when no ACL entries present
 
 - **`MetadataBuilder`** — Fluent builder with type-specific constructors
-  - `FileMetadata(mode)`, `DirMetadata(mode)`, `SymlinkMetadata(mode)`, `DeviceMetadata(mode)`, `FIFOMetadata(mode)`, `SocketMetadata(mode)`
-  - Chainable: `.UID(u)`, `.GID(g)`, `.Owner(u,g)`, `.Mtime(ts)`, `.XAttr(name,val)`, `.FCaps(data)`, `.QuotaProjectID(id)`
+  - `FileMetadata(mode)`, `DirMetadata(mode)`, `SymlinkMetadata(mode)`, `DeviceMetadata(mode)`, `FIFOMetadata(mode)`, `SocketMetadata(mode)` — `mode` may be bare permission bits (the type is implied) or a fully-specified mode (type bits are preserved)
+  - Chainable: `.UID(u)`, `.GID(g)`, `.Owner(u,g)`, `.Mtime(ts)`, `.MtimeTime(t time.Time)`, `.MtimeUnix(secs, nanos)`, `.XAttr(name,val)`, `.FCaps(data)`, `.QuotaProjectID(id)`
   - `.Build()` returns `Metadata`
 
 - `SplitPath(path)` — Split a rooted path into components
@@ -877,11 +879,11 @@ target, _ := sess.Readlink(symlinkInode)
 - **`ChunkSource`** — interface: `GetChunk(digest [32]byte) ([]byte, error)`
   - Implemented by `ChunkStoreSource`, `PBSReader.AsChunkSource()`, `DecryptSource`
 
-- **`CryptConfig`** — encryption key configuration (PBKDF2 + AES-256-GCM)
+- **`CryptConfig`** — AES-256-GCM encryption config (random 16-byte IV; derives `id_key` via PBKDF2 for signing/digest namespacing)
   - `NewCryptConfig(encKey [32]byte)` → `(*CryptConfig, error)`
   - `Encrypt(plaintext)`, `Decrypt(ciphertext)`, `AuthTag(data)`
   - `Fingerprint()` → `[32]byte`, `FormatFingerprint(fp)` → `string`
-  - `KeyConfig`, `KeyDerivationConfig`, `UnprotectedInfo` — key file structures
+  - `KeyConfig`, `KeyDerivationConfig` (PBS serde-tagged: `Scrypt` / `PBKDF2`), `UnprotectedInfo` — key file structures
   - `CreateRandomKey()`, `GenerateKeyFile(password)`, `LoadKeyFile(data, password)`, `LoadKeyFileNoPassword(data)`
   - `SignManifest(manifest, cc)`, `VerifyManifestSignature(manifest, cc)`
   - `CryptMode` constants: `CryptModeNone`, `CryptModeEncrypt`, `CryptModeSign`

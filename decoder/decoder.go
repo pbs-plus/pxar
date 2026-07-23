@@ -28,6 +28,10 @@ type Decoder struct {
 	payloadHeaderChecked bool
 	payloadSize          uint64
 	payloadStartChecked  bool
+
+	statScratch [40]byte
+	nameScratch []byte
+	drainBuf    [8192]byte
 }
 
 type decoderState int
@@ -283,7 +287,7 @@ func (d *Decoder) handleGoodbyeTable() (*pxar.Entry, error) {
 }
 
 func (d *Decoder) handleFilename() (*pxar.Entry, error) {
-	data, err := d.readContent()
+	data, err := d.readName()
 	if err != nil {
 		return nil, err
 	}
@@ -389,14 +393,20 @@ func (d *Decoder) readHardlinkEntry() (*pxar.Entry, error) {
 }
 
 func (d *Decoder) readEntry() (*pxar.Entry, error) {
-	statData, err := d.readContent()
-	if err != nil {
-		return nil, err
+	if d.header.ContentSize() != 40 {
+		statData, err := d.readContent()
+		if err != nil {
+			return nil, err
+		}
+		if len(statData) != 40 {
+			return nil, fmt.Errorf("invalid stat size: %d", len(statData))
+		}
+		return d.finishEntry(format.UnmarshalStatBytes(statData))
 	}
-	if len(statData) != 40 {
-		return nil, fmt.Errorf("invalid stat size: %d", len(statData))
+	if _, err := io.ReadFull(d.input, d.statScratch[:]); err != nil {
+		return nil, fmt.Errorf("reading content: %w", err)
 	}
-	return d.finishEntry(format.UnmarshalStatBytes(statData))
+	return d.finishEntry(format.UnmarshalStatBytes(d.statScratch[:]))
 }
 
 func (d *Decoder) readEntryV1() (*pxar.Entry, error) {
@@ -737,6 +747,22 @@ var decoderBufPool = sync.Pool{
 	},
 }
 
+func (d *Decoder) readName() ([]byte, error) {
+	size := d.header.ContentSize()
+	if size == 0 {
+		return nil, nil
+	}
+	if cap(d.nameScratch) < int(size) {
+		d.nameScratch = make([]byte, size)
+	} else {
+		d.nameScratch = d.nameScratch[:size]
+	}
+	if _, err := io.ReadFull(d.input, d.nameScratch); err != nil {
+		return nil, fmt.Errorf("reading content: %w", err)
+	}
+	return d.nameScratch, nil
+}
+
 func (d *Decoder) readContent() ([]byte, error) {
 	size := d.header.ContentSize()
 	if size == 0 {
@@ -784,7 +810,12 @@ func (d *Decoder) readContent() ([]byte, error) {
 
 func (d *Decoder) skipPayload() {
 	if d.payload != nil {
-		_, _ = io.CopyN(io.Discard, d.payload, d.payload.remain)
+		for d.payload.remain > 0 {
+			n, _ := d.payload.Read(d.drainBuf[:])
+			if n == 0 {
+				break
+			}
+		}
 		d.payload = nil
 	}
 }

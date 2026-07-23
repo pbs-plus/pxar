@@ -19,7 +19,6 @@ type LinkOffset uint64
 // Raw returns the raw byte offset.
 func (o LinkOffset) Raw() uint64 { return uint64(o) }
 
-// Encoder writes pxar archives.
 type Encoder struct {
 	output     io.Writer
 	payloadOut io.Writer
@@ -30,6 +29,10 @@ type Encoder struct {
 	gbTail     []format.GoodbyeItem
 	version    format.FormatVersion
 	finished   bool
+
+	hdrScratch  [format.HeaderSize]byte
+	statScratch [40]byte
+	nul         [1]byte
 }
 
 type encoderState struct {
@@ -110,10 +113,8 @@ func (e *Encoder) writeHeader(htype, contentSize uint64) error {
 	if err := h.CheckHeaderSize(); err != nil {
 		return err
 	}
-	var hdrBuf [format.HeaderSize]byte
-	h.MarshalTo(hdrBuf[:])
-	// writeAll already advances writePosition by HeaderSize.
-	return e.writeAll(hdrBuf[:])
+	h.MarshalTo(e.hdrScratch[:])
+	return e.writeAll(e.hdrScratch[:])
 }
 
 func (e *Encoder) encodeFormatVersion() {
@@ -149,12 +150,11 @@ func (e *Encoder) encodeMetadata(metadata *pxar.Metadata) error {
 		return e.err
 	}
 
-	var statBuf [40]byte
-	format.MarshalStatBytesInto(statBuf[:], metadata.Stat)
+	format.MarshalStatBytesInto(e.statScratch[:], metadata.Stat)
 	if e.err = e.writeHeader(format.PXAREntry, 40); e.err != nil {
 		return e.err
 	}
-	if e.err = e.writeAll(statBuf[:]); e.err != nil {
+	if e.err = e.writeAll(e.statScratch[:]); e.err != nil {
 		return e.err
 	}
 
@@ -260,8 +260,8 @@ func (e *Encoder) encodeFilename(name string) error {
 	if e.err = e.writeAll(nameBytes); e.err != nil {
 		return e.err
 	}
-	var zero [1]byte
-	e.err = e.writeAll(zero[:])
+	e.nul[0] = 0
+	e.err = e.writeAll(e.nul[:])
 	return e.err
 }
 

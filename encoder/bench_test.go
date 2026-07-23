@@ -40,14 +40,21 @@ func BenchmarkEncodeFlat100Files(b *testing.B) {
 
 func BenchmarkEncodeFlat1000Files(b *testing.B) {
 	content := bytes.Repeat([]byte("x"), 64)
+	names := make([]string, 1000)
+	metas := make([]*pxar.Metadata, 1000)
+	for f := range 1000 {
+		names[f] = fmt.Sprintf("file_%04d.txt", f)
+		metas[f] = encFileMeta(0o644)
+	}
 	var buf bytes.Buffer
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
 		enc := NewEncoder(&buf, nil, encDirMeta(0o755), nil)
 		for f := range 1000 {
-			if _, err := enc.AddFile(encFileMeta(0o644), fmt.Sprintf("file_%04d.txt", f), content); err != nil {
+			if _, err := enc.AddFile(metas[f], names[f], content); err != nil {
 				b.Fatal(err)
 			}
 		}

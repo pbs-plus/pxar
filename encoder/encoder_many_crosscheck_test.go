@@ -60,7 +60,7 @@ func TestProbeEncodeManyCrosscheck(t *testing.T) {
 	if goHex != rustHex {
 		t.Errorf("length: go=%d rust=%d", len(buf.Bytes()), len(rustHex)/2)
 		minLen := min(len(rustHex), len(goHex))
-		for i := 0; i < minLen; i++ {
+		for i := range minLen {
 			if goHex[i] != rustHex[i] {
 				t.Errorf("first hex diff at byte %d (hex-char %d):\n  go=  ...%s\n  rust=...%s",
 					i/2, i, goHex[max(0, i-16):minLen], rustHex[max(0, i-16):minLen])

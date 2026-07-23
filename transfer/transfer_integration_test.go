@@ -715,11 +715,14 @@ func TestIntegration_PBSPathRemappingTransfer(t *testing.T) {
 	t.Log("Path remapping transfer integration test PASSED")
 }
 
-// pbsHTTPClient returns an HTTP client that skips TLS verification for PBS.
 func pbsHTTPClient(t *testing.T) *http.Client {
 	t.Helper()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig.InsecureSkipVerify = true
+	transport.DisableKeepAlives = true
+	transport.MaxIdleConnsPerHost = -1
+	transport.IdleConnTimeout = 200 * time.Millisecond
+	t.Cleanup(transport.CloseIdleConnections)
 	return &http.Client{Transport: transport}
 }
 
@@ -856,7 +859,7 @@ func deletePBSSnapshot(t *testing.T, cfg backupproxy.PBSConfig, bc backupproxy.B
 	}
 	req.Header.Set("Authorization", "PBSAPIToken "+cfg.AuthToken)
 
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	client := pbsHTTPClient(t)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Logf("delete snapshot: %v", err)

@@ -68,6 +68,8 @@ func pbsHTTPClient(t *testing.T) *http.Client {
 	transport.TLSClientConfig.InsecureSkipVerify = true
 	transport.DisableKeepAlives = true
 	transport.MaxIdleConnsPerHost = -1
+	transport.IdleConnTimeout = 200 * time.Millisecond
+	t.Cleanup(transport.CloseIdleConnections)
 	return &http.Client{Transport: transport}
 }
 

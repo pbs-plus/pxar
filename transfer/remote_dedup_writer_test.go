@@ -4,9 +4,11 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
 	pxar "github.com/pbs-plus/pxar"
 	"github.com/pbs-plus/pxar/backupproxy"
+	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
 	"github.com/pbs-plus/pxar/format"
 )
@@ -45,6 +47,55 @@ func TestRemoteDedupWriterAbandonNoLeak(t *testing.T) {
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestRemoteDedupWriterStreamsMoreThanInjectionBuffer(t *testing.T) {
+	cfg, err := buzhash.NewConfig(4 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := backupproxy.NewLocalStore(t.TempDir(), cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession(context.Background(), backupproxy.BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "injection-buffer",
+		BackupTime: time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		writer, err := NewRemoteDedupWriter(context.Background(), session, "root.mpxar.didx", "root.ppxar.didx")
+		if err != nil {
+			done <- err
+			return
+		}
+		rootMeta := &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o755}}
+		if err := writer.Begin(rootMeta, Options{}); err != nil {
+			done <- err
+			return
+		}
+		for i := range 100 {
+			if err := writer.InjectChunks([]backupproxy.KnownChunkRef{{Digest: [32]byte{byte(i)}, Size: 1}}); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- writer.Finish()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote writer injection stream deadlocked")
 	}
 }
 

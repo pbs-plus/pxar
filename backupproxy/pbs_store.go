@@ -428,9 +428,6 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 		return nil, workerErr
 	}
 
-	if _, err := sink.idx.Finish(); err != nil {
-		return nil, fmt.Errorf("finish index: %w", err)
-	}
 	indexDigest := sink.idx.Csum()
 	pbsChecksum := hex.EncodeToString(indexDigest[:])
 	if err := s.proto.dynamicIndexClose(wid, sink.chunkCount, totalSize, pbsChecksum); err != nil {

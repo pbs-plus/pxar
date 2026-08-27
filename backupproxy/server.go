@@ -1,6 +1,7 @@
 package backupproxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"github.com/pbs-plus/pxar/datastore"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
+	"github.com/pbs-plus/pxar/internal/payloadpipe"
 )
 
 type catalogBuilder struct {
@@ -301,9 +303,34 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 		return nil, fmt.Errorf("stat root: %w", err)
 	}
 
-	var metaBuf, payloadBuf bytes.Buffer
+	var metaBuf bytes.Buffer
+	payloadPipe := payloadpipe.New()
+	payloadBuf := bufio.NewWriterSize(payloadPipe, 256<<10)
+	injectCh := make(chan InjectChunks, 64)
+	payloadUploadCh := make(chan uploadResult, 1)
+	go func() {
+		result, err := sess.UploadPayloadInterleaved(ctx, "root.ppxar.didx", payloadPipe, injectCh)
+		if err != nil {
+			payloadPipe.CloseWithError(err)
+		}
+		payloadUploadCh <- uploadResult{result: result, err: err}
+	}()
+
+	finishPayload := func(cause error) (*UploadResult, error) {
+		if cause == nil {
+			cause = payloadBuf.Flush()
+		}
+		close(injectCh)
+		payloadPipe.CloseWithError(cause)
+		upload := <-payloadUploadCh
+		if cause != nil {
+			return nil, cause
+		}
+		return upload.result, upload.err
+	}
+
 	rootMeta := &pxar.Metadata{Stat: rootStat}
-	enc := encoder.NewEncoder(&metaBuf, &payloadBuf, rootMeta, nil)
+	enc := encoder.NewEncoder(&metaBuf, payloadBuf, rootMeta, nil)
 
 	result := &BackupResult{}
 	mw := &metadataWalker{
@@ -313,10 +340,28 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 		restorer:   restorer,
 		planner:    datastore.NewChunkReusePlanner(payloadIdx),
 		ctx:        ctx,
+		emitInjection: func(injection InjectChunks) error {
+			if err := payloadBuf.Flush(); err != nil {
+				return err
+			}
+			select {
+			case injectCh <- injection:
+				payloadPipe.Wake()
+				return nil
+			case <-payloadPipe.Done():
+				if err := payloadPipe.Err(); err != nil {
+					return err
+				}
+				return io.ErrClosedPipe
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
 	}
 	if localStore, ok := s.store.(*LocalStore); ok {
 		chunkStore, err := datastore.NewChunkStore(localStore.baseDir)
 		if err != nil {
+			_, _ = finishPayload(err)
 			return nil, fmt.Errorf("open local chunk store: %w", err)
 		}
 		mw.copyChunk = func(info datastore.ChunkInfo) error {
@@ -331,21 +376,19 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 	var catBuf bytes.Buffer
 	catBuilder := newCatalogBuilder(&catBuf)
 	if err := s.walkDir(ctx, root, enc, mw, catBuilder, result); err != nil {
+		_, _ = finishPayload(err)
 		return nil, err
 	}
 	if err := mw.flushPending(enc, false); err != nil {
+		_, _ = finishPayload(err)
 		return nil, fmt.Errorf("flush reused payload: %w", err)
 	}
 	if err := enc.Close(); err != nil {
+		_, _ = finishPayload(err)
 		return nil, fmt.Errorf("close encoder: %w", err)
 	}
 
-	injectCh := make(chan InjectChunks, len(mw.injections))
-	for _, injection := range mw.injections {
-		injectCh <- injection
-	}
-	close(injectCh)
-	payloadResult, err := sess.UploadPayloadInterleaved(ctx, "root.ppxar.didx", &payloadBuf, injectCh)
+	payloadResult, err := finishPayload(nil)
 	if err != nil {
 		return nil, fmt.Errorf("upload payload archive: %w", err)
 	}
@@ -379,15 +422,15 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 // metadataWalker decides for each file whether to reuse its payload
 // from the previous backup or read fresh content from the client.
 type metadataWalker struct {
-	server     *Server
-	catalog    SnapshotCatalog
-	payloadIdx *datastore.DynamicIndexReader
-	restorer   *datastore.Restorer
-	planner    *datastore.ChunkReusePlanner
-	pending    []pendingReuse
-	injections []InjectChunks
-	copyChunk  func(datastore.ChunkInfo) error
-	ctx        context.Context
+	server        *Server
+	catalog       SnapshotCatalog
+	payloadIdx    *datastore.DynamicIndexReader
+	restorer      *datastore.Restorer
+	planner       *datastore.ChunkReusePlanner
+	pending       []pendingReuse
+	emitInjection func(InjectChunks) error
+	copyChunk     func(datastore.ChunkInfo) error
+	ctx           context.Context
 }
 
 type pendingReuse struct {
@@ -421,7 +464,7 @@ func (mw *metadataWalker) maybeReusePayload(enc *encoder.Encoder, name, fullPath
 func (mw *metadataWalker) flushPending(enc *encoder.Encoder, keepLast bool) error {
 	if len(mw.pending) == 0 {
 		if !keepLast {
-			return mw.injectChunks(enc, mw.planner.Flush())
+			return mw.injectChunks(enc, mw.planner.FlushRange())
 		}
 		return nil
 	}
@@ -429,7 +472,7 @@ func (mw *metadataWalker) flushPending(enc *encoder.Encoder, keepLast bool) erro
 	rangeStart := mw.pending[0].previous.PayloadOffset
 	last := mw.pending[len(mw.pending)-1].previous
 	rangeEnd := last.PayloadOffset + format.HeaderSize + last.FileSize
-	plan := mw.planner.Plan(rangeStart, rangeEnd, keepLast)
+	plan := mw.planner.PlanRange(rangeStart, rangeEnd, keepLast)
 	if plan.Reusable {
 		baseOffset := enc.PayloadPosition() + plan.PrefixSize + plan.StartPadding
 		for _, entry := range mw.pending {
@@ -438,11 +481,11 @@ func (mw *metadataWalker) flushPending(enc *encoder.Encoder, keepLast bool) erro
 				return fmt.Errorf("write payload ref for %q: %w", entry.fullPath, err)
 			}
 		}
-		if err := mw.injectChunks(enc, plan.Chunks); err != nil {
+		if err := mw.injectChunks(enc, plan); err != nil {
 			return err
 		}
 	} else {
-		if err := mw.injectChunks(enc, plan.Chunks); err != nil {
+		if err := mw.injectChunks(enc, plan); err != nil {
 			return err
 		}
 		for _, entry := range mw.pending {
@@ -459,15 +502,16 @@ func (mw *metadataWalker) flushPending(enc *encoder.Encoder, keepLast bool) erro
 	return nil
 }
 
-func (mw *metadataWalker) injectChunks(enc *encoder.Encoder, chunks []datastore.ChunkInfo) error {
+func (mw *metadataWalker) injectChunks(enc *encoder.Encoder, plan datastore.ChunkReuseRange) error {
 	const batchSize = 128
-	for len(chunks) > 0 {
-		batch := chunks
-		if len(batch) > batchSize {
-			batch = batch[:batchSize]
-		}
-		injection := InjectChunks{Boundary: enc.PayloadPosition(), Chunks: make([]KnownChunkRef, len(batch))}
-		for i, chunk := range batch {
+	for offset := 0; offset < plan.ChunkCount(); offset += batchSize {
+		count := min(batchSize, plan.ChunkCount()-offset)
+		injection := InjectChunks{Boundary: enc.PayloadPosition(), Chunks: make([]KnownChunkRef, count)}
+		for i := range count {
+			chunk, ok := plan.Chunk(offset + i)
+			if !ok {
+				return fmt.Errorf("missing reused chunk %d", offset+i)
+			}
 			if mw.copyChunk != nil {
 				if err := mw.copyChunk(chunk); err != nil {
 					return fmt.Errorf("copy reused chunk: %w", err)
@@ -477,11 +521,15 @@ func (mw *metadataWalker) injectChunks(enc *encoder.Encoder, chunks []datastore.
 			injection.Chunks[i] = KnownChunkRef{Digest: chunk.Digest, Size: size}
 			injection.Size += size
 		}
-		mw.injections = append(mw.injections, injection)
+		if mw.emitInjection == nil {
+			return fmt.Errorf("missing payload injection sink")
+		}
+		if err := mw.emitInjection(injection); err != nil {
+			return err
+		}
 		if err := enc.Advance(injection.Size); err != nil {
 			return err
 		}
-		chunks = chunks[len(batch):]
 	}
 	return nil
 }

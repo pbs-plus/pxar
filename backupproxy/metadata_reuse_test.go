@@ -25,8 +25,13 @@ func TestMetadataWalkerInjectsUnchangedPayloadWithoutRestoring(t *testing.T) {
 	}
 
 	fileMeta := pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFREG | 0o644}}
+	var injections []InjectChunks
 	walker := metadataWalker{
 		planner: datastore.NewChunkReusePlanner(idx),
+		emitInjection: func(injection InjectChunks) error {
+			injections = append(injections, injection)
+			return nil
+		},
 		pending: []pendingReuse{
 			{name: "a", fullPath: "/a", previous: &SnapshotEntry{Metadata: fileMeta, IsRegularFile: true, PayloadOffset: 16, FileSize: 74}},
 			{name: "b", fullPath: "/b", previous: &SnapshotEntry{Metadata: fileMeta, IsRegularFile: true, PayloadOffset: 106, FileSize: 78}},
@@ -43,8 +48,8 @@ func TestMetadataWalkerInjectsUnchangedPayloadWithoutRestoring(t *testing.T) {
 	if payload.Len() != initialPayloadSize {
 		t.Fatalf("encoded %d unchanged payload bytes", payload.Len()-initialPayloadSize)
 	}
-	if len(walker.injections) != 1 || walker.injections[0].Size != 200 {
-		t.Fatalf("injections = %+v", walker.injections)
+	if len(injections) != 1 || injections[0].Size != 200 {
+		t.Fatalf("injections = %+v", injections)
 	}
 	if enc.PayloadPosition() != 216 {
 		t.Fatalf("payload position = %d, want 216", enc.PayloadPosition())

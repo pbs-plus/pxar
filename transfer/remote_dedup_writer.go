@@ -12,6 +12,7 @@ import (
 	"github.com/pbs-plus/pxar/backupproxy"
 	"github.com/pbs-plus/pxar/encoder"
 	"github.com/pbs-plus/pxar/format"
+	"github.com/pbs-plus/pxar/internal/payloadpipe"
 )
 
 // RemoteDedupWriter writes a split pxar archive (v2), uploading the payload
@@ -19,16 +20,7 @@ import (
 //
 // Architecture (faithful to Rust's pxar create + backup_writer pipeline):
 //
-//	Encoder ──(io.Pipe)──> interleavePayload ──> putRaw ──> appendCh ──> appendWorker ──> PBS
-//	               ▲
-//	         bufio.Writer (256 KiB)
-//
-// The encoder writes to a bufio.Writer that flushes into an io.Pipe. The
-// upload goroutine reads from the pipe via interleavePayload. This is a
-// pull-based stream: the chunker pulls bytes from the encoder through the
-// pipe; the encoder blocks when the pipe buffer is full (natural backpressure).
-// InjectChunks (dedup boundaries) are sent through a separate channel.
-//
+
 // This replaces the previous push-based design (eventCh→dataCh→chanReader)
 // which added ~66% idle time from channel synchronization overhead.
 type RemoteDedupWriter struct {
@@ -41,9 +33,7 @@ type RemoteDedupWriter struct {
 	dirDepth    int
 	lastRefOff  *uint64
 
-	// Pipe connecting encoder output to the chunker/uploader.
-	pr *io.PipeReader
-	pw *io.PipeWriter
+	payloadPipe *payloadpipe.Pipe
 
 	// Injection channel for dedup boundary markers.
 	injectCh chan backupproxy.InjectChunks
@@ -82,13 +72,13 @@ func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.dirDepth = 1
 	opts.Format = format.FormatVersion2
 
-	w.pr, w.pw = io.Pipe()
+	w.payloadPipe = payloadpipe.New()
 	w.injectCh = make(chan backupproxy.InjectChunks, 64)
 	w.uploadRes = make(chan uploadResult, 1)
 
 	// bufio.Writer(256 KiB) reduces the number of pipe writes and gives the
 	// encoder a larger atomic write unit, matching Rust's encoder behaviour.
-	w.payloadBuf = bufio.NewWriterSize(w.pw, 256<<10)
+	w.payloadBuf = bufio.NewWriterSize(w.payloadPipe, 256<<10)
 	w.inner = NewSplitStreamWriter(&w.metaBuf, w.payloadBuf)
 
 	go w.uploadPayload()
@@ -97,10 +87,11 @@ func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	return w.inner.Begin(rootMeta, opts)
 }
 
-func (w *RemoteDedupWriter) flushPayload() {
-	if w.payloadBuf != nil {
-		_ = w.payloadBuf.Flush()
+func (w *RemoteDedupWriter) flushPayload() error {
+	if w.payloadBuf == nil {
+		return nil
 	}
+	return w.payloadBuf.Flush()
 }
 
 // uploadPayload runs in a goroutine. It reads raw payload bytes from the pipe
@@ -112,9 +103,12 @@ func (w *RemoteDedupWriter) uploadPayload() {
 	result, err := w.session.UploadPayloadInterleaved(
 		w.ctx,
 		w.payloadName,
-		w.pr,
+		w.payloadPipe,
 		w.injectCh,
 	)
+	if err != nil {
+		w.payloadPipe.CloseWithError(err)
+	}
 	w.uploadRes <- uploadResult{result: result, err: err}
 }
 
@@ -129,17 +123,30 @@ func (w *RemoteDedupWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) err
 		return fmt.Errorf("encoder not initialized")
 	}
 	boundary := enc.PayloadPosition()
-	w.flushPayload()
+	if err := w.flushPayload(); err != nil {
+		return err
+	}
 
 	totalSize := uint64(0)
 	for _, c := range chunks {
 		totalSize += c.Size
 	}
 
-	w.injectCh <- backupproxy.InjectChunks{
+	injection := backupproxy.InjectChunks{
 		Chunks:   chunks,
 		Size:     totalSize,
 		Boundary: boundary,
+	}
+	select {
+	case w.injectCh <- injection:
+		w.payloadPipe.Wake()
+	case <-w.payloadPipe.Done():
+		if err := w.payloadPipe.Err(); err != nil {
+			return err
+		}
+		return io.ErrClosedPipe
+	case <-w.ctx.Done():
+		return w.ctx.Err()
 	}
 	return enc.Advance(totalSize)
 }
@@ -181,11 +188,7 @@ func (w *RemoteDedupWriter) cleanup(abort error) {
 		return
 	}
 	w.started = false
-	if abort != nil {
-		_ = w.pw.CloseWithError(abort)
-	} else {
-		_ = w.pw.Close()
-	}
+	w.payloadPipe.CloseWithError(abort)
 	close(w.injectCh)
 	<-w.uploadRes
 }
@@ -196,7 +199,7 @@ func (w *RemoteDedupWriter) Finish() error {
 	for w.dirDepth > 1 {
 		if err := w.inner.EndDirectory(); err != nil {
 			w.setEncErr(err)
-			w.flushPayload()
+			_ = w.flushPayload()
 			w.cleanup(err)
 			return err
 		}
@@ -204,13 +207,16 @@ func (w *RemoteDedupWriter) Finish() error {
 	}
 	if err := w.inner.Finish(); err != nil {
 		w.setEncErr(err)
-		w.flushPayload()
+		_ = w.flushPayload()
 		w.cleanup(err)
 		return err
 	}
 
-	w.flushPayload()
-	_ = w.pw.Close()
+	if err := w.flushPayload(); err != nil {
+		w.cleanup(err)
+		return err
+	}
+	w.payloadPipe.CloseWithError(nil)
 	close(w.injectCh)
 
 	res := <-w.uploadRes

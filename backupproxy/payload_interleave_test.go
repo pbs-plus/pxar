@@ -8,9 +8,11 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pbs-plus/pxar/buzhash"
 	"github.com/pbs-plus/pxar/datastore"
+	"github.com/pbs-plus/pxar/internal/payloadpipe"
 )
 
 // appendCaptureProtocol records every dynamicIndexAppend (digest, offset) pair
@@ -279,6 +281,51 @@ func (s *captureSink) putInjection(offset uint64, inj InjectChunks) error {
 // before them) are handled correctly. This catches a regression where
 // splitLen==0 at an injection boundary would discard the remaining buffered
 // real data instead of keeping it for processing after the injections.
+func TestInterleavePayloadDrainsBoundedInjectionsWithoutData(t *testing.T) {
+	cfg, err := buzhash.NewConfig(4 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pipe := payloadpipe.New()
+	injections := make(chan InjectChunks, 2)
+	result := make(chan struct {
+		total uint64
+		err   error
+	}, 1)
+	go func() {
+		total, err := interleavePayload(cfg, pipe, injections, &captureSink{})
+		result <- struct {
+			total uint64
+			err   error
+		}{total: total, err: err}
+	}()
+
+	const injectionCount = 100
+	for i := range injectionCount {
+		injections <- InjectChunks{
+			Chunks:   []KnownChunkRef{{Digest: [32]byte{byte(i)}, Size: 1}},
+			Size:     1,
+			Boundary: uint64(i),
+		}
+		pipe.Wake()
+	}
+	close(injections)
+	pipe.CloseWithError(nil)
+
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.total != injectionCount {
+			t.Fatalf("total = %d, want %d", got.total, injectionCount)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bounded injection stream deadlocked")
+	}
+}
+
 func TestInterleavePayloadBackToBackInjections(t *testing.T) {
 	cfg, err := buzhash.NewConfig(4 << 10)
 	if err != nil {

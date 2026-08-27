@@ -311,27 +311,50 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 		catalog:    catalog,
 		payloadIdx: payloadIdx,
 		restorer:   restorer,
+		planner:    datastore.NewChunkReusePlanner(payloadIdx),
 		ctx:        ctx,
+	}
+	if localStore, ok := s.store.(*LocalStore); ok {
+		chunkStore, err := datastore.NewChunkStore(localStore.baseDir)
+		if err != nil {
+			return nil, fmt.Errorf("open local chunk store: %w", err)
+		}
+		mw.copyChunk = func(info datastore.ChunkInfo) error {
+			blob, err := snapSrc.ChunkSource().GetChunk(info.Digest)
+			if err != nil {
+				return err
+			}
+			_, _, err = chunkStore.InsertChunk(info.Digest, blob)
+			return err
+		}
 	}
 	var catBuf bytes.Buffer
 	catBuilder := newCatalogBuilder(&catBuf)
 	if err := s.walkDir(ctx, root, enc, mw, catBuilder, result); err != nil {
 		return nil, err
 	}
-
+	if err := mw.flushPending(enc, false); err != nil {
+		return nil, fmt.Errorf("flush reused payload: %w", err)
+	}
 	if err := enc.Close(); err != nil {
 		return nil, fmt.Errorf("close encoder: %w", err)
 	}
 
-	splitResult, err := sess.UploadSplitArchive(ctx,
-		"root.mpxar.didx", &metaBuf,
-		"root.ppxar.didx", &payloadBuf,
-	)
+	injectCh := make(chan InjectChunks, len(mw.injections))
+	for _, injection := range mw.injections {
+		injectCh <- injection
+	}
+	close(injectCh)
+	payloadResult, err := sess.UploadPayloadInterleaved(ctx, "root.ppxar.didx", &payloadBuf, injectCh)
 	if err != nil {
-		return nil, fmt.Errorf("upload split archive: %w", err)
+		return nil, fmt.Errorf("upload payload archive: %w", err)
+	}
+	metadataResult, err := sess.UploadArchive(ctx, "root.mpxar.didx", &metaBuf)
+	if err != nil {
+		return nil, fmt.Errorf("upload metadata archive: %w", err)
 	}
 
-	result.TotalBytes = int64(splitResult.MetadataResult.Size + splitResult.PayloadResult.Size)
+	result.TotalBytes = int64(metadataResult.Size + payloadResult.Size)
 
 	if err := catBuilder.finish(); err != nil {
 		return nil, fmt.Errorf("finish catalog: %w", err)
@@ -360,41 +383,107 @@ type metadataWalker struct {
 	catalog    SnapshotCatalog
 	payloadIdx *datastore.DynamicIndexReader
 	restorer   *datastore.Restorer
+	planner    *datastore.ChunkReusePlanner
+	pending    []pendingReuse
+	injections []InjectChunks
+	copyChunk  func(datastore.ChunkInfo) error
 	ctx        context.Context
 }
 
-// shouldReusePayload checks if a file's metadata matches the catalog entry.
-// If so, it writes the previous payload data into the encoder and returns true.
+type pendingReuse struct {
+	name     string
+	fullPath string
+	previous *SnapshotEntry
+}
+
 func (mw *metadataWalker) maybeReusePayload(enc *encoder.Encoder, name, fullPath string, current DirEntry, currentMeta pxar.Metadata) (bool, error) {
-	// Look up path in the catalog
 	prev, ok := mw.catalog[fullPath]
-	if !ok {
+	if !ok || !EntryMatches(current, currentMeta, prev) || !prev.IsRegularFile {
 		return false, nil
 	}
+	if len(mw.pending) > 0 {
+		last := mw.pending[len(mw.pending)-1].previous
+		if prev.PayloadOffset != last.PayloadOffset+format.HeaderSize+last.FileSize {
+			if err := mw.flushPending(enc, true); err != nil {
+				return false, err
+			}
+		}
+	}
+	mw.pending = append(mw.pending, pendingReuse{name: name, fullPath: fullPath, previous: prev})
+	if len(mw.pending) == 512 {
+		if err := mw.flushPending(enc, true); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
 
-	// Check if metadata matches (stat + xattrs + ACLs + FCaps)
-	if !EntryMatches(current, currentMeta, prev) {
-		return false, nil
+func (mw *metadataWalker) flushPending(enc *encoder.Encoder, keepLast bool) error {
+	if len(mw.pending) == 0 {
+		if !keepLast {
+			return mw.injectChunks(enc, mw.planner.Flush())
+		}
+		return nil
 	}
 
-	// Only regular files can reuse payload
-	if !prev.IsRegularFile {
-		return false, nil
+	rangeStart := mw.pending[0].previous.PayloadOffset
+	last := mw.pending[len(mw.pending)-1].previous
+	rangeEnd := last.PayloadOffset + format.HeaderSize + last.FileSize
+	plan := mw.planner.Plan(rangeStart, rangeEnd, keepLast)
+	if plan.Reusable {
+		baseOffset := enc.PayloadPosition() + plan.PrefixSize + plan.StartPadding
+		for _, entry := range mw.pending {
+			refOffset := baseOffset + entry.previous.PayloadOffset - rangeStart
+			if _, err := enc.AddPayloadRef(&entry.previous.Metadata, entry.name, entry.previous.FileSize, refOffset); err != nil {
+				return fmt.Errorf("write payload ref for %q: %w", entry.fullPath, err)
+			}
+		}
+		if err := mw.injectChunks(enc, plan.Chunks); err != nil {
+			return err
+		}
+	} else {
+		if err := mw.injectChunks(enc, plan.Chunks); err != nil {
+			return err
+		}
+		for _, entry := range mw.pending {
+			var data bytes.Buffer
+			if err := mw.restorer.RestoreRange(mw.payloadIdx, entry.previous.PayloadOffset+format.HeaderSize, entry.previous.FileSize, &data); err != nil {
+				return fmt.Errorf("restore payload for %q: %w", entry.fullPath, err)
+			}
+			if _, err := enc.AddFile(&entry.previous.Metadata, entry.name, data.Bytes()); err != nil {
+				return err
+			}
+		}
 	}
+	mw.pending = mw.pending[:0]
+	return nil
+}
 
-	// Restore the file's payload from previous backup
-	if prev.FileSize == 0 {
-		_, err := enc.AddFile(&prev.Metadata, name, nil)
-		return true, err
+func (mw *metadataWalker) injectChunks(enc *encoder.Encoder, chunks []datastore.ChunkInfo) error {
+	const batchSize = 128
+	for len(chunks) > 0 {
+		batch := chunks
+		if len(batch) > batchSize {
+			batch = batch[:batchSize]
+		}
+		injection := InjectChunks{Boundary: enc.PayloadPosition(), Chunks: make([]KnownChunkRef, len(batch))}
+		for i, chunk := range batch {
+			if mw.copyChunk != nil {
+				if err := mw.copyChunk(chunk); err != nil {
+					return fmt.Errorf("copy reused chunk: %w", err)
+				}
+			}
+			size := chunk.End - chunk.Start
+			injection.Chunks[i] = KnownChunkRef{Digest: chunk.Digest, Size: size}
+			injection.Size += size
+		}
+		mw.injections = append(mw.injections, injection)
+		if err := enc.Advance(injection.Size); err != nil {
+			return err
+		}
+		chunks = chunks[len(batch):]
 	}
-
-	var dataBuf bytes.Buffer
-	if err := mw.restorer.RestoreRange(mw.payloadIdx, prev.PayloadOffset, prev.FileSize, &dataBuf); err != nil {
-		return false, fmt.Errorf("restore payload for %q: %w", fullPath, err)
-	}
-
-	_, err := enc.AddFile(&prev.Metadata, name, dataBuf.Bytes())
-	return true, err
+	return nil
 }
 
 func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encoder, mw *metadataWalker, catBuilder *catalogBuilder, result *BackupResult) error {
@@ -432,6 +521,11 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 		entry.FCaps = meta.FCaps
 		entry.QuotaProjectID = meta.QuotaProjectID
 
+		if mw != nil && !entry.Stat.IsRegularFile() {
+			if err := mw.flushPending(enc, true); err != nil {
+				return fmt.Errorf("flush reused payload: %w", err)
+			}
+		}
 		switch {
 		case entry.Stat.IsDir():
 			result.DirCount++
@@ -456,6 +550,9 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 						return fmt.Errorf("reuse payload for %q: %w", entry.Name, err)
 					}
 					continue
+				}
+				if err := mw.flushPending(enc, false); err != nil {
+					return fmt.Errorf("flush reused payload: %w", err)
 				}
 			}
 			if err := s.encodeFile(ctx, enc, entry.Name, fullPath, meta); err != nil {
@@ -496,6 +593,9 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 		}
 	}
 
+	if mw != nil {
+		return mw.flushPending(enc, true)
+	}
 	return nil
 }
 

@@ -1,6 +1,9 @@
 package datastore
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func TestChunkReusePlannerPaddingThreshold(t *testing.T) {
 	idx := testChunkReuseIndex(100, 200)
@@ -55,7 +58,7 @@ func TestChunkReusePlannerFlushesDistinctHeldChunk(t *testing.T) {
 
 func TestChunkReusePlannerUsesIndexPositionForIdentity(t *testing.T) {
 	idx := testChunkReuseIndex(100, 200, 300)
-	idx.entries[2].Digest = idx.entries[1].Digest
+	copy(idx.entries[2*DynamicEntrySize+8:], idx.entries[DynamicEntrySize+8:DynamicEntrySize+40])
 	planner := NewChunkReusePlanner(idx)
 	first := planner.Plan(10, 190, true)
 	if !first.Reusable {
@@ -69,10 +72,11 @@ func TestChunkReusePlannerUsesIndexPositionForIdentity(t *testing.T) {
 }
 
 func testChunkReuseIndex(ends ...uint64) *DynamicIndexReader {
-	entries := make([]DynamicEntry, len(ends))
+	entries := make([]byte, len(ends)*DynamicEntrySize)
 	for i, end := range ends {
-		entries[i].EndOffset = end
-		entries[i].Digest[0] = byte(i + 1)
+		off := i * DynamicEntrySize
+		binary.LittleEndian.PutUint64(entries[off:off+8], end)
+		entries[off+8] = byte(i + 1)
 	}
-	return &DynamicIndexReader{entries: entries}
+	return &DynamicIndexReader{entries: entries, count: len(ends)}
 }

@@ -13,13 +13,15 @@ type DynamicEntry struct {
 	Digest    [32]byte
 }
 
-// DynamicIndexReader reads a dynamic chunk index.
+// DynamicIndexReader reads a dynamic chunk index, decoding entries on access from retained backing bytes that must not be modified while in use.
 type DynamicIndexReader struct {
-	entries []DynamicEntry
+	entries []byte
+	count   int
 	header  DynamicIndexHeader
+	unmap   func() error
 }
 
-// ParseDynamicIndex parses a dynamic index from raw bytes.
+// ParseDynamicIndex parses a dynamic index from raw bytes, which the returned reader retains rather than copies.
 func ParseDynamicIndex(data []byte) (*DynamicIndexReader, error) {
 	if len(data) < IndexHeaderSize {
 		return nil, fmt.Errorf("dynamic index: need at least %d bytes, got %d", IndexHeaderSize, len(data))
@@ -38,26 +40,46 @@ func ParseDynamicIndex(data []byte) (*DynamicIndexReader, error) {
 		return nil, fmt.Errorf("dynamic index: entry data size %d not multiple of %d", len(remaining), DynamicEntrySize)
 	}
 
-	count := len(remaining) / DynamicEntrySize
-	entries := make([]DynamicEntry, count)
-	for i := range count {
-		off := i * DynamicEntrySize
-		entries[i].EndOffset = binary.LittleEndian.Uint64(remaining[off : off+8])
-		copy(entries[i].Digest[:], remaining[off+8:off+40])
-	}
+	return &DynamicIndexReader{
+		header:  header,
+		entries: remaining,
+		count:   len(remaining) / DynamicEntrySize,
+	}, nil
+}
 
-	return &DynamicIndexReader{header: header, entries: entries}, nil
+// Close unmaps a reader opened by OpenDynamicIndex, which must not be used afterwards; it is a no-op for ParseDynamicIndex readers.
+func (r *DynamicIndexReader) Close() error {
+	if r.unmap == nil {
+		return nil
+	}
+	unmap := r.unmap
+	r.unmap = nil
+	r.entries = nil
+	r.count = 0
+	return unmap()
+}
+
+func (r *DynamicIndexReader) endOffset(i int) uint64 {
+	off := i * DynamicEntrySize
+	return binary.LittleEndian.Uint64(r.entries[off : off+8])
+}
+
+func (r *DynamicIndexReader) digest(i int) [32]byte {
+	off := i*DynamicEntrySize + 8
+	var d [32]byte
+	copy(d[:], r.entries[off:off+32])
+	return d
 }
 
 // Count returns the number of entries.
-func (r *DynamicIndexReader) Count() int { return len(r.entries) }
+func (r *DynamicIndexReader) Count() int { return r.count }
 
 // IndexBytes returns the total virtual size (end offset of last entry).
 func (r *DynamicIndexReader) IndexBytes() uint64 {
-	if len(r.entries) == 0 {
+	if r.count == 0 {
 		return 0
 	}
-	return r.entries[len(r.entries)-1].EndOffset
+	return r.endOffset(r.count - 1)
 }
 
 // CTime returns the creation timestamp.
@@ -65,36 +87,39 @@ func (r *DynamicIndexReader) CTime() int64 { return r.header.Ctime }
 
 // Entry returns the entry at position i.
 func (r *DynamicIndexReader) Entry(i int) DynamicEntry {
-	return r.entries[i]
+	if i < 0 || i >= r.count {
+		panic("dynamic index: entry index out of range")
+	}
+	return DynamicEntry{EndOffset: r.endOffset(i), Digest: r.digest(i)}
 }
 
 // ChunkInfo returns the chunk info at position i.
 func (r *DynamicIndexReader) ChunkInfo(pos int) (ChunkInfo, bool) {
-	if pos < 0 || pos >= len(r.entries) {
+	if pos < 0 || pos >= r.count {
 		return ChunkInfo{}, false
 	}
 	start := uint64(0)
 	if pos > 0 {
-		start = r.entries[pos-1].EndOffset
+		start = r.endOffset(pos - 1)
 	}
 	return ChunkInfo{
 		Start:  start,
-		End:    r.entries[pos].EndOffset,
-		Digest: r.entries[pos].Digest,
+		End:    r.endOffset(pos),
+		Digest: r.digest(pos),
 	}, true
 }
 
 // ChunkFromOffset returns the chunk index containing the given byte offset.
 // Uses binary search for O(log n) lookup.
 func (r *DynamicIndexReader) ChunkFromOffset(offset uint64) (int, bool) {
-	if len(r.entries) == 0 || offset >= r.entries[len(r.entries)-1].EndOffset {
+	if r.count == 0 || offset >= r.endOffset(r.count-1) {
 		return 0, false
 	}
 
-	lo, hi := 0, len(r.entries)-1
+	lo, hi := 0, r.count-1
 	for lo < hi {
 		mid := (lo + hi) / 2
-		if r.entries[mid].EndOffset <= offset {
+		if r.endOffset(mid) <= offset {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -104,10 +129,10 @@ func (r *DynamicIndexReader) ChunkFromOffset(offset uint64) (int, bool) {
 }
 
 func (r *DynamicIndexReader) IndexDigest(pos int) ([32]byte, bool) {
-	if pos < 0 || pos >= len(r.entries) {
+	if pos < 0 || pos >= r.count {
 		return [32]byte{}, false
 	}
-	return r.entries[pos].Digest, true
+	return r.digest(pos), true
 }
 
 func (r *DynamicIndexReader) UUID() [16]byte { return r.header.UUID }
@@ -115,25 +140,18 @@ func (r *DynamicIndexReader) UUID() [16]byte { return r.header.UUID }
 func (r *DynamicIndexReader) IndexCsum() [32]byte { return r.header.IndexCsum }
 
 func (r *DynamicIndexReader) LastEndOffset() uint64 {
-	if len(r.entries) == 0 {
+	if r.count == 0 {
 		return 0
 	}
-	return r.entries[len(r.entries)-1].EndOffset
+	return r.endOffset(r.count - 1)
 }
 
 func (r *DynamicIndexReader) ComputeCsum() ([32]byte, uint64) {
 	h := sha256.New()
-	var buf [DynamicEntrySize]byte
-	var chunkEnd uint64
-	for _, e := range r.entries {
-		binary.LittleEndian.PutUint64(buf[0:8], e.EndOffset)
-		copy(buf[8:40], e.Digest[:])
-		h.Write(buf[:])
-		chunkEnd = e.EndOffset
-	}
+	h.Write(r.entries)
 	var sum [32]byte
 	h.Sum(sum[:0])
-	return sum, chunkEnd
+	return sum, r.LastEndOffset()
 }
 
 // DynamicIndexWriter builds a dynamic chunk index.

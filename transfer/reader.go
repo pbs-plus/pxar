@@ -142,7 +142,23 @@ func NewChunkedReader(idxData []byte, source datastore.ChunkSource) (*ChunkedRea
 	}, nil
 }
 
-// NewChunkedReaderEager creates a reader that reconstructs the entire
+// OpenChunkedReader opens a .pxar.didx archive from disk, mapping the index instead of loading it, and unmaps it on Close.
+func OpenChunkedReader(idxPath string, source datastore.ChunkSource) (*ChunkedReader, error) {
+	idx, err := datastore.OpenDynamicIndex(idxPath)
+	if err != nil {
+		return nil, fmt.Errorf("open dynamic index: %w", err)
+	}
+
+	lazyReader := NewReadSeeker(idx, source, 64)
+	return &ChunkedReader{
+		inner:   NewFileReader(lazyReader),
+		idx:     idx,
+		source:  source,
+		lazy:    lazyReader,
+		closers: []io.Closer{idx},
+	}, nil
+}
+
 // stream into memory upfront. Use this for small archives or when you need
 // guaranteed sequential access performance.
 func NewChunkedReaderEager(idxData []byte, source datastore.ChunkSource) (*ChunkedReader, error) {
@@ -269,7 +285,33 @@ func NewSplitReader(metaIdxData, payloadIdxData []byte, source datastore.ChunkSo
 	}, nil
 }
 
-// NewSplitReaderMetaOnly creates a reader for a split archive that
+// OpenSplitReader opens a split archive from disk, mapping both indexes instead of loading them, and unmaps them on Close.
+func OpenSplitReader(metaIdxPath, payloadIdxPath string, source datastore.ChunkSource) (*SplitReader, error) {
+	metaIdx, err := datastore.OpenDynamicIndex(metaIdxPath)
+	if err != nil {
+		return nil, fmt.Errorf("open metadata index: %w", err)
+	}
+
+	payloadIdx, err := datastore.OpenDynamicIndex(payloadIdxPath)
+	if err != nil {
+		_ = metaIdx.Close()
+		return nil, fmt.Errorf("open payload index: %w", err)
+	}
+
+	metaLazy := NewReadSeeker(metaIdx, source, 32)
+	payloadLazy := NewReadSeeker(payloadIdx, source, 64)
+
+	return &SplitReader{
+		inner:       NewSplitFileReader(metaLazy, payloadLazy),
+		metaIdx:     metaIdx,
+		payloadIdx:  payloadIdx,
+		source:      source,
+		metaLazy:    metaLazy,
+		payloadLazy: payloadLazy,
+		closers:     []io.Closer{metaIdx, payloadIdx},
+	}, nil
+}
+
 // only downloads and uses the metadata stream. The payload stream is never
 // fetched. ReadFileContent/ReadFileContentReader will return errors for files
 // stored in the payload stream (PayloadOffset > 0).

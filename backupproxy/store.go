@@ -440,6 +440,7 @@ type localPayloadSink struct {
 	session    *localSession
 	idx        *datastore.DynamicIndexWriter
 	localKnown map[[32]byte]bool
+	progress   UploadProgress
 }
 
 func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
@@ -447,11 +448,13 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 		return nil
 	}
 	digest := chunkDigest(raw, s.session.config.CryptConfig)
+	uploadedSize := uint64(0)
 	if !s.localKnown[digest] {
 		storeData, bp, err := borrowChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
 		if err != nil {
 			return err
 		}
+		uploadedSize = uint64(len(storeData))
 		_, _, insErr := s.session.store.InsertChunk(digest, storeData)
 		datastore.PutBlobBuf(bp)
 		if insErr != nil {
@@ -461,12 +464,14 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 	}
 	endOffset := offset + uint64(len(raw))
 	s.idx.Add(endOffset, digest)
+	s.reportProgress(uint64(len(raw)), uploadedSize)
 	return nil
 }
 
 func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 	cur := offset
 	for _, c := range inj.Chunks {
+		uploadedSize := uint64(0)
 		if !s.localKnown[c.Digest] {
 			if s.session.reuseExisting {
 				if _, err := s.session.store.StatChunk(c.Digest); err != nil {
@@ -477,6 +482,7 @@ func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 				if err != nil {
 					return fmt.Errorf("load replayed chunk: %w", err)
 				}
+				uploadedSize = uint64(len(blob))
 				if _, _, err := s.session.store.InsertChunk(c.Digest, blob); err != nil {
 					return fmt.Errorf("store replayed chunk: %w", err)
 				}
@@ -485,8 +491,21 @@ func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 		s.localKnown[c.Digest] = true
 		s.idx.Add(cur+c.Size, c.Digest)
 		cur += c.Size
+		s.reportProgress(c.Size, uploadedSize)
 	}
 	return nil
+}
+
+func (s *localPayloadSink) reportProgress(processed, uploaded uint64) {
+	s.progress.ProcessedChunks++
+	s.progress.ProcessedBytes += processed
+	if uploaded > 0 {
+		s.progress.UploadedChunks++
+		s.progress.UploadedBytes += uploaded
+	}
+	if onProgress := s.session.config.OnUploadProgress; onProgress != nil {
+		onProgress(s.progress)
+	}
 }
 
 func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {

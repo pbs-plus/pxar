@@ -40,11 +40,15 @@ func TestDatastoreStorePublishesManifestLastWithoutLoadingReusedChunks(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	var progress UploadProgress
 	session, err := store.StartSession(context.Background(), BackupConfig{
 		BackupType: datastore.BackupHost,
 		BackupID:   "target",
 		BackupTime: 1787936400,
 		CryptMode:  datastore.CryptModeNone,
+		OnUploadProgress: func(current UploadProgress) {
+			progress = current
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +70,9 @@ func TestDatastoreStorePublishesManifestLastWithoutLoadingReusedChunks(t *testin
 	}
 	if loaded {
 		t.Fatal("reused payload chunk was loaded")
+	}
+	if progress.ProcessedChunks != 1 || progress.ProcessedBytes != uint64(len(payload)) || progress.UploadedChunks != 0 || progress.UploadedBytes != 0 {
+		t.Fatalf("unexpected reused chunk progress: %+v", progress)
 	}
 	if _, err := session.UploadArchive(context.Background(), "target.mpxar.didx", bytes.NewReader([]byte("metadata"))); err != nil {
 		t.Fatal(err)

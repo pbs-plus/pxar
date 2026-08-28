@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pbs-plus/pxar/buzhash"
@@ -165,9 +166,15 @@ type InjectChunks struct {
 // It uses datastore.ChunkStore for chunk storage and writes index/blob files
 // to disk. Intended for testing and offline backups.
 type LocalStore struct {
-	baseDir  string
-	compress bool
-	config   buzhash.Config
+	baseDir       string
+	chunkBase     string
+	compress      bool
+	config        buzhash.Config
+	manifestBlob  bool
+	reuseExisting bool
+	uid           int
+	gid           int
+	syncWrites    bool
 }
 
 // NewLocalStore creates a LocalStore backed by the given directory.
@@ -177,37 +184,128 @@ func NewLocalStore(baseDir string, config buzhash.Config, compress bool) (*Local
 		return nil, fmt.Errorf("create chunk dir: %w", err)
 	}
 	return &LocalStore{
-		baseDir:  baseDir,
-		compress: compress,
-		config:   config,
+		baseDir:   baseDir,
+		chunkBase: baseDir,
+		compress:  compress,
+		config:    config,
+		uid:       -1,
+		gid:       -1,
+	}, nil
+}
+
+// DatastoreStoreOptions configures direct publication into an existing PBS datastore.
+type DatastoreStoreOptions struct {
+	Compress   bool
+	UID        int
+	GID        int
+	SyncWrites bool
+}
+
+// NewDatastoreStore creates a local store that writes snapshot files separately from the shared chunk store.
+func NewDatastoreStore(datastoreDir, snapshotDir string, config buzhash.Config, opts DatastoreStoreOptions) (*LocalStore, error) {
+	datastoreDir, err := filepath.Abs(datastoreDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve datastore path: %w", err)
+	}
+	snapshotDir, err = filepath.Abs(snapshotDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve snapshot path: %w", err)
+	}
+	rel, err := filepath.Rel(datastoreDir, snapshotDir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("snapshot path %q is outside datastore %q", snapshotDir, datastoreDir)
+	}
+	if info, err := os.Stat(filepath.Join(datastoreDir, ".chunks")); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("datastore chunk directory is unavailable")
+	}
+	if info, err := os.Stat(snapshotDir); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("snapshot directory is unavailable")
+	}
+	return &LocalStore{
+		baseDir:       snapshotDir,
+		chunkBase:     datastoreDir,
+		compress:      opts.Compress,
+		config:        config,
+		manifestBlob:  true,
+		reuseExisting: true,
+		uid:           opts.UID,
+		gid:           opts.GID,
+		syncWrites:    opts.SyncWrites,
 	}, nil
 }
 
 // StartSession creates a new local backup session.
 func (ls *LocalStore) StartSession(_ context.Context, config BackupConfig) (BackupSession, error) {
-	chunkStore, err := datastore.NewChunkStore(ls.baseDir)
+	chunkStore, err := datastore.NewOwnedChunkStore(ls.chunkBase, ls.uid, ls.gid, ls.syncWrites)
 	if err != nil {
 		return nil, fmt.Errorf("create chunk store: %w", err)
 	}
 
 	return &localSession{
-		store:       chunkStore,
-		config:      config,
-		chunkConfig: ls.config,
-		compress:    ls.compress,
-		baseDir:     ls.baseDir,
-		files:       make([]datastore.BackupFileInfo, 0),
+		store:         chunkStore,
+		config:        config,
+		chunkConfig:   ls.config,
+		compress:      ls.compress,
+		baseDir:       ls.baseDir,
+		manifestBlob:  ls.manifestBlob,
+		reuseExisting: ls.reuseExisting,
+		uid:           ls.uid,
+		gid:           ls.gid,
+		syncWrites:    ls.syncWrites,
+		files:         make([]datastore.BackupFileInfo, 0),
 	}, nil
 }
 
 // localSession implements BackupSession for local filesystem storage.
 type localSession struct {
-	store       *datastore.ChunkStore
-	baseDir     string
-	files       []datastore.BackupFileInfo
-	config      BackupConfig
-	chunkConfig buzhash.Config
-	compress    bool
+	store         *datastore.ChunkStore
+	baseDir       string
+	files         []datastore.BackupFileInfo
+	config        BackupConfig
+	chunkConfig   buzhash.Config
+	compress      bool
+	manifestBlob  bool
+	reuseExisting bool
+	uid           int
+	gid           int
+	syncWrites    bool
+}
+
+func (s *localSession) writeSnapshotFile(name string, data []byte) error {
+	if filepath.Base(name) != name || name == "." || name == "" {
+		return fmt.Errorf("invalid snapshot filename %q", name)
+	}
+	path := filepath.Join(s.baseDir, name)
+	tmp, err := os.CreateTemp(s.baseDir, "."+name+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if s.uid >= 0 || s.gid >= 0 {
+		if err := tmp.Chown(s.uid, s.gid); err != nil {
+			_ = tmp.Close()
+			return err
+		}
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if s.syncWrites {
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			return err
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func (s *localSession) UploadArchive(_ context.Context, name string, data io.Reader) (*UploadResult, error) {
@@ -246,8 +344,7 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 		return nil, fmt.Errorf("finish index: %w", err)
 	}
 
-	indexPath := filepath.Join(s.baseDir, name)
-	if err := os.WriteFile(indexPath, raw, 0o644); err != nil {
+	if err := s.writeSnapshotFile(name, raw); err != nil {
 		return nil, fmt.Errorf("write index: %w", err)
 	}
 
@@ -297,8 +394,7 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 		blobData = blob.Bytes()
 	}
 
-	blobPath := filepath.Join(s.baseDir, name)
-	if err := os.WriteFile(blobPath, blobData, 0o644); err != nil {
+	if err := s.writeSnapshotFile(name, blobData); err != nil {
 		return fmt.Errorf("write blob: %w", err)
 	}
 
@@ -323,8 +419,7 @@ func (s *localSession) UploadPayloadInterleaved(_ context.Context, name string, 
 	if err != nil {
 		return nil, fmt.Errorf("finish index: %w", err)
 	}
-	indexPath := filepath.Join(s.baseDir, name)
-	if err := os.WriteFile(indexPath, raw, 0o644); err != nil {
+	if err := s.writeSnapshotFile(name, raw); err != nil {
 		return nil, fmt.Errorf("write index: %w", err)
 	}
 
@@ -372,7 +467,7 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 	cur := offset
 	for _, c := range inj.Chunks {
-		if !s.localKnown[c.Digest] && c.LoadEncodedBlob != nil {
+		if !s.localKnown[c.Digest] && !s.session.reuseExisting && c.LoadEncodedBlob != nil {
 			blob, err := c.LoadEncodedBlob()
 			if err != nil {
 				return fmt.Errorf("load replayed chunk: %w", err)
@@ -394,7 +489,9 @@ func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 		BackupID:   s.config.BackupID,
 		BackupTime: s.config.BackupTime,
 		Files:      s.files,
-		CryptMode:  string(s.config.CryptMode),
+	}
+	if !s.manifestBlob {
+		manifest.CryptMode = string(s.config.CryptMode)
 	}
 
 	if s.config.CryptConfig != nil && s.config.CryptMode != datastore.CryptModeNone {
@@ -408,11 +505,16 @@ func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
 	}
 
-	// Manifest is never encrypted — even in encrypt mode, the manifest
-	// must remain readable so that file listings and metadata are accessible.
-
-	manifestPath := filepath.Join(s.baseDir, "index.json")
-	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+	manifestName := "index.json"
+	if s.manifestBlob {
+		blob, err := datastore.EncodeBlob(data)
+		if err != nil {
+			return nil, fmt.Errorf("encode manifest blob: %w", err)
+		}
+		data = blob.Bytes()
+		manifestName = "index.json.blob"
+	}
+	if err := s.writeSnapshotFile(manifestName, data); err != nil {
 		return nil, fmt.Errorf("write manifest: %w", err)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -13,12 +14,21 @@ import (
 // four hex characters of the SHA-256 digest (PBS-compatible layout).
 type ChunkStore struct {
 	base string
+	uid  int
+	gid  int
+	sync bool
+	mu   sync.Mutex
 }
 
 // NewChunkStore creates a ChunkStore rooted at base, creating the .chunks
 // directory if needed.
 func NewChunkStore(base string) (*ChunkStore, error) {
-	cs := &ChunkStore{base: base}
+	return NewOwnedChunkStore(base, -1, -1, false)
+}
+
+// NewOwnedChunkStore creates a chunk store whose newly inserted chunks use the requested ownership.
+func NewOwnedChunkStore(base string, uid, gid int, syncWrites bool) (*ChunkStore, error) {
+	cs := &ChunkStore{base: base, uid: uid, gid: gid, sync: syncWrites}
 	if err := os.MkdirAll(cs.chunkDir(), 0o755); err != nil {
 		return nil, fmt.Errorf("create chunk dir: %w", err)
 	}
@@ -40,26 +50,66 @@ func (cs *ChunkStore) ChunkPath(digest [32]byte) string {
 // InsertChunk stores a chunk. Returns (exists, size, error).
 // If the chunk already exists, returns (true, existingSize, nil).
 func (cs *ChunkStore) InsertChunk(digest [32]byte, data []byte) (bool, int, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
 	path := cs.ChunkPath(digest)
 
-	// Check if already exists
 	if info, err := os.Stat(path); err == nil {
-		return true, int(info.Size()), nil
+		if !info.Mode().IsRegular() {
+			return false, 0, fmt.Errorf("chunk path %s is not a regular file", path)
+		}
+		if info.Size() > 0 && info.Size() <= int64(len(data)) {
+			now := time.Now()
+			if err := os.Chtimes(path, now, now); err != nil {
+				return false, 0, fmt.Errorf("touch chunk: %w", err)
+			}
+			return true, int(info.Size()), nil
+		}
+	} else if !os.IsNotExist(err) {
+		return false, 0, fmt.Errorf("stat chunk: %w", err)
 	}
 
-	// Create parent directory
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, 0, fmt.Errorf("create chunk dir %s: %w", dir, err)
 	}
+	if cs.uid >= 0 || cs.gid >= 0 {
+		if err := os.Chown(dir, cs.uid, cs.gid); err != nil {
+			return false, 0, fmt.Errorf("chown chunk dir %s: %w", dir, err)
+		}
+	}
 
-	// Atomic write: write to temp file then rename
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, ".chunk-*")
+	if err != nil {
+		return false, 0, fmt.Errorf("create temporary chunk: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return false, 0, fmt.Errorf("chmod temporary chunk: %w", err)
+	}
+	if cs.uid >= 0 || cs.gid >= 0 {
+		if err := tmp.Chown(cs.uid, cs.gid); err != nil {
+			_ = tmp.Close()
+			return false, 0, fmt.Errorf("chown temporary chunk: %w", err)
+		}
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return false, 0, fmt.Errorf("write chunk: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	if cs.sync {
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			return false, 0, fmt.Errorf("sync chunk: %w", err)
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return false, 0, fmt.Errorf("close chunk: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
 		return false, 0, fmt.Errorf("rename chunk: %w", err)
 	}
 
@@ -83,6 +133,8 @@ func (cs *ChunkStore) LoadChunk(digest [32]byte) ([]byte, error) {
 
 // TouchChunk updates the access time of a chunk file.
 func (cs *ChunkStore) TouchChunk(digest [32]byte) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 	path := cs.ChunkPath(digest)
 	now := time.Now()
 	return os.Chtimes(path, now, now)

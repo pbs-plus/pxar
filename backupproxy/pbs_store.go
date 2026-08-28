@@ -473,6 +473,7 @@ type pbsPayloadSink struct {
 	batchDigests []string
 	batchOffsets []uint64
 	chunkCount   int
+	progress     UploadProgress
 
 	localKnown map[[32]byte]bool // producer-owned: dedup hit cache
 	hexBuf     [64]byte          // worker-owned: digest hex for server appends
@@ -491,11 +492,12 @@ type pbsPayloadSink struct {
 // pool handle (returned after the upload completes); for dedup-known and
 // injected chunks they are nil (the chunk already exists on the server).
 type appendJob struct {
-	digest [32]byte
-	offset uint64
-	size   uint64
-	await  func() error // new chunks: blocks until upload done; nil for known/injected
-	bp     *[]byte      // new chunks: pool handle to return after upload; nil otherwise
+	digest       [32]byte
+	offset       uint64
+	size         uint64
+	uploadedSize uint64
+	await        func() error
+	bp           *[]byte
 }
 
 const (
@@ -529,7 +531,18 @@ func (s *pbsPayloadSink) appendOne(j *appendJob) error {
 	s.batchOffsets = append(s.batchOffsets, j.offset)
 	s.chunkCount++
 	if len(s.batchDigests) >= pbsAppendBatchSize {
-		return s.flushBatch()
+		if err := s.flushBatch(); err != nil {
+			return err
+		}
+	}
+	s.progress.ProcessedChunks++
+	s.progress.ProcessedBytes += j.size
+	if j.uploadedSize > 0 {
+		s.progress.UploadedChunks++
+		s.progress.UploadedBytes += j.uploadedSize
+	}
+	if onProgress := s.session.config.OnUploadProgress; onProgress != nil {
+		onProgress(s.progress)
 	}
 	return nil
 }
@@ -571,7 +584,7 @@ func (s *pbsPayloadSink) putRaw(offset uint64, raw []byte) error {
 	await := s.proto.dynamicChunkUploadAsync(s.wid, string(hexBuf[:]), len(raw), len(blob), blob)
 	s.localKnown[digest] = true
 	s.session.knownChunks[digest] = true
-	s.appendCh <- appendJob{digest: digest, offset: offset, size: size, await: await, bp: bp}
+	s.appendCh <- appendJob{digest: digest, offset: offset, size: size, uploadedSize: uint64(len(blob)), await: await, bp: bp}
 	return nil
 }
 
@@ -585,6 +598,7 @@ func (s *pbsPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 	cur := offset
 	for _, c := range inj.Chunks {
 		var await func() error
+		var uploadedSize uint64
 		if !s.localKnown[c.Digest] && c.LoadEncodedBlob != nil {
 			blob, err := c.LoadEncodedBlob()
 			if err != nil {
@@ -599,11 +613,12 @@ func (s *pbsPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 				len(blob),
 				blob,
 			)
+			uploadedSize = uint64(len(blob))
 		}
 		s.localKnown[c.Digest] = true
 		s.session.knownChunks[c.Digest] = true
 		s.idx.Add(cur+c.Size, c.Digest) // local checksum, production order
-		s.appendCh <- appendJob{digest: c.Digest, offset: cur, size: c.Size, await: await}
+		s.appendCh <- appendJob{digest: c.Digest, offset: cur, size: c.Size, uploadedSize: uploadedSize, await: await}
 		cur += c.Size
 	}
 	return nil

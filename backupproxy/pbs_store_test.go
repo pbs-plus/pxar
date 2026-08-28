@@ -156,6 +156,50 @@ func TestPBSUploadArchive(t *testing.T) {
 	}
 }
 
+func TestPBSUploadPayloadInterleavedProgress(t *testing.T) {
+	sess, _ := newTestPBSSession(t)
+	knownDigest := [32]byte{1}
+	uploadedDigest := [32]byte{2}
+	sess.knownChunks = map[[32]byte]bool{knownDigest: true}
+
+	var updates []UploadProgress
+	sess.config.OnUploadProgress = func(progress UploadProgress) {
+		updates = append(updates, progress)
+	}
+
+	injections := make(chan InjectChunks, 1)
+	injections <- InjectChunks{
+		Chunks: []KnownChunkRef{
+			{Digest: knownDigest, Size: 50},
+			{Digest: uploadedDigest, Size: 100, LoadEncodedBlob: func() ([]byte, error) {
+				return []byte{1, 2, 3, 4}, nil
+			}},
+		},
+		Size: 150,
+	}
+	close(injections)
+
+	result, err := sess.UploadPayloadInterleaved(context.Background(), "root.ppxar.didx", nil, injections)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Size != 150 {
+		t.Fatalf("size = %d, want 150", result.Size)
+	}
+	if len(updates) != 2 {
+		t.Fatalf("progress updates = %d, want 2", len(updates))
+	}
+	want := UploadProgress{
+		ProcessedChunks: 2,
+		ProcessedBytes:  150,
+		UploadedChunks:  1,
+		UploadedBytes:   4,
+	}
+	if got := updates[len(updates)-1]; got != want {
+		t.Fatalf("final progress = %+v, want %+v", got, want)
+	}
+}
+
 func TestPBSUploadBlob(t *testing.T) {
 	sess, mock := newTestPBSSession(t)
 

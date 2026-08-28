@@ -109,18 +109,26 @@ func (d DetectionMode) String() string {
 	}
 }
 
+type UploadProgress struct {
+	ProcessedChunks uint64
+	ProcessedBytes  uint64
+	UploadedChunks  uint64
+	UploadedBytes   uint64
+}
+
 // BackupConfig holds parameters for a single backup operation.
 type BackupConfig struct {
-	PreviousBackup *PreviousBackupRef
-	CryptConfig    *datastore.CryptConfig
-	BackupID       string
-	Namespace      string
-	CryptMode      datastore.CryptMode
-	ChunkConfig    buzhash.Config
-	BackupType     datastore.BackupType
-	BackupTime     int64
-	DetectionMode  DetectionMode
-	Compress       bool
+	PreviousBackup   *PreviousBackupRef
+	CryptConfig      *datastore.CryptConfig
+	BackupID         string
+	Namespace        string
+	CryptMode        datastore.CryptMode
+	ChunkConfig      buzhash.Config
+	BackupType       datastore.BackupType
+	BackupTime       int64
+	DetectionMode    DetectionMode
+	Compress         bool
+	OnUploadProgress func(UploadProgress)
 	// Debug enables verbose server-side chunk-level logging in the PBS task log
 	// (matching proxmox-backup-client's --debug flag).
 	Debug bool

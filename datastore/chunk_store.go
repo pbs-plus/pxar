@@ -116,7 +116,18 @@ func (cs *ChunkStore) InsertChunk(digest [32]byte, data []byte) (bool, int, erro
 	return false, len(data), nil
 }
 
-// LoadChunk reads a chunk from disk.
+// StatChunk returns the stored chunk size, failing when missing or empty.
+func (cs *ChunkStore) StatChunk(digest [32]byte) (int64, error) {
+	info, err := os.Stat(cs.ChunkPath(digest))
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return 0, fmt.Errorf("chunk %s is not a usable file", cs.ChunkPath(digest))
+	}
+	return info.Size(), nil
+}
+
 func (cs *ChunkStore) LoadChunk(digest [32]byte) ([]byte, error) {
 	path := cs.ChunkPath(digest)
 	data, err := os.ReadFile(path)

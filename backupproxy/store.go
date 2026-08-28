@@ -467,13 +467,19 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 	cur := offset
 	for _, c := range inj.Chunks {
-		if !s.localKnown[c.Digest] && !s.session.reuseExisting && c.LoadEncodedBlob != nil {
-			blob, err := c.LoadEncodedBlob()
-			if err != nil {
-				return fmt.Errorf("load replayed chunk: %w", err)
-			}
-			if _, _, err := s.session.store.InsertChunk(c.Digest, blob); err != nil {
-				return fmt.Errorf("store replayed chunk: %w", err)
+		if !s.localKnown[c.Digest] {
+			if s.session.reuseExisting {
+				if _, err := s.session.store.StatChunk(c.Digest); err != nil {
+					return fmt.Errorf("verify reused chunk: %w", err)
+				}
+			} else if c.LoadEncodedBlob != nil {
+				blob, err := c.LoadEncodedBlob()
+				if err != nil {
+					return fmt.Errorf("load replayed chunk: %w", err)
+				}
+				if _, _, err := s.session.store.InsertChunk(c.Digest, blob); err != nil {
+					return fmt.Errorf("store replayed chunk: %w", err)
+				}
 			}
 		}
 		s.localKnown[c.Digest] = true

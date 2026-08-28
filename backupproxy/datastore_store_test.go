@@ -121,3 +121,39 @@ func TestDatastoreStoreRejectsSnapshotOutsideDatastore(t *testing.T) {
 		t.Fatal("expected outside snapshot path to be rejected")
 	}
 }
+
+func TestDatastoreStoreRejectsMissingReusedChunk(t *testing.T) {
+	root := t.TempDir()
+	if _, err := datastore.NewChunkStore(root); err != nil {
+		t.Fatal(err)
+	}
+	snapshotDir := filepath.Join(root, "host", "target", "2026-08-28T17:00:00Z")
+	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := buzhash.NewConfig(4 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewDatastoreStore(root, snapshotDir, cfg, DatastoreStoreOptions{UID: -1, GID: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession(context.Background(), BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "target",
+		BackupTime: 1787936400,
+		CryptMode:  datastore.CryptModeNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missing [32]byte
+	copy(missing[:], []byte("chunk that was never stored........"))
+	injections := make(chan InjectChunks, 1)
+	injections <- InjectChunks{Chunks: []KnownChunkRef{{Digest: missing, Size: 4}}}
+	close(injections)
+	if _, err := session.UploadPayloadInterleaved(context.Background(), "target.ppxar.didx", bytes.NewReader(nil), injections); err == nil {
+		t.Fatal("expected missing reused chunk to be rejected")
+	}
+}

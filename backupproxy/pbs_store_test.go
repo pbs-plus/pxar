@@ -277,6 +277,47 @@ func TestPBSUploadDigestVerification(t *testing.T) {
 	}
 }
 
+func TestPBSReplayUploadsUnknownChunkOnce(t *testing.T) {
+	sess, mock := newTestPBSSession(t)
+	raw := []byte("source chunk replayed without rechunking")
+	digest := sha256.Sum256(raw)
+	encoded, err := datastore.EncodeBlob(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loads := 0
+	load := func() ([]byte, error) {
+		loads++
+		return encoded.Bytes(), nil
+	}
+
+	upload := func(name string) {
+		injections := make(chan InjectChunks, 1)
+		injections <- InjectChunks{
+			Chunks: []KnownChunkRef{{Digest: digest, Size: uint64(len(raw)), LoadEncodedBlob: load}},
+			Size:   uint64(len(raw)),
+		}
+		close(injections)
+		result, err := sess.UploadPayloadInterleaved(context.Background(), name, nil, injections)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Size != uint64(len(raw)) {
+			t.Fatalf("payload size = %d, want %d", result.Size, len(raw))
+		}
+	}
+
+	upload("first.ppxar.didx")
+	upload("second.ppxar.didx")
+	if loads != 1 {
+		t.Fatalf("source blob loaded %d times, want 1", loads)
+	}
+	digestHex := hex.EncodeToString(digest[:])
+	if !bytes.Equal(mock.chunks[digestHex], encoded.Bytes()) {
+		t.Fatal("uploaded chunk differs from exact source blob")
+	}
+}
+
 func TestPBSManifestFileEntries(t *testing.T) {
 	sess, _ := newTestPBSSession(t)
 

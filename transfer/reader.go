@@ -338,6 +338,11 @@ func (r *SplitReader) PayloadReaderAt() io.ReaderAt {
 	return nil
 }
 
+// PayloadIndex returns the payload dynamic index, or nil for metadata-only readers.
+func (r *SplitReader) PayloadIndex() *datastore.DynamicIndexReader {
+	return r.payloadIdx
+}
+
 func (r *SplitReader) ReadRoot() (*pxar.Entry, error) {
 	return r.inner.ReadRoot()
 }

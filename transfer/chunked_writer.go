@@ -58,6 +58,14 @@ func (w *SessionWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size ui
 	return w.inner.WriteEntryReader(entry, r, size)
 }
 
+func (w *SessionWriter) WriteHardlink(name string, target string, targetOffset encoder.LinkOffset) error {
+	return w.inner.WriteHardlink(name, target, targetOffset)
+}
+
+func (w *SessionWriter) LastEntryOffset() (encoder.LinkOffset, bool) {
+	return w.inner.LastEntryOffset()
+}
+
 func (w *SessionWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
 	w.dirDepth++
 	return w.inner.BeginDirectory(name, meta)

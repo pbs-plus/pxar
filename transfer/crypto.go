@@ -9,13 +9,6 @@ import (
 	"github.com/pbs-plus/pxar/datastore"
 )
 
-// DecryptSource wraps a ChunkSource and decrypts/decompresses chunks
-// on the fly. This is used when reading from an encrypted archive where the raw
-// chunks are encrypted blobs that need to be decoded before restoration.
-//
-// When a CryptConfig is provided, encrypted blobs are decrypted. All blobs are
-// decoded (uncompressed/decrypted) before being returned, producing the raw
-// chunk data that the Restorer expects.
 type DecryptSource struct {
 	inner datastore.ChunkSource
 	cc    *datastore.CryptConfig
@@ -49,16 +42,15 @@ func (d *DecryptSource) GetChunk(digest [32]byte) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("decrypt chunk %x: %w", digest[:8], err)
 			}
-			return decrypted, nil
+			blob, err := datastore.EncodeBlob(decrypted)
+			if err != nil {
+				return nil, fmt.Errorf("encode decrypted chunk %x: %w", digest[:8], err)
+			}
+			return blob.Bytes(), nil
 		}
 	}
 
-	// Non-encrypted blob, just decode normally (handles uncompressed and compressed)
-	decoded, err := datastore.DecodeBlob(raw)
-	if err != nil {
-		return nil, fmt.Errorf("decode chunk %x: %w", digest[:8], err)
-	}
-	return decoded, nil
+	return raw, nil
 }
 
 // DecryptingReader is a placeholder for per-file decryption support.

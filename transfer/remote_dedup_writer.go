@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 
 	pxar "github.com/pbs-plus/pxar"
@@ -32,6 +33,7 @@ type RemoteDedupWriter struct {
 	metaBuf     bytes.Buffer
 	dirDepth    int
 	lastRefOff  *uint64
+	requiredEnd uint64
 
 	payloadPipe *payloadpipe.Pipe
 
@@ -70,6 +72,8 @@ func NewRemoteDedupWriter(
 func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.metaBuf.Reset()
 	w.dirDepth = 1
+	w.lastRefOff = nil
+	w.requiredEnd = 0
 	opts.Format = format.FormatVersion2
 
 	w.payloadPipe = payloadpipe.New()
@@ -129,6 +133,9 @@ func (w *RemoteDedupWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) err
 
 	totalSize := uint64(0)
 	for _, c := range chunks {
+		if c.Size > math.MaxUint64-totalSize {
+			return fmt.Errorf("injected chunk sizes overflow")
+		}
 		totalSize += c.Size
 	}
 
@@ -136,6 +143,12 @@ func (w *RemoteDedupWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) err
 		Chunks:   chunks,
 		Size:     totalSize,
 		Boundary: boundary,
+	}
+	for _, chunk := range chunks {
+		if chunk.LoadEncodedBlob != nil {
+			injection.Processed = make(chan error, 1)
+			break
+		}
 	}
 	select {
 	case w.injectCh <- injection:
@@ -147,6 +160,21 @@ func (w *RemoteDedupWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) err
 		return io.ErrClosedPipe
 	case <-w.ctx.Done():
 		return w.ctx.Err()
+	}
+	if injection.Processed != nil {
+		select {
+		case err := <-injection.Processed:
+			if err != nil {
+				return err
+			}
+		case <-w.payloadPipe.Done():
+			if err := w.payloadPipe.Err(); err != nil {
+				return err
+			}
+			return io.ErrClosedPipe
+		case <-w.ctx.Done():
+			return w.ctx.Err()
+		}
 	}
 	return enc.Advance(totalSize)
 }
@@ -160,14 +188,40 @@ func (w *RemoteDedupWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, siz
 }
 
 func (w *RemoteDedupWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
+	if payloadOffset > math.MaxUint64-format.HeaderSize || entry.FileSize > math.MaxUint64-format.HeaderSize-payloadOffset {
+		return fmt.Errorf("payload range for %q overflows", entry.Path)
+	}
 	if !RecordMax(&w.lastRefOff, payloadOffset) {
 		return fmt.Errorf("payload offset %d is not strictly greater than last accepted offset %d", payloadOffset, *w.lastRefOff)
 	}
-	return w.inner.WriteEntryRef(entry, payloadOffset)
+	if err := w.inner.WriteEntryRef(entry, payloadOffset); err != nil {
+		return err
+	}
+	w.requiredEnd = max(w.requiredEnd, payloadOffset+format.HeaderSize+entry.FileSize)
+	return nil
 }
 
 func (w *RemoteDedupWriter) WriteHardlink(name string, target string, targetOffset encoder.LinkOffset) error {
 	return w.inner.WriteHardlink(name, target, targetOffset)
+}
+
+func (w *RemoteDedupWriter) LastEntryOffset() (encoder.LinkOffset, bool) {
+	return w.inner.LastEntryOffset()
+}
+
+// WritePayload writes already-framed payload bytes without creating metadata.
+func (w *RemoteDedupWriter) WritePayload(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	enc := w.inner.Encoder()
+	if enc == nil || w.payloadBuf == nil {
+		return fmt.Errorf("encoder not initialized")
+	}
+	if _, err := w.payloadBuf.Write(data); err != nil {
+		return err
+	}
+	return enc.Advance(uint64(len(data)))
 }
 
 func (w *RemoteDedupWriter) BeginDirectory(name string, meta *pxar.Metadata) error {
@@ -196,6 +250,10 @@ func (w *RemoteDedupWriter) cleanup(abort error) {
 var ErrWriterAborted = fmt.Errorf("remote dedup writer: aborted before finish")
 
 func (w *RemoteDedupWriter) Finish() error {
+	if w.inner.Encoder().PayloadPosition() > math.MaxUint64-format.HeaderSize {
+		return fmt.Errorf("payload size overflows")
+	}
+	expectedPayloadSize := w.inner.Encoder().PayloadPosition() + format.HeaderSize
 	for w.dirDepth > 1 {
 		if err := w.inner.EndDirectory(); err != nil {
 			w.setEncErr(err)
@@ -223,6 +281,15 @@ func (w *RemoteDedupWriter) Finish() error {
 	w.started = false
 	if res.err != nil {
 		return fmt.Errorf("upload payload: %w", res.err)
+	}
+	if res.result == nil {
+		return fmt.Errorf("payload upload returned no result")
+	}
+	if res.result.Size != expectedPayloadSize {
+		return fmt.Errorf("payload upload size %d does not match encoder position %d", res.result.Size, expectedPayloadSize)
+	}
+	if res.result.Size < w.requiredEnd {
+		return fmt.Errorf("payload references end at %d but upload ends at %d", w.requiredEnd, res.result.Size)
 	}
 
 	_, err := w.session.UploadArchive(w.ctx, w.metaName, bytes.NewReader(w.metaBuf.Bytes()))

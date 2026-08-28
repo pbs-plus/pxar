@@ -47,10 +47,18 @@ type payloadSink interface {
 // exactly at offset == inj.Boundary; empty raw splits are skipped (matching
 // InjectReusedChunksQueue's `if raw.is_empty() => continue`).
 func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan InjectChunks, sink payloadSink) (totalSize uint64, err error) {
+	putInjection := func(offset uint64, injection InjectChunks) error {
+		err := sink.putInjection(offset, injection)
+		if injection.Processed != nil {
+			injection.Processed <- err
+			close(injection.Processed)
+		}
+		return err
+	}
 	if newData == nil {
 		// No new data: drain injections only.
 		for inj := range injections {
-			if err := sink.putInjection(totalSize, inj); err != nil {
+			if err := putInjection(totalSize, inj); err != nil {
 				return 0, err
 			}
 			totalSize += inj.Size
@@ -146,7 +154,7 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 		inj := pending
 		boundary := inj.Boundary
 		hasPending = false
-		if err := sink.putInjection(boundary, inj); err != nil {
+		if err := putInjection(boundary, inj); err != nil {
 			return err
 		}
 		totalSize = boundary + inj.Size
@@ -298,7 +306,7 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 		if inj.Boundary != totalSize {
 			return 0, fmt.Errorf("invalid injection boundary %d != offset %d", inj.Boundary, totalSize)
 		}
-		if err := sink.putInjection(totalSize, inj); err != nil {
+		if err := putInjection(totalSize, inj); err != nil {
 			return 0, err
 		}
 		totalSize += inj.Size

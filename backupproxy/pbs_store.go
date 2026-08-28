@@ -576,11 +576,34 @@ func (s *pbsPayloadSink) putRaw(offset uint64, raw []byte) error {
 }
 
 func (s *pbsPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
+	if s.localKnown == nil {
+		s.localKnown = make(map[[32]byte]bool, len(s.session.knownChunks))
+		for d := range s.session.knownChunks {
+			s.localKnown[d] = true
+		}
+	}
 	cur := offset
 	for _, c := range inj.Chunks {
+		var await func() error
+		if !s.localKnown[c.Digest] && c.LoadEncodedBlob != nil {
+			blob, err := c.LoadEncodedBlob()
+			if err != nil {
+				return fmt.Errorf("load replayed chunk: %w", err)
+			}
+			var hexBuf [64]byte
+			hex.Encode(hexBuf[:], c.Digest[:])
+			await = s.proto.dynamicChunkUploadAsync(
+				s.wid,
+				string(hexBuf[:]),
+				int(c.Size),
+				len(blob),
+				blob,
+			)
+		}
+		s.localKnown[c.Digest] = true
 		s.session.knownChunks[c.Digest] = true
 		s.idx.Add(cur+c.Size, c.Digest) // local checksum, production order
-		s.appendCh <- appendJob{digest: c.Digest, offset: cur, size: c.Size}
+		s.appendCh <- appendJob{digest: c.Digest, offset: cur, size: c.Size, await: await}
 		cur += c.Size
 	}
 	return nil
@@ -603,17 +626,23 @@ func (s *pbsPayloadSink) appendWorker() {
 		if firstErr != nil {
 			if job.await != nil {
 				_ = job.await()
-				datastore.PutBlobBuf(job.bp)
+				if job.bp != nil {
+					datastore.PutBlobBuf(job.bp)
+				}
 			}
 			continue
 		}
 		if job.await != nil {
 			if err := job.await(); err != nil {
 				firstErr = err
-				datastore.PutBlobBuf(job.bp)
+				if job.bp != nil {
+					datastore.PutBlobBuf(job.bp)
+				}
 				continue
 			}
-			datastore.PutBlobBuf(job.bp)
+			if job.bp != nil {
+				datastore.PutBlobBuf(job.bp)
+			}
 		}
 		if err := s.appendOne(&job); err != nil {
 			firstErr = err

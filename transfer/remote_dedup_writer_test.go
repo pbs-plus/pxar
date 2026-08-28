@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -16,10 +17,12 @@ import (
 type drainSession struct{}
 
 func (drainSession) UploadPayloadInterleaved(_ context.Context, _ string, newData io.Reader, injections <-chan backupproxy.InjectChunks) (*backupproxy.UploadResult, error) {
-	_, _ = io.Copy(io.Discard, newData)
-	for range injections {
+	n, _ := io.Copy(io.Discard, newData)
+	size := uint64(n)
+	for injection := range injections {
+		size += injection.Size
 	}
-	return &backupproxy.UploadResult{}, nil
+	return &backupproxy.UploadResult{Size: size}, nil
 }
 func (drainSession) UploadArchive(context.Context, string, io.Reader) (*backupproxy.UploadResult, error) {
 	return &backupproxy.UploadResult{}, nil
@@ -96,6 +99,68 @@ func TestRemoteDedupWriterStreamsMoreThanInjectionBuffer(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("remote writer injection stream deadlocked")
+	}
+}
+
+func TestRemoteDedupWriterReturnsReplayLoadError(t *testing.T) {
+	cfg, err := buzhash.NewConfig(4 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := backupproxy.NewLocalStore(t.TempDir(), cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.StartSession(context.Background(), backupproxy.BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "replay-error",
+		BackupTime: time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewRemoteDedupWriter(context.Background(), session, "root.mpxar.didx", "root.ppxar.didx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootMeta := &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o755}}
+	if err := w.Begin(rootMeta, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("load failed")
+	err = w.InjectChunks([]backupproxy.KnownChunkRef{{
+		Digest: [32]byte{1},
+		Size:   1,
+		LoadEncodedBlob: func() ([]byte, error) {
+			return nil, want
+		},
+	}})
+	if !errors.Is(err, want) {
+		t.Fatalf("InjectChunks error = %v, want %v", err, want)
+	}
+	_ = w.Close()
+}
+
+func TestRemoteDedupWriterRejectsUnbackedPayloadRef(t *testing.T) {
+	w, err := NewRemoteDedupWriter(context.Background(), drainSession{}, "root.mpxar.didx", "root.ppxar.didx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootMeta := &pxar.Metadata{Stat: format.Stat{Mode: format.ModeIFDIR | 0o755}}
+	if err := w.Begin(rootMeta, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	entry := &pxar.Entry{
+		Path:     "missing.bin",
+		Kind:     pxar.KindFile,
+		Metadata: pxar.FileMetadata(0o600).Build(),
+		FileSize: 128,
+	}
+	if err := w.WriteEntryRef(entry, w.Encoder().PayloadPosition()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Finish(); err == nil {
+		t.Fatal("Finish accepted a payload reference without backing bytes")
 	}
 }
 

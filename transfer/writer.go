@@ -66,6 +66,8 @@ type StreamWriter struct {
 	closers    []io.Closer
 	opts       Options
 	dirDepth   int
+	lastOffset encoder.LinkOffset
+	hasOffset  bool
 }
 
 // NewStreamWriter creates a writer for v1 (unified) format.
@@ -91,7 +93,8 @@ func (w *StreamWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	}
 
 	w.enc = encoder.NewEncoder(w.output, w.payloadOut, rootMeta, prelude)
-	w.dirDepth = 1 // root directory is implicitly open
+	w.dirDepth = 1
+	w.lastOffset, w.hasOffset = 0, false
 	return nil
 }
 
@@ -104,7 +107,10 @@ func (w *StreamWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
 
 	switch entry.Kind {
 	case pxar.KindFile:
-		_, err := w.enc.AddFile(&entry.Metadata, name, content)
+		offset, err := w.enc.AddFile(&entry.Metadata, name, content)
+		if err == nil {
+			w.lastOffset, w.hasOffset = offset, true
+		}
 		return err
 
 	case pxar.KindSymlink:
@@ -140,6 +146,7 @@ func (w *StreamWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uin
 		if err != nil {
 			return err
 		}
+		w.lastOffset, w.hasOffset = fw.FileOffset(), true
 		if _, err := io.Copy(fw, r); err != nil {
 			fw.Close()
 			return err
@@ -165,7 +172,10 @@ func (w *StreamWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) er
 	name := entry.FileName()
 	switch entry.Kind {
 	case pxar.KindFile:
-		_, err := w.enc.AddPayloadRef(&entry.Metadata, name, entry.FileSize, payloadOffset)
+		offset, err := w.enc.AddPayloadRef(&entry.Metadata, name, entry.FileSize, payloadOffset)
+		if err == nil {
+			w.lastOffset, w.hasOffset = offset, true
+		}
 		return err
 	case pxar.KindSymlink:
 		return w.enc.AddSymlink(&entry.Metadata, name, entry.LinkTarget)
@@ -186,6 +196,10 @@ func (w *StreamWriter) WriteHardlink(name string, target string, targetOffset en
 		return fmt.Errorf("writer not initialized, call Begin first")
 	}
 	return w.enc.AddHardlink(name, target, targetOffset)
+}
+
+func (w *StreamWriter) LastEntryOffset() (encoder.LinkOffset, bool) {
+	return w.lastOffset, w.hasOffset
 }
 
 // Encoder returns the underlying encoder for advanced operations.

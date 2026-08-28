@@ -10,6 +10,8 @@ import (
 type CopyOption struct {
 	SourceCryptConfig *datastore.CryptConfig
 	TargetCryptConfig *datastore.CryptConfig
+	SourceCryptMode   datastore.CryptMode
+	TargetCryptMode   datastore.CryptMode
 	OnProgress        func(path string, bytes uint64)
 	TargetFormat      format.FormatVersion
 	Overwrite         bool

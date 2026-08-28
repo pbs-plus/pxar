@@ -128,11 +128,12 @@ type SnapshotReader interface {
 	NewPreviousSnapshotSource(ctx context.Context, backupType datastore.BackupType, backupID string, backupTime int64, namespace string) (PreviousSnapshotSource, error)
 }
 
-// BackupSession represents an active backup upload session.
-// KnownChunkRef references a chunk already stored in the datastore.
+// KnownChunkRef references a chunk and can carry its exact encoded blob when
+// the target session may not know it yet.
 type KnownChunkRef struct {
-	Digest [32]byte
-	Size   uint64 // chunk size in bytes
+	Digest          [32]byte
+	Size            uint64 // decoded chunk size in bytes
+	LoadEncodedBlob func() ([]byte, error)
 }
 
 type BackupSession interface {
@@ -154,9 +155,10 @@ type BackupSession interface {
 // the correct offset order. Without it the new-data and injected-chunk
 // offsets drift apart, producing server errors like "strange chunk offset".
 type InjectChunks struct {
-	Chunks   []KnownChunkRef
-	Size     uint64
-	Boundary uint64
+	Chunks    []KnownChunkRef
+	Size      uint64
+	Boundary  uint64
+	Processed chan error
 }
 
 // LocalStore implements RemoteStore using a local filesystem directory.
@@ -370,6 +372,16 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 	cur := offset
 	for _, c := range inj.Chunks {
+		if !s.localKnown[c.Digest] && c.LoadEncodedBlob != nil {
+			blob, err := c.LoadEncodedBlob()
+			if err != nil {
+				return fmt.Errorf("load replayed chunk: %w", err)
+			}
+			if _, _, err := s.session.store.InsertChunk(c.Digest, blob); err != nil {
+				return fmt.Errorf("store replayed chunk: %w", err)
+			}
+		}
+		s.localKnown[c.Digest] = true
 		s.idx.Add(cur+c.Size, c.Digest)
 		cur += c.Size
 	}

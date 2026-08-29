@@ -675,10 +675,10 @@ func decodeChunk(blob []byte, cryptConfig *datastore.CryptConfig) ([]byte, error
 			if cryptConfig == nil {
 				return nil, fmt.Errorf("encrypted source chunk requires SourceCryptConfig")
 			}
-			return datastore.DecodeEncryptedBlob(blob, cryptConfig)
+			return datastore.DecodeEncryptedBlob(nil, blob, cryptConfig)
 		}
 	}
-	return datastore.DecodeBlob(blob)
+	return datastore.DecodeBlob(nil, blob)
 }
 
 var _ ArchiveReader = (*FileReader)(nil)

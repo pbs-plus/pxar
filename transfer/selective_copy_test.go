@@ -269,7 +269,7 @@ func TestCopyReplaysInteriorChunksWithoutLeakingBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		decoded, err := datastore.DecodeBlob(blob)
+		decoded, err := datastore.DecodeBlob(nil, blob)
 		if err != nil {
 			t.Fatal(err)
 		}

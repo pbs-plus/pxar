@@ -23,10 +23,10 @@ func TestRestorerRestoreFile(t *testing.T) {
 	digest2 := sha256Sum(chunk2)
 
 	// Store chunks as encoded blobs
-	blob1, _ := EncodeBlob(chunk1)
-	blob2, _ := EncodeBlob(chunk2)
-	_, _, _ = store.InsertChunk(digest1, blob1.Bytes())
-	_, _, _ = store.InsertChunk(digest2, blob2.Bytes())
+	blob1, _ := EncodeBlob(nil, chunk1)
+	blob2, _ := EncodeBlob(nil, chunk2)
+	_, _, _ = store.InsertChunk(digest1, blob1)
+	_, _, _ = store.InsertChunk(digest2, blob2)
 
 	// Create index
 	idx := NewDynamicIndexWriter(time.Now().Unix())
@@ -70,10 +70,10 @@ func TestRestorerRestoreFileCompressedChunks(t *testing.T) {
 	digest2 := sha256Sum(chunk2)
 
 	// Store chunks as compressed blobs
-	blob1, _ := EncodeCompressedBlob(chunk1)
-	blob2, _ := EncodeCompressedBlob(chunk2)
-	_, _, _ = store.InsertChunk(digest1, blob1.Bytes())
-	_, _, _ = store.InsertChunk(digest2, blob2.Bytes())
+	blob1, _ := EncodeCompressedBlob(nil, chunk1)
+	blob2, _ := EncodeCompressedBlob(nil, chunk2)
+	_, _, _ = store.InsertChunk(digest1, blob1)
+	_, _, _ = store.InsertChunk(digest2, blob2)
 
 	// Create index
 	idx := NewDynamicIndexWriter(time.Now().Unix())
@@ -119,12 +119,12 @@ func TestRestorerRestoreRange(t *testing.T) {
 	digest3 := sha256Sum(chunk3)
 
 	// Store chunks
-	blob1, _ := EncodeBlob(chunk1)
-	blob2, _ := EncodeBlob(chunk2)
-	blob3, _ := EncodeBlob(chunk3)
-	_, _, _ = store.InsertChunk(digest1, blob1.Bytes())
-	_, _, _ = store.InsertChunk(digest2, blob2.Bytes())
-	_, _, _ = store.InsertChunk(digest3, blob3.Bytes())
+	blob1, _ := EncodeBlob(nil, chunk1)
+	blob2, _ := EncodeBlob(nil, chunk2)
+	blob3, _ := EncodeBlob(nil, chunk3)
+	_, _, _ = store.InsertChunk(digest1, blob1)
+	_, _, _ = store.InsertChunk(digest2, blob2)
+	_, _, _ = store.InsertChunk(digest3, blob3)
 
 	// Create index
 	idx := NewDynamicIndexWriter(time.Now().Unix())
@@ -197,8 +197,8 @@ func TestRestorerMissingChunk(t *testing.T) {
 	// Create one chunk but not the other
 	chunk1 := []byte("only this chunk exists")
 	digest1 := sha256Sum(chunk1)
-	blob1, _ := EncodeBlob(chunk1)
-	_, _, _ = store.InsertChunk(digest1, blob1.Bytes())
+	blob1, _ := EncodeBlob(nil, chunk1)
+	_, _, _ = store.InsertChunk(digest1, blob1)
 
 	// Create index referencing both chunks
 	idx := NewDynamicIndexWriter(time.Now().Unix())
@@ -225,8 +225,8 @@ func TestChunkStoreSource(t *testing.T) {
 
 	data := []byte("test chunk data")
 	digest := sha256Sum(data)
-	blob, _ := EncodeBlob(data)
-	_, _, _ = store.InsertChunk(digest, blob.Bytes())
+	blob, _ := EncodeBlob(nil, data)
+	_, _, _ = store.InsertChunk(digest, blob)
 
 	source := NewChunkStoreSource(store)
 	got, err := source.GetChunk(digest)
@@ -235,7 +235,7 @@ func TestChunkStoreSource(t *testing.T) {
 	}
 
 	// GetChunk returns raw blob, not decoded data
-	if !bytes.Equal(got, blob.Bytes()) {
+	if !bytes.Equal(got, blob) {
 		t.Error("GetChunk returned wrong data")
 	}
 }

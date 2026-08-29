@@ -112,7 +112,7 @@ func TestStoreChunkerChunkStoreIntegration(t *testing.T) {
 			t.Fatalf("LoadChunk %d: %v", i, err)
 		}
 
-		decoded, err := DecodeBlob(stored)
+		decoded, err := DecodeBlob(nil, stored)
 		if err != nil {
 			t.Fatalf("DecodeBlob %d: %v", i, err)
 		}
@@ -185,7 +185,7 @@ func TestStoreChunkerCompressed(t *testing.T) {
 		}
 
 		// Verify it's a valid blob (should be compressed given repeating data)
-		decoded, err := DecodeBlob(stored)
+		decoded, err := DecodeBlob(nil, stored)
 		if err != nil {
 			t.Fatalf("DecodeBlob %d: %v", i, err)
 		}
@@ -350,7 +350,7 @@ func TestStoreChunkerLoadVerifyChunks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadChunk %d: %v", i, err)
 		}
-		decoded, err := DecodeBlob(stored)
+		decoded, err := DecodeBlob(nil, stored)
 		if err != nil {
 			t.Fatalf("DecodeBlob %d: %v", i, err)
 		}

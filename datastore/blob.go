@@ -28,30 +28,8 @@ var zstdDecoderPool = sync.Pool{
 	},
 }
 
-// DataBlob represents a stored data blob with optional compression.
-// The raw data contains the magic, CRC, and payload.
-type DataBlob struct {
-	raw []byte
-}
-
-// EncodeBlob creates an uncompressed blob from data.
-func EncodeBlob(data []byte) (*DataBlob, error) {
-	if len(data) > MaxBlobSize {
-		return nil, fmt.Errorf("blob data too large: %d > %d", len(data), MaxBlobSize)
-	}
-
-	raw := make([]byte, BlobHeaderSize+len(data))
-	copy(raw[0:8], MagicUncompressedBlob[:])
-	binaryPutUint32(raw[8:12], crc32.ChecksumIEEE(data))
-	copy(raw[BlobHeaderSize:], data)
-
-	return &DataBlob{raw: raw}, nil
-}
-
-// EncodeBlobTo encodes data as an uncompressed blob into dst, which must have
-// capacity of at least BlobHeaderSize+len(data). Returns the slice of dst
-// containing the encoded blob. This avoids the DataBlob wrapper allocation.
-func EncodeBlobTo(dst []byte, data []byte) ([]byte, error) {
+// EncodeBlob encodes data into dst as an uncompressed blob.
+func EncodeBlob(dst []byte, data []byte) ([]byte, error) {
 	if len(data) > MaxBlobSize {
 		return nil, fmt.Errorf("blob data too large: %d > %d", len(data), MaxBlobSize)
 	}
@@ -69,15 +47,14 @@ func EncodeBlobTo(dst []byte, data []byte) ([]byte, error) {
 	return dst, nil
 }
 
-// EncodeCompressedBlob creates a compressed blob. Falls back to uncompressed
-// if compression doesn't reduce size.
-func EncodeCompressedBlob(data []byte) (*DataBlob, error) {
+// EncodeCompressedBlob encodes data into dst, compressing it when smaller.
+func EncodeCompressedBlob(dst []byte, data []byte) ([]byte, error) {
 	if len(data) > MaxBlobSize {
 		return nil, fmt.Errorf("blob data too large: %d > %d", len(data), MaxBlobSize)
 	}
 
 	if len(data) < 32 {
-		return EncodeBlob(data)
+		return EncodeBlob(dst, data)
 	}
 
 	compressed, err := zstdCompress(data)
@@ -86,36 +63,7 @@ func EncodeCompressedBlob(data []byte) (*DataBlob, error) {
 	}
 
 	if len(compressed) >= len(data) {
-		return EncodeBlob(data)
-	}
-
-	raw := make([]byte, BlobHeaderSize+len(compressed))
-	copy(raw[0:8], MagicCompressedBlob[:])
-	binaryPutUint32(raw[8:12], crc32.ChecksumIEEE(compressed))
-	copy(raw[BlobHeaderSize:], compressed)
-
-	return &DataBlob{raw: raw}, nil
-}
-
-// EncodeCompressedBlobTo encodes data as a compressed blob into dst.
-// If compression doesn't reduce size, falls back to uncompressed format.
-// Returns the slice of dst containing the encoded blob.
-func EncodeCompressedBlobTo(dst []byte, data []byte) ([]byte, error) {
-	if len(data) > MaxBlobSize {
-		return nil, fmt.Errorf("blob data too large: %d > %d", len(data), MaxBlobSize)
-	}
-
-	if len(data) < 32 {
-		return EncodeBlobTo(dst, data)
-	}
-
-	compressed, err := zstdCompress(data)
-	if err != nil {
-		return nil, fmt.Errorf("zstd compress: %w", err)
-	}
-
-	if len(compressed) >= len(data) {
-		return EncodeBlobTo(dst, data)
+		return EncodeBlob(dst, data)
 	}
 
 	n := BlobHeaderSize + len(compressed)
@@ -131,55 +79,10 @@ func EncodeCompressedBlobTo(dst []byte, data []byte) ([]byte, error) {
 	return dst, nil
 }
 
-// DecodeBlob decodes a raw blob, verifies CRC, and returns the payload data.
-// For encrypted blobs, use DecodeEncryptedBlob with a CryptConfig.
-func DecodeBlob(raw []byte) ([]byte, error) {
-	if len(raw) < BlobHeaderSize {
-		return nil, fmt.Errorf("blob too short: %d bytes", len(raw))
-	}
-
-	var magic [8]byte
-	copy(magic[:], raw[0:8])
-
-	if err := validateBlobMagic(magic); err != nil {
-		return nil, err
-	}
-
-	if IsEncryptedMagic(magic) {
-		return nil, fmt.Errorf("encrypted blob requires CryptConfig, use DecodeEncryptedBlob")
-	}
-
-	hdrSize, err := BlobHeaderSizeFor(magic)
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) < hdrSize {
-		return nil, fmt.Errorf("blob too short for header: %d < %d", len(raw), hdrSize)
-	}
-
-	storedCRC := binaryUint32(raw[8:12])
-	data := raw[hdrSize:]
-
-	if crc32.ChecksumIEEE(data) != storedCRC {
-		return nil, fmt.Errorf("blob CRC mismatch")
-	}
-
-	if IsCompressedMagic(magic) {
-		decompressed, err := zstdDecompress(data)
-		if err != nil {
-			return nil, fmt.Errorf("zstd decompress: %w", err)
-		}
-		return decompressed, nil
-	}
-
-	return data, nil
-}
-
-// DecodeBlobInto decodes a raw blob into dst, verifying CRC. For compressed
-// blobs, dst is used as the decompression output buffer (grown if needed).
+// DecodeBlob verifies and decodes raw into dst.
 // For uncompressed blobs, returns a slice into raw (zero allocation).
 // For encrypted blobs, use DecodeEncryptedBlob with a CryptConfig.
-func DecodeBlobInto(dst []byte, raw []byte) ([]byte, error) {
+func DecodeBlob(dst []byte, raw []byte) ([]byte, error) {
 	if len(raw) < BlobHeaderSize {
 		return nil, fmt.Errorf("blob too short: %d bytes", len(raw))
 	}
@@ -223,26 +126,6 @@ func DecodeBlobInto(dst []byte, raw []byte) ([]byte, error) {
 	return data, nil
 }
 
-// Bytes returns the raw blob bytes (header + payload).
-func (b *DataBlob) Bytes() []byte { return b.raw }
-
-// Magic returns the blob magic number.
-func (b *DataBlob) Magic() [8]byte {
-	var m [8]byte
-	copy(m[:], b.raw[0:8])
-	return m
-}
-
-// IsEncrypted returns true if the blob uses encryption.
-func (b *DataBlob) IsEncrypted() bool {
-	return IsEncryptedMagic(b.Magic())
-}
-
-// IsCompressed returns true if the blob uses compression.
-func (b *DataBlob) IsCompressed() bool {
-	return IsCompressedMagic(b.Magic())
-}
-
 func validateBlobMagic(magic [8]byte) error {
 	switch magic {
 	case MagicUncompressedBlob, MagicCompressedBlob,
@@ -257,12 +140,6 @@ func zstdCompress(data []byte) ([]byte, error) {
 	enc := zstdEncoderPool.Get().(*zstd.Encoder)
 	defer zstdEncoderPool.Put(enc)
 	return enc.EncodeAll(data, nil), nil
-}
-
-func zstdDecompress(data []byte) ([]byte, error) {
-	dec := zstdDecoderPool.Get().(*zstd.Decoder)
-	defer zstdDecoderPool.Put(dec)
-	return dec.DecodeAll(data, nil)
 }
 
 // encodeEncrypted is the shared logic for encrypting and encoding a blob.
@@ -304,31 +181,8 @@ func encodeEncrypted(data []byte, cc *CryptConfig, compress bool) (magic [8]byte
 	return
 }
 
-// EncodeEncryptedBlob creates an encrypted blob from data using AES-256-GCM.
-// If compress is true and the data compresses well, it is compressed before
-// encryption (producing an EncrCompr blob). Otherwise, an Encrypted blob is produced.
-func EncodeEncryptedBlob(data []byte, cc *CryptConfig, compress bool) (*DataBlob, error) {
-	if cc == nil {
-		return nil, fmt.Errorf("CryptConfig required for encrypted blob")
-	}
-
-	magic, ciphertext, iv, tag, err := encodeEncrypted(data, cc, compress)
-	if err != nil {
-		return nil, err
-	}
-
-	raw := make([]byte, EncryptedBlobHeaderSize+len(ciphertext))
-	copy(raw[0:8], magic[:])
-	binaryPutUint32(raw[8:12], crc32.ChecksumIEEE(ciphertext))
-	copy(raw[12:28], iv)
-	copy(raw[28:44], tag)
-	copy(raw[EncryptedBlobHeaderSize:], ciphertext)
-
-	return &DataBlob{raw: raw}, nil
-}
-
-// EncodeEncryptedBlobTo encodes an encrypted blob into dst.
-func EncodeEncryptedBlobTo(dst []byte, data []byte, cc *CryptConfig, compress bool) ([]byte, error) {
+// EncodeEncryptedBlob encrypts data into dst, optionally compressing it first.
+func EncodeEncryptedBlob(dst []byte, data []byte, cc *CryptConfig, compress bool) ([]byte, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("CryptConfig required for encrypted blob")
 	}
@@ -354,8 +208,8 @@ func EncodeEncryptedBlobTo(dst []byte, data []byte, cc *CryptConfig, compress bo
 	return dst, nil
 }
 
-// DecodeEncryptedBlob decodes an encrypted blob and returns the decrypted payload.
-func DecodeEncryptedBlob(raw []byte, cc *CryptConfig) ([]byte, error) {
+// DecodeEncryptedBlob decrypts a blob, reusing dst when possible.
+func DecodeEncryptedBlob(dst []byte, raw []byte, cc *CryptConfig) ([]byte, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("CryptConfig required for encrypted blob")
 	}
@@ -366,31 +220,34 @@ func DecodeEncryptedBlob(raw []byte, cc *CryptConfig) ([]byte, error) {
 	}
 
 	data := raw[EncryptedBlobHeaderSize:]
-
 	if crc32.ChecksumIEEE(data) != hdr.CRC {
 		return nil, fmt.Errorf("encrypted blob CRC mismatch")
 	}
 
-	tag := hdr.Tag[:]
-	ciphertext := data
-
-	gcmData := make([]byte, len(ciphertext)+len(tag))
-	copy(gcmData, ciphertext)
-	copy(gcmData[len(ciphertext):], tag)
-
-	decrypted, err := cc.cipher.Open(nil, hdr.IV[:], gcmData, nil)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt blob: %w", err)
-	}
-
 	if hdr.Magic == MagicEncrComprBlob {
-		decompressed, err := zstdDecompress(decrypted)
+		gcmData := make([]byte, 0, len(data)+len(hdr.Tag))
+		gcmData = append(gcmData, data...)
+		gcmData = append(gcmData, hdr.Tag[:]...)
+		decrypted, err := cc.cipher.Open(gcmData[:0], hdr.IV[:], gcmData, nil)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt blob: %w", err)
+		}
+
+		dec := zstdDecoderPool.Get().(*zstd.Decoder)
+		decompressed, err := dec.DecodeAll(decrypted, dst[:0])
+		zstdDecoderPool.Put(dec)
 		if err != nil {
 			return nil, fmt.Errorf("zstd decompress: %w", err)
 		}
 		return decompressed, nil
 	}
 
+	gcmData := append(dst[:0], data...)
+	gcmData = append(gcmData, hdr.Tag[:]...)
+	decrypted, err := cc.cipher.Open(gcmData[:0], hdr.IV[:], gcmData, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt blob: %w", err)
+	}
 	return decrypted, nil
 }
 

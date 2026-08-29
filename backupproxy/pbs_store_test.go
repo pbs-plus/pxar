@@ -209,7 +209,7 @@ func TestPBSUploadBlob(t *testing.T) {
 	}
 
 	got := mock.blobs["config.blob"]
-	decoded, err := datastore.DecodeBlob(got)
+	decoded, err := datastore.DecodeBlob(nil, got)
 	if err != nil {
 		t.Fatalf("decode blob: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestPBSRoundTrip(t *testing.T) {
 	var reconstructed bytes.Buffer
 	for digest, chunkBlob := range mock.chunks {
 		_ = digest
-		decoded, err := datastore.DecodeBlob(chunkBlob)
+		decoded, err := datastore.DecodeBlob(nil, chunkBlob)
 		if err != nil {
 			t.Fatalf("decode chunk: %v", err)
 		}
@@ -325,14 +325,14 @@ func TestPBSReplayUploadsUnknownChunkOnce(t *testing.T) {
 	sess, mock := newTestPBSSession(t)
 	raw := []byte("source chunk replayed without rechunking")
 	digest := sha256.Sum256(raw)
-	encoded, err := datastore.EncodeBlob(raw)
+	encoded, err := datastore.EncodeBlob(nil, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	loads := 0
 	load := func() ([]byte, error) {
 		loads++
-		return encoded.Bytes(), nil
+		return encoded, nil
 	}
 
 	upload := func(name string) {
@@ -357,7 +357,7 @@ func TestPBSReplayUploadsUnknownChunkOnce(t *testing.T) {
 		t.Fatalf("source blob loaded %d times, want 1", loads)
 	}
 	digestHex := hex.EncodeToString(digest[:])
-	if !bytes.Equal(mock.chunks[digestHex], encoded.Bytes()) {
+	if !bytes.Equal(mock.chunks[digestHex], encoded) {
 		t.Fatal("uploaded chunk differs from exact source blob")
 	}
 }
@@ -399,11 +399,11 @@ func TestPBSManifestFileEntries(t *testing.T) {
 	}
 
 	// The checksum is calculated on the encoded blob data (after datastore.EncodeBlob)
-	encodedBlob, err := datastore.EncodeBlob(blobData)
+	encodedBlob, err := datastore.EncodeBlob(nil, blobData)
 	if err != nil {
 		t.Fatalf("encode blob: %v", err)
 	}
-	expectedBlobDigest := sha256.Sum256(encodedBlob.Bytes())
+	expectedBlobDigest := sha256.Sum256(encodedBlob)
 	if blobEntry.CSum != hex.EncodeToString(expectedBlobDigest[:]) {
 		t.Errorf("blob checksum mismatch")
 	}

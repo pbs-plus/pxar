@@ -504,7 +504,7 @@ func restoreLegacyArchiveFromDir(tb testing.TB, dir string) *accessor.Accessor {
 		if err != nil {
 			tb.Fatalf("load chunk %d: %v", i, err)
 		}
-		decoded, err := datastore.DecodeBlob(chunk)
+		decoded, err := datastore.DecodeBlob(nil, chunk)
 		if err != nil {
 			tb.Fatalf("decode chunk %d: %v", i, err)
 		}
@@ -550,7 +550,7 @@ func restoreSplitArchiveFromDir(tb testing.TB, dir string) (*accessor.Accessor, 
 			if err != nil {
 				tb.Fatalf("load chunk %d: %v", i, err)
 			}
-			decoded, err := datastore.DecodeBlob(chunk)
+			decoded, err := datastore.DecodeBlob(nil, chunk)
 			if err != nil {
 				tb.Fatalf("decode chunk %d: %v", i, err)
 			}

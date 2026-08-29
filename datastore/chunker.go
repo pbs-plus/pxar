@@ -78,7 +78,7 @@ func (sc *StoreChunker) ChunkStream(r io.Reader, fn func(ChunkResult) error) ([]
 			if blobBuf == nil {
 				blobBuf = BlobBufPool.Get().(*[]byte)
 			}
-			encoded, err := EncodeCompressedBlobTo((*blobBuf)[:0], chunk)
+			encoded, err := EncodeCompressedBlob((*blobBuf)[:0], chunk)
 			if err != nil {
 				PutBlobBuf(blobBuf)
 				return nil, nil, fmt.Errorf("compress chunk at offset %d: %w", offset, err)
@@ -90,7 +90,7 @@ func (sc *StoreChunker) ChunkStream(r io.Reader, fn func(ChunkResult) error) ([]
 			if blobBuf == nil {
 				blobBuf = BlobBufPool.Get().(*[]byte)
 			}
-			encoded, err := EncodeBlobTo((*blobBuf)[:0], chunk)
+			encoded, err := EncodeBlob((*blobBuf)[:0], chunk)
 			if err != nil {
 				PutBlobBuf(blobBuf)
 				return nil, nil, fmt.Errorf("encode chunk at offset %d: %w", offset, err)

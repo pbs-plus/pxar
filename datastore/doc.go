@@ -2,8 +2,7 @@
 // management for pxar archives.
 //
 // The package implements the Proxmox Backup Server data model: backup data is
-// split into chunks, each chunk is stored as a DataBlob (with optional zstd
-// compression, AES-256-GCM encryption, and CRC32 verification), and chunk
+
 // references are tracked in dynamic or fixed index files.
 //
 // # Chunk Store
@@ -15,14 +14,7 @@
 //	inserted, size, _ := store.InsertChunk(digest, blobData)
 //	blobData, _ := store.LoadChunk(digest)
 //
-// # Data Blobs
-//
-// All chunk data is wrapped in a DataBlob envelope containing a magic number
-// and CRC32 checksum:
-//
-//	blob, _ := datastore.EncodeBlob(rawChunk)
-//	decoded, _ := datastore.DecodeBlob(blob.Bytes())
-//
+
 // Use EncodeCompressedBlob for zstd compression, EncodeEncryptedBlob for
 // AES-256-GCM encryption.
 //

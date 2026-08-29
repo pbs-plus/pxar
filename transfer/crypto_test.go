@@ -81,16 +81,16 @@ func TestDecryptSourceReturnsPlainBlob(t *testing.T) {
 	}
 	content := []byte("encrypted payload chunk")
 	digest := config.ComputeDigest(content)
-	encrypted, err := datastore.EncodeEncryptedBlob(content, config, false)
+	encrypted, err := datastore.EncodeEncryptedBlob(nil, content, config, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := NewDecryptSource(staticChunkSource{digest: encrypted.Bytes()}, config)
+	source := NewDecryptSource(staticChunkSource{digest: encrypted}, config)
 	blob, err := source.GetChunk(digest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := datastore.DecodeBlob(blob)
+	decoded, err := datastore.DecodeBlob(nil, blob)
 	if err != nil {
 		t.Fatal(err)
 	}

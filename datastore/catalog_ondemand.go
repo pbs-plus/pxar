@@ -113,7 +113,7 @@ func (r *streamChunkReader) fetchChunk() {
 		r.nextFetch++
 		return
 	}
-	decoded, err := DecodeBlob(raw)
+	decoded, err := DecodeBlob(nil, raw)
 	if err != nil {
 		r.err = fmt.Errorf("decode chunk %d: %w", r.nextFetch, err)
 		r.nextFetch++
@@ -132,7 +132,7 @@ func (r *streamChunkReader) prefetch() {
 		if err != nil {
 			pc.err = fmt.Errorf("prefetch chunk %d: %w", r.nextFetch, err)
 		} else {
-			decoded, err := DecodeBlob(raw)
+			decoded, err := DecodeBlob(nil, raw)
 			if err != nil {
 				pc.err = fmt.Errorf("decode prefetched chunk %d: %w", r.nextFetch, err)
 			} else {
@@ -532,7 +532,7 @@ func (c *OnDemandCatalog) fetchChunk(idx int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	decoded, err := DecodeBlob(raw)
+	decoded, err := DecodeBlob(nil, raw)
 	if err != nil {
 		return nil, err
 	}

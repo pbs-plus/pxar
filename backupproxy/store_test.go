@@ -102,7 +102,7 @@ func TestLocalStoreUploadBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("blob file not found: %v", err)
 	}
-	decoded, err := datastore.DecodeBlob(raw)
+	decoded, err := datastore.DecodeBlob(nil, raw)
 	if err != nil {
 		t.Fatalf("decode blob: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestLocalStoreRoundTrip(t *testing.T) {
 			t.Fatalf("load chunk %d: %v", i, err)
 		}
 
-		decoded, err := datastore.DecodeBlob(chunkData)
+		decoded, err := datastore.DecodeBlob(nil, chunkData)
 		if err != nil {
 			t.Fatalf("decode blob %d: %v", i, err)
 		}
@@ -352,7 +352,7 @@ func TestLocalStoreUploadSplitArchive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load payload chunk %d: %v", i, err)
 		}
-		decoded, err := datastore.DecodeBlob(chunkData)
+		decoded, err := datastore.DecodeBlob(nil, chunkData)
 		if err != nil {
 			t.Fatalf("decode payload chunk %d: %v", i, err)
 		}

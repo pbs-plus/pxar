@@ -441,13 +441,11 @@ func TestIntegration_ManifestVerification(t *testing.T) {
 		t.Error("blob size should not be 0")
 	}
 
-	// Verify blob checksum matches SHA-256 of the encoded blob data
-	// The checksum is calculated on the data after datastore.EncodeBlob is applied
-	encodedBlob, err := datastore.EncodeBlob(blobData)
+	encodedBlob, err := datastore.EncodeBlob(nil, blobData)
 	if err != nil {
 		t.Fatalf("encode blob: %v", err)
 	}
-	expectedBlobDigest := sha256.Sum256(encodedBlob.Bytes())
+	expectedBlobDigest := sha256.Sum256(encodedBlob)
 	expectedBlobDigestHex := hex.EncodeToString(expectedBlobDigest[:])
 	if blobEntry.CSum != expectedBlobDigestHex {
 		t.Errorf("blob checksum = %q, want %q", blobEntry.CSum, expectedBlobDigestHex)
@@ -762,11 +760,11 @@ func TestIntegration_ManifestRoundTrip(t *testing.T) {
 
 		// Verify blob entry checksum matches SHA-256 of encoded blob data
 		if localFile.Filename == "config.blob" {
-			encodedBlob, err := datastore.EncodeBlob(blobData)
+			encodedBlob, err := datastore.EncodeBlob(nil, blobData)
 			if err != nil {
 				t.Fatalf("encode blob: %v", err)
 			}
-			expectedBlobDigest := sha256.Sum256(encodedBlob.Bytes())
+			expectedBlobDigest := sha256.Sum256(encodedBlob)
 			expectedHex := hex.EncodeToString(expectedBlobDigest[:])
 			if pbsFile.CSum != expectedHex {
 				t.Errorf("blob checksum: PBS=%q expected=%q", pbsFile.CSum, expectedHex)

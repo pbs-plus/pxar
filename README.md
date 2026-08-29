@@ -843,11 +843,11 @@ target, _ := sess.Readlink(symlinkInode)
   - `InsertChunk(digest, data)` → `(inserted bool, size int, err error)`
   - `LoadChunk(digest)`, `TouchChunk(digest)`, `ChunkPath(digest)`
 
-- **`DataBlob`** — chunk envelope with magic + CRC32
-  - `EncodeBlob(data)`, `EncodeBlobTo(dst, data)` — encode with CRC32
-  - `EncodeCompressedBlob(data)`, `EncodeCompressedBlobTo(dst, data)` — zstd + CRC32
-  - `EncodeEncryptedBlob(data, cryptConfig, compress)`, `EncodeEncryptedBlobTo(dst, data, cc, compress)` — AES-256-GCM + optional zstd
-  - `DecodeBlob(raw)`, `DecodeBlobInto(dst, raw)` — decode (handles compressed)
+- **Blob envelopes** - protocol-compatible magic + CRC32 byte slices
+  - `EncodeBlob(dst, data)` - encode into reusable destination storage
+  - `EncodeCompressedBlob(dst, data)` - zstd encode, falling back when compression grows the data
+  - `EncodeEncryptedBlob(dst, data, cryptConfig, compress)` - AES-256-GCM + optional zstd
+  - `DecodeBlob(dst, raw)`, `DecodeEncryptedBlob(dst, raw, cryptConfig)` - decode into reusable destination storage
   - `DecodeEncryptedBlob(raw, cryptConfig)` — decrypt + decode
   - `Bytes()`, `IsCompressed()`, `IsEncrypted()`, `Magic()`, `Csum()`, `ComputeCsum()`
 

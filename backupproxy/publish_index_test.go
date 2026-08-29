@@ -23,11 +23,11 @@ func TestDatastoreStorePublishesExistingDynamicIndex(t *testing.T) {
 	var offset uint64
 	for _, chunk := range chunks {
 		digest := sha256.Sum256(chunk)
-		blob, err := datastore.EncodeBlob(chunk)
+		blob, err := datastore.EncodeBlob(nil, chunk)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := chunkStore.InsertChunk(digest, blob.Bytes()); err != nil {
+		if _, _, err := chunkStore.InsertChunk(digest, blob); err != nil {
 			t.Fatal(err)
 		}
 		offset += uint64(len(chunk))

@@ -198,7 +198,7 @@ func (r *ReadSeeker) loadChunk(chunkIdx int) ([]byte, error) {
 		return nil, err
 	}
 
-	decoded, err := datastore.DecodeBlob(raw)
+	decoded, err := datastore.DecodeBlob(nil, raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode chunk: %w", err)
 	}

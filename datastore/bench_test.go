@@ -20,31 +20,14 @@ func BenchmarkEncodeBlob(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := EncodeBlob(data)
+		_, err := EncodeBlob(nil, data)
 		if err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
-func BenchmarkEncodeBlobTo(b *testing.B) {
-	data := make([]byte, 4096)
-	for i := range data {
-		data[i] = byte(i)
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		_, err := EncodeBlobTo(nil, data)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkEncodeBlobToPooled(b *testing.B) {
+func BenchmarkEncodeBlobReuse(b *testing.B) {
 	data := make([]byte, 4096)
 	for i := range data {
 		data[i] = byte(i)
@@ -55,7 +38,7 @@ func BenchmarkEncodeBlobToPooled(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := EncodeBlobTo(dst[:0], data)
+		_, err := EncodeBlob(dst[:0], data)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -72,7 +55,7 @@ func BenchmarkEncodeCompressedBlob(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := EncodeCompressedBlob(data)
+		_, err := EncodeCompressedBlob(nil, data)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -84,14 +67,14 @@ func BenchmarkDecodeBlobUncompressed(b *testing.B) {
 	for i := range data {
 		data[i] = byte(i)
 	}
-	blob, _ := EncodeBlob(data)
-	encoded := blob.Bytes()
+	blob, _ := EncodeBlob(nil, data)
+	encoded := blob
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := DecodeBlob(encoded)
+		_, err := DecodeBlob(nil, encoded)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -103,14 +86,14 @@ func BenchmarkDecodeBlobCompressed(b *testing.B) {
 	for i := range data {
 		data[i] = byte(i)
 	}
-	blob, _ := EncodeCompressedBlob(data)
-	encoded := blob.Bytes()
+	blob, _ := EncodeCompressedBlob(nil, data)
+	encoded := blob
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := DecodeBlob(encoded)
+		_, err := DecodeBlob(nil, encoded)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -122,15 +105,15 @@ func BenchmarkDecodeBlobCompressedInto(b *testing.B) {
 	for i := range data {
 		data[i] = byte(i)
 	}
-	blob, _ := EncodeCompressedBlob(data)
-	encoded := blob.Bytes()
+	blob, _ := EncodeCompressedBlob(nil, data)
+	encoded := blob
 	dst := make([]byte, 0, len(data)*2)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := DecodeBlobInto(dst[:0], encoded)
+		_, err := DecodeBlob(dst[:0], encoded)
 		if err != nil {
 			b.Fatal(err)
 		}

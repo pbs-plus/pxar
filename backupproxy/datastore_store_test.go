@@ -20,11 +20,11 @@ func TestDatastoreStorePublishesManifestLastWithoutLoadingReusedChunks(t *testin
 	}
 	payload := []byte("existing payload chunk")
 	digest := sha256.Sum256(payload)
-	blob, err := datastore.EncodeBlob(payload)
+	blob, err := datastore.EncodeBlob(nil, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := chunkStore.InsertChunk(digest, blob.Bytes()); err != nil {
+	if _, _, err := chunkStore.InsertChunk(digest, blob); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,7 +92,7 @@ func TestDatastoreStorePublishesManifestLastWithoutLoadingReusedChunks(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestJSON, err := datastore.DecodeBlob(manifestBlob)
+	manifestJSON, err := datastore.DecodeBlob(nil, manifestBlob)
 	if err != nil {
 		t.Fatal(err)
 	}

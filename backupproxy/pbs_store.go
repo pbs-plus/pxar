@@ -690,17 +690,17 @@ func (s *pbsSession) UploadSplitArchive(ctx context.Context, metadataName string
 func (s *pbsSession) UploadBlob(_ context.Context, name string, data []byte) error {
 	var blobData []byte
 	if s.config.CryptConfig != nil && s.config.CryptMode == datastore.CryptModeEncrypt {
-		enc, err := datastore.EncodeEncryptedBlob(data, s.config.CryptConfig, false)
+		enc, err := datastore.EncodeEncryptedBlob(nil, data, s.config.CryptConfig, false)
 		if err != nil {
 			return fmt.Errorf("encode encrypted blob: %w", err)
 		}
-		blobData = enc.Bytes()
+		blobData = enc
 	} else {
-		blob, err := datastore.EncodeBlob(data)
+		blob, err := datastore.EncodeBlob(nil, data)
 		if err != nil {
 			return fmt.Errorf("encode blob: %w", err)
 		}
-		blobData = blob.Bytes()
+		blobData = blob
 	}
 
 	if err := s.proto.blobUpload(name, len(blobData), blobData); err != nil {
@@ -788,11 +788,11 @@ func (s *pbsSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 	// Manifest is never encrypted — PBS must be able to read it.
 	// In encrypt mode, data chunks are encrypted but the manifest is
 	// only signed (HMAC-SHA256) and compressed.
-	blob, err := datastore.EncodeCompressedBlob(manifestData)
+	blob, err := datastore.EncodeCompressedBlob(nil, manifestData)
 	if err != nil {
 		return nil, fmt.Errorf("encode manifest blob: %w", err)
 	}
-	manifestBlobBytes := blob.Bytes()
+	manifestBlobBytes := blob
 
 	if err := s.proto.blobUpload("index.json.blob", len(manifestBlobBytes), manifestBlobBytes); err != nil {
 		return nil, fmt.Errorf("upload manifest: %w", err)

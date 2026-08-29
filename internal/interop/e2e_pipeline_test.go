@@ -53,42 +53,42 @@ func encodeChunkBlob(t *testing.T, chunk []byte, cc *datastore.CryptConfig, comp
 	t.Helper()
 	switch {
 	case cc == nil && !compress:
-		b, err := datastore.EncodeBlob(chunk)
+		b, err := datastore.EncodeBlob(nil, chunk)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return b.Bytes()
+		return b
 	case cc == nil:
-		b, err := datastore.EncodeCompressedBlob(chunk)
+		b, err := datastore.EncodeCompressedBlob(nil, chunk)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return b.Bytes()
+		return b
 	case !compress:
-		b, err := datastore.EncodeEncryptedBlob(chunk, cc, false)
+		b, err := datastore.EncodeEncryptedBlob(nil, chunk, cc, false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return b.Bytes()
+		return b
 	default:
-		b, err := datastore.EncodeEncryptedBlob(chunk, cc, true)
+		b, err := datastore.EncodeEncryptedBlob(nil, chunk, cc, true)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return b.Bytes()
+		return b
 	}
 }
 
 func decodeChunkBlob(t *testing.T, raw []byte, cc *datastore.CryptConfig) []byte {
 	t.Helper()
 	if cc != nil {
-		dec, err := datastore.DecodeEncryptedBlob(raw, cc)
+		dec, err := datastore.DecodeEncryptedBlob(nil, raw, cc)
 		if err != nil {
 			t.Fatalf("decrypt chunk: %v", err)
 		}
 		return dec
 	}
-	dec, err := datastore.DecodeBlob(raw)
+	dec, err := datastore.DecodeBlob(nil, raw)
 	if err != nil {
 		t.Fatalf("decode chunk: %v", err)
 	}

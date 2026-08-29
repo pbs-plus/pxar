@@ -390,7 +390,7 @@ func TestServerArchiveRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		decoded, err := datastore.DecodeBlob(chunk)
+		decoded, err := datastore.DecodeBlob(nil, chunk)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -659,7 +659,7 @@ func restoreLegacyArchive(t *testing.T, dir string) *accessor.Accessor {
 		if err != nil {
 			t.Fatalf("load chunk %d: %v", i, err)
 		}
-		decoded, err := datastore.DecodeBlob(chunk)
+		decoded, err := datastore.DecodeBlob(nil, chunk)
 		if err != nil {
 			t.Fatalf("decode chunk %d: %v", i, err)
 		}
@@ -703,7 +703,7 @@ func restoreSplitArchive(t *testing.T, dir string) (*accessor.Accessor, *accesso
 			if err != nil {
 				t.Fatalf("load chunk %d: %v", i, err)
 			}
-			decoded, err := datastore.DecodeBlob(chunk)
+			decoded, err := datastore.DecodeBlob(nil, chunk)
 			if err != nil {
 				t.Fatalf("decode chunk %d: %v", i, err)
 			}

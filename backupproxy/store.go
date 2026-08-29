@@ -24,7 +24,7 @@ func encodeChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) ([]
 	if cc != nil {
 		bp := datastore.BlobBufPool.Get().(*[]byte)
 		dst := (*bp)[:0]
-		encoded, err := datastore.EncodeEncryptedBlobTo(dst, chunk, cc, compress)
+		encoded, err := datastore.EncodeEncryptedBlob(dst, chunk, cc, compress)
 		if err != nil {
 			datastore.PutBlobBuf(bp)
 			return nil, err
@@ -58,7 +58,7 @@ func borrowChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) (en
 	bp = datastore.BlobBufPool.Get().(*[]byte)
 	dst := (*bp)[:0]
 	if cc != nil {
-		encoded, err = datastore.EncodeEncryptedBlobTo(dst, chunk, cc, compress)
+		encoded, err = datastore.EncodeEncryptedBlob(dst, chunk, cc, compress)
 	} else {
 		encoded, err = encodeChunkBlobTo(dst, chunk, compress)
 	}
@@ -73,9 +73,9 @@ func borrowChunkBlob(chunk []byte, compress bool, cc *datastore.CryptConfig) (en
 // The returned slice is a sub-slice of the provided buffer.
 func encodeChunkBlobTo(dst []byte, chunk []byte, compress bool) ([]byte, error) {
 	if compress {
-		return datastore.EncodeCompressedBlobTo(dst, chunk)
+		return datastore.EncodeCompressedBlob(dst, chunk)
 	}
-	return datastore.EncodeBlobTo(dst, chunk)
+	return datastore.EncodeBlob(dst, chunk)
 }
 
 // chunkDigest computes the SHA-256 digest of a chunk, using the CryptConfig's
@@ -402,17 +402,17 @@ func (s *localSession) UploadSplitArchive(ctx context.Context, metadataName stri
 func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) error {
 	var blobData []byte
 	if s.config.CryptConfig != nil && s.config.CryptMode == datastore.CryptModeEncrypt {
-		enc, err := datastore.EncodeEncryptedBlob(data, s.config.CryptConfig, false)
+		enc, err := datastore.EncodeEncryptedBlob(nil, data, s.config.CryptConfig, false)
 		if err != nil {
 			return fmt.Errorf("encode encrypted blob: %w", err)
 		}
-		blobData = enc.Bytes()
+		blobData = enc
 	} else {
-		blob, err := datastore.EncodeBlob(data)
+		blob, err := datastore.EncodeBlob(nil, data)
 		if err != nil {
 			return fmt.Errorf("encode blob: %w", err)
 		}
-		blobData = blob.Bytes()
+		blobData = blob
 	}
 
 	if err := s.writeSnapshotFile(name, blobData); err != nil {
@@ -723,11 +723,11 @@ func (s *localSession) Finish(_ context.Context) (*datastore.Manifest, error) {
 
 	manifestName := "index.json"
 	if s.manifestBlob {
-		blob, err := datastore.EncodeBlob(data)
+		blob, err := datastore.EncodeBlob(nil, data)
 		if err != nil {
 			return nil, fmt.Errorf("encode manifest blob: %w", err)
 		}
-		data = blob.Bytes()
+		data = blob
 		manifestName = "index.json.blob"
 	}
 	if err := s.writeSnapshotFile(manifestName, data); err != nil {

@@ -38,15 +38,15 @@ func (d *DecryptSource) GetChunk(digest [32]byte) ([]byte, error) {
 			if d.cc == nil {
 				return nil, fmt.Errorf("encrypted chunk %x but no CryptConfig provided", digest[:8])
 			}
-			decrypted, err := datastore.DecodeEncryptedBlob(raw, d.cc)
+			decrypted, err := datastore.DecodeEncryptedBlob(nil, raw, d.cc)
 			if err != nil {
 				return nil, fmt.Errorf("decrypt chunk %x: %w", digest[:8], err)
 			}
-			blob, err := datastore.EncodeBlob(decrypted)
+			blob, err := datastore.EncodeBlob(nil, decrypted)
 			if err != nil {
 				return nil, fmt.Errorf("encode decrypted chunk %x: %w", digest[:8], err)
 			}
-			return blob.Bytes(), nil
+			return blob, nil
 		}
 	}
 

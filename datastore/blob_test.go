@@ -7,14 +7,19 @@ import (
 	"testing"
 )
 
+func blobMagic(raw []byte) (magic [8]byte) {
+	copy(magic[:], raw)
+	return magic
+}
+
 func TestBlobEncodeUncompressed(t *testing.T) {
 	data := []byte("hello world")
-	blob, err := EncodeBlob(data)
+	blob, err := EncodeBlob(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	raw := blob.Bytes()
+	raw := blob
 	var magic [8]byte
 	copy(magic[:], raw[:8])
 	if magic != MagicUncompressedBlob {
@@ -31,13 +36,13 @@ func TestBlobEncodeUncompressed(t *testing.T) {
 
 func TestBlobDecodeUncompressed(t *testing.T) {
 	data := []byte("hello world")
-	blob, err := EncodeBlob(data)
+	blob, err := EncodeBlob(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	raw := blob.Bytes()
-	decoded, err := DecodeBlob(raw)
+	raw := blob
+	decoded, err := DecodeBlob(nil, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,22 +55,22 @@ func TestBlobDecodeUncompressed(t *testing.T) {
 func TestBlobEncodeCompressed(t *testing.T) {
 	// Use highly compressible data
 	data := bytes.Repeat([]byte("aaaaaaaaaa"), 10000)
-	blob, err := EncodeCompressedBlob(data)
+	blob, err := EncodeCompressedBlob(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if blob.Magic() != MagicCompressedBlob {
-		t.Errorf("magic = %x, want compressed", blob.Magic())
+	if blobMagic(blob) != MagicCompressedBlob {
+		t.Errorf("magic = %x, want compressed", blobMagic(blob))
 	}
 
 	// Compressed should be smaller
-	raw := blob.Bytes()
+	raw := blob
 	if len(raw) >= len(data)+BlobHeaderSize {
 		t.Errorf("compressed blob (%d bytes) not smaller than original (%d)", len(raw), len(data))
 	}
 
-	decoded, err := DecodeBlob(raw)
+	decoded, err := DecodeBlob(nil, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,29 +86,29 @@ func TestBlobCompressFallbackToUncompressed(t *testing.T) {
 		data[i] = byte(i)
 	}
 
-	blob, err := EncodeCompressedBlob(data)
+	blob, err := EncodeCompressedBlob(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Should fall back to uncompressed if compression doesn't help
-	if blob.Magic() != MagicUncompressedBlob {
+	if blobMagic(blob) != MagicUncompressedBlob {
 		t.Errorf("expected fallback to uncompressed for incompressible data")
 	}
 }
 
 func TestBlobCRCTamperDetection(t *testing.T) {
 	data := []byte("important data")
-	blob, err := EncodeBlob(data)
+	blob, err := EncodeBlob(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	raw := blob.Bytes()
+	raw := blob
 	// Tamper with data
 	raw[13] ^= 0xFF
 
-	_, err = DecodeBlob(raw)
+	_, err = DecodeBlob(nil, raw)
 	if err == nil {
 		t.Error("expected CRC error for tampered data")
 	}
@@ -111,16 +116,16 @@ func TestBlobCRCTamperDetection(t *testing.T) {
 
 func TestBlobMagicTamperDetection(t *testing.T) {
 	data := []byte("test")
-	blob, err := EncodeBlob(data)
+	blob, err := EncodeBlob(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	raw := blob.Bytes()
+	raw := blob
 	// Tamper with magic
 	raw[0] ^= 0xFF
 
-	_, err = DecodeBlob(raw)
+	_, err = DecodeBlob(nil, raw)
 	if err == nil {
 		t.Error("expected error for tampered magic")
 	}
@@ -128,19 +133,19 @@ func TestBlobMagicTamperDetection(t *testing.T) {
 
 func TestBlobMaxSize(t *testing.T) {
 	data := make([]byte, MaxBlobSize+1)
-	_, err := EncodeBlob(data)
+	_, err := EncodeBlob(nil, data)
 	if err == nil {
 		t.Error("expected error for blob exceeding max size")
 	}
 }
 
 func TestBlobEmpty(t *testing.T) {
-	blob, err := EncodeBlob(nil)
+	blob, err := EncodeBlob(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	decoded, err := DecodeBlob(blob.Bytes())
+	decoded, err := DecodeBlob(nil, blob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,12 +162,12 @@ func TestBlobRoundTripVariousSizes(t *testing.T) {
 			data[i] = byte(i & 0xFF)
 		}
 
-		blob, err := EncodeBlob(data)
+		blob, err := EncodeBlob(nil, data)
 		if err != nil {
 			t.Fatalf("size %d: encode: %v", size, err)
 		}
 
-		decoded, err := DecodeBlob(blob.Bytes())
+		decoded, err := DecodeBlob(nil, blob)
 		if err != nil {
 			t.Fatalf("size %d: decode: %v", size, err)
 		}
@@ -179,12 +184,12 @@ func TestBlobCompressedRoundTrip(t *testing.T) {
 		data := bytes.Repeat([]byte("abcdefghij"), size/10+1)
 		data = data[:size]
 
-		blob, err := EncodeCompressedBlob(data)
+		blob, err := EncodeCompressedBlob(nil, data)
 		if err != nil {
 			t.Fatalf("size %d: encode: %v", size, err)
 		}
 
-		decoded, err := DecodeBlob(blob.Bytes())
+		decoded, err := DecodeBlob(nil, blob)
 		if err != nil {
 			t.Fatalf("size %d: decode: %v", size, err)
 		}
@@ -194,54 +199,52 @@ func TestBlobCompressedRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBlobIsMethods(t *testing.T) {
+func TestBlobMagicKinds(t *testing.T) {
 	data := []byte("test")
 
-	ub, _ := EncodeBlob(data)
-	if ub.IsCompressed() || ub.IsEncrypted() {
+	ub, _ := EncodeBlob(nil, data)
+	if IsCompressedMagic(blobMagic(ub)) || IsEncryptedMagic(blobMagic(ub)) {
 		t.Error("uncompressed blob should not report compressed/encrypted")
 	}
 
-	cb, _ := EncodeCompressedBlob(bytes.Repeat(data, 1000))
-	if !cb.IsCompressed() {
+	cb, _ := EncodeCompressedBlob(nil, bytes.Repeat(data, 1000))
+	if !IsCompressedMagic(blobMagic(cb)) {
 		t.Error("compressed blob should report compressed")
 	}
-	if cb.IsEncrypted() {
+	if IsEncryptedMagic(blobMagic(cb)) {
 		t.Error("compressed blob should not report encrypted")
 	}
 }
 
 func TestBlobRawData(t *testing.T) {
 	data := []byte("test data")
-	blob, err := EncodeBlob(data)
+	blob, err := EncodeBlob(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	raw := blob.Bytes()
+	raw := blob
 	if len(raw) != BlobHeaderSize+len(data) {
 		t.Errorf("raw size = %d, want %d", len(raw), BlobHeaderSize+len(data))
 	}
 }
 
 func TestDecodeBlobTooShort(t *testing.T) {
-	_, err := DecodeBlob([]byte{1, 2, 3})
+	_, err := DecodeBlob(nil, []byte{1, 2, 3})
 	if err == nil {
 		t.Error("expected error for too-short input")
 	}
 }
 
-func TestBlobZeroAllocEncode(t *testing.T) {
+func TestBlobEncodeReusesDestination(t *testing.T) {
 	data := make([]byte, 4096)
-	for i := range data {
-		data[i] = byte(i)
-	}
+	dst := make([]byte, 0, BlobHeaderSize+len(data))
 
 	allocs := testing.AllocsPerRun(100, func() {
-		_, _ = EncodeBlob(data)
+		_, _ = EncodeBlob(dst, data)
 	})
-	if allocs > 2 {
-		t.Errorf("EncodeBlob allocated %.1f times, expected <= 2", allocs)
+	if allocs != 0 {
+		t.Errorf("EncodeBlob allocated %.1f times, want 0", allocs)
 	}
 }
 
@@ -256,20 +259,20 @@ func TestEncryptedBlobRoundTrip(t *testing.T) {
 	}
 
 	data := []byte("secret backup data")
-	blob, err := EncodeEncryptedBlob(data, cc, false)
+	blob, err := EncodeEncryptedBlob(nil, data, cc, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if blob.Magic() != MagicEncryptedBlob {
-		t.Errorf("magic = %x, want encrypted", blob.Magic())
+	if blobMagic(blob) != MagicEncryptedBlob {
+		t.Errorf("magic = %x, want encrypted", blobMagic(blob))
 	}
 
-	if !blob.IsEncrypted() {
+	if !IsEncryptedMagic(blobMagic(blob)) {
 		t.Error("blob should report as encrypted")
 	}
 
-	decrypted, err := DecodeEncryptedBlob(blob.Bytes(), cc)
+	decrypted, err := DecodeEncryptedBlob(nil, blob, cc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,16 +297,16 @@ func TestEncryptedCompressedBlobRoundTrip(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 
-	blob, err := EncodeEncryptedBlob(data, cc, true)
+	blob, err := EncodeEncryptedBlob(nil, data, cc, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if blob.Magic() != MagicEncrComprBlob && blob.Magic() != MagicEncryptedBlob {
-		t.Errorf("magic = %x, want encrypted or encrypted+compressed", blob.Magic())
+	if blobMagic(blob) != MagicEncrComprBlob && blobMagic(blob) != MagicEncryptedBlob {
+		t.Errorf("magic = %x, want encrypted or encrypted+compressed", blobMagic(blob))
 	}
 
-	decrypted, err := DecodeEncryptedBlob(blob.Bytes(), cc)
+	decrypted, err := DecodeEncryptedBlob(nil, blob, cc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,12 +324,12 @@ func TestEncryptedBlobWrongKey(t *testing.T) {
 	cc2, _ := NewCryptConfig(key2)
 
 	data := []byte("secret data")
-	blob, err := EncodeEncryptedBlob(data, cc1, false)
+	blob, err := EncodeEncryptedBlob(nil, data, cc1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = DecodeEncryptedBlob(blob.Bytes(), cc2)
+	_, err = DecodeEncryptedBlob(nil, blob, cc2)
 	if err == nil {
 		t.Error("expected error decrypting with wrong key")
 	}
@@ -337,12 +340,12 @@ func TestDecryptPlainBlobFails(t *testing.T) {
 	cc, _ := NewCryptConfig(key)
 
 	data := []byte("plain data")
-	blob, err := EncodeBlob(data)
+	blob, err := EncodeBlob(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = DecodeEncryptedBlob(blob.Bytes(), cc)
+	_, err = DecodeEncryptedBlob(nil, blob, cc)
 	if err == nil {
 		t.Error("expected error decrypting plain blob with DecodeEncryptedBlob")
 	}
@@ -353,12 +356,12 @@ func TestDecryptEncryptedWithPlainFails(t *testing.T) {
 	cc, _ := NewCryptConfig(key)
 
 	data := []byte("secret data")
-	blob, err := EncodeEncryptedBlob(data, cc, false)
+	blob, err := EncodeEncryptedBlob(nil, data, cc, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = DecodeBlob(blob.Bytes())
+	_, err = DecodeBlob(nil, blob)
 	if err == nil {
 		t.Error("expected error calling DecodeBlob on encrypted blob")
 	}

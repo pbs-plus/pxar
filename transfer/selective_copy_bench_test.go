@@ -133,11 +133,11 @@ func chunkBenchmarkStream(b *testing.B, data []byte, cfg buzhash.Config, chunks 
 			b.Fatal(err)
 		}
 		digest := sha256.Sum256(chunk)
-		blob, err := datastore.EncodeBlob(chunk)
+		blob, err := datastore.EncodeBlob(nil, chunk)
 		if err != nil {
 			b.Fatal(err)
 		}
-		chunks[digest] = blob.Bytes()
+		chunks[digest] = blob
 		offset += uint64(len(chunk))
 		index.Add(offset, digest)
 	}

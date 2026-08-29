@@ -39,11 +39,11 @@ func chunkArchive(t *testing.T, archive []byte, chunkSize int) (*DynamicIndexRea
 		end := min(i+chunkSize, len(archive))
 		chunk := archive[i:end]
 		digest := sha256.Sum256(chunk)
-		blob, err := EncodeBlob(chunk)
+		blob, err := EncodeBlob(nil, chunk)
 		if err != nil {
 			t.Fatalf("EncodeBlob: %v", err)
 		}
-		if _, _, err := store.InsertChunk(digest, blob.Bytes()); err != nil {
+		if _, _, err := store.InsertChunk(digest, blob); err != nil {
 			t.Fatalf("InsertChunk: %v", err)
 		}
 		idx.Add(uint64(end), digest)

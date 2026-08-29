@@ -37,7 +37,7 @@ func (r *Restorer) RestoreFile(idx *DynamicIndexReader, w io.Writer) error {
 		}
 
 		// Decode blob wrapper (handles both compressed and uncompressed)
-		decoded, err := DecodeBlob(chunkData)
+		decoded, err := DecodeBlob(nil, chunkData)
 		if err != nil {
 			return fmt.Errorf("decode chunk %d: %w", i, err)
 		}
@@ -78,7 +78,7 @@ func (r *Restorer) RestoreRange(idx *DynamicIndexReader, offset, length uint64, 
 		}
 
 		// Decode blob wrapper (handles both compressed and uncompressed)
-		decoded, err := DecodeBlob(chunkData)
+		decoded, err := DecodeBlob(nil, chunkData)
 		if err != nil {
 			return fmt.Errorf("decode chunk %d: %w", i, err)
 		}

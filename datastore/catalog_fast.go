@@ -507,7 +507,7 @@ func downloadChunks(metaIdx *DynamicIndexReader, source ChunkSource, maxWorkers 
 					chunkErrs[i] = fmt.Errorf("chunk %d/%d (digest %x): %w", i+1, metaIdx.Count(), entry.Digest[:8], err)
 					continue
 				}
-				decoded, err := DecodeBlob(raw)
+				decoded, err := DecodeBlob(nil, raw)
 				if err != nil {
 					chunkErrs[i] = fmt.Errorf("decode chunk %d: %w", i, err)
 					continue

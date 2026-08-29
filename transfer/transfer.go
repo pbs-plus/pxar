@@ -16,20 +16,6 @@ import (
 )
 
 func Copy(src ArchiveReader, dst ArchiveWriter, mappings []PathMapping, opts CopyOption) error {
-	plan := copyPlan{
-		source:    src,
-		overwrite: opts.Overwrite,
-		root: &copyNode{
-			children: make(map[string]*copyNode),
-			order:    math.MaxUint64,
-		},
-	}
-	for _, mapping := range mappings {
-		if err := plan.addMapping(mapping); err != nil {
-			return err
-		}
-	}
-
 	payloadIdx, chunkSource, sourceCryptConfig, hasChunks := splitPayloadSource(src)
 	if opts.SourceCryptConfig == nil && sourceCryptConfig != nil {
 		opts.SourceCryptConfig = sourceCryptConfig
@@ -43,29 +29,110 @@ func Copy(src ArchiveReader, dst ArchiveWriter, mappings []PathMapping, opts Cop
 	if optimized {
 		nextPayload = dst.Encoder().PayloadPosition()
 	}
-
 	emit := copyEmitter{
-		source:          src,
-		destination:     dst,
-		optimized:       optimized,
-		nextPayload:     nextPayload,
-		selectedTargets: make(map[uint64]*copyNode),
-		targetOffsets:   make(map[uint64]encoder.LinkOffset),
-		opts:            opts,
+		source:             src,
+		destination:        dst,
+		optimized:          optimized,
+		nextPayload:        nextPayload,
+		targetOffsets:      make(map[uint64]copiedTarget),
+		payloadIndex:       payloadIdx,
+		chunkSource:        chunkSource,
+		payloadDestination: payloadDst,
+		sourceCryptConfig:  sourceCryptConfig,
+		opts:               opts,
 	}
-
-	collectRegularNodes(plan.root, emit.selectedTargets)
-	if err := emit.children(plan.root); err != nil {
+	if len(mappings) == 1 {
+		if err := emit.mapping(mappings[0]); err != nil {
+			return err
+		}
+		return emit.flushPayload()
+	}
+	groups, grouped, err := groupMappings(src, mappings)
+	if err != nil {
 		return err
 	}
-	if !optimized {
-		return nil
+	if !grouped {
+		groups = []mappingGroup{{mappings: mappings}}
 	}
-	return writePlannedPayloads(payloadIdx, chunkSource, payloadDst, dst, emit.payloads, opts)
+	for _, group := range groups {
+		if len(group.mappings) == 1 {
+			if err := emit.mapping(group.mappings[0]); err != nil {
+				return err
+			}
+			continue
+		}
+		plan := copyPlan{
+			source:    src,
+			overwrite: opts.Overwrite,
+			root: &copyNode{
+				children: make(map[string]*copyNode),
+				order:    math.MaxUint64,
+			},
+		}
+		for _, mapping := range group.mappings {
+			if err := plan.addMapping(mapping); err != nil {
+				return err
+			}
+		}
+		if err := emit.children(plan.root); err != nil {
+			return err
+		}
+	}
+	return emit.flushPayload()
 }
 
 func CopyTree(src ArchiveReader, dst ArchiveWriter, srcPath, dstPath string, opts CopyOption) error {
 	return Copy(src, dst, []PathMapping{{Src: srcPath, Dst: dstPath}}, opts)
+}
+
+type mappingGroup struct {
+	mappings []PathMapping
+	name     string
+	order    uint64
+}
+
+func groupMappings(source ArchiveReader, mappings []PathMapping) ([]mappingGroup, bool, error) {
+	byName := make(map[string]*mappingGroup)
+	for _, mapping := range mappings {
+		sourcePath, err := cleanArchivePath(mapping.Src)
+		if err != nil {
+			return nil, false, fmt.Errorf("invalid source path %q: %w", mapping.Src, err)
+		}
+		destinationPath := mapping.Dst
+		if destinationPath == "" {
+			destinationPath = sourcePath
+		}
+		destinationPath, err = cleanArchivePath(destinationPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("invalid destination path %q: %w", mapping.Dst, err)
+		}
+		parts := pxar.SplitPath(destinationPath)
+		if len(parts) == 0 {
+			return nil, false, nil
+		}
+		entry, err := source.Lookup(sourcePath)
+		if err != nil {
+			return nil, false, fmt.Errorf("lookup %q in source: %w", sourcePath, err)
+		}
+		group := byName[parts[0]]
+		if group == nil {
+			group = &mappingGroup{name: parts[0], order: entry.FileOffset}
+			byName[parts[0]] = group
+		}
+		group.order = min(group.order, entry.FileOffset)
+		group.mappings = append(group.mappings, mapping)
+	}
+	groups := make([]mappingGroup, 0, len(byName))
+	for _, group := range byName {
+		groups = append(groups, *group)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].order != groups[j].order {
+			return groups[i].order < groups[j].order
+		}
+		return groups[i].name < groups[j].name
+	})
+	return groups, true, nil
 }
 
 type copyPlan struct {
@@ -219,33 +286,99 @@ func sortedChildren(node *copyNode) []*copyNode {
 	return children
 }
 
-func collectRegularNodes(node *copyNode, targets map[uint64]*copyNode) {
-	for _, child := range sortedChildren(node) {
-		if child.source != nil && child.source.IsRegularFile() {
-			if _, exists := targets[child.source.FileOffset]; !exists {
-				targets[child.source.FileOffset] = child
-			}
-		}
-		if child.entry.IsDir() {
-			collectRegularNodes(child, targets)
-		}
-	}
+type copiedTarget struct {
+	path   string
+	offset encoder.LinkOffset
 }
 
 type copyEmitter struct {
-	source          ArchiveReader
-	destination     ArchiveWriter
-	optimized       bool
-	nextPayload     uint64
-	selectedTargets map[uint64]*copyNode
-	targetOffsets   map[uint64]encoder.LinkOffset
-	payloads        []plannedPayload
-	opts            CopyOption
+	source             ArchiveReader
+	destination        ArchiveWriter
+	optimized          bool
+	nextPayload        uint64
+	targetOffsets      map[uint64]copiedTarget
+	payloadIndex       *datastore.DynamicIndexReader
+	chunkSource        datastore.ChunkSource
+	payloadDestination rawPayloadWriter
+	sourceCryptConfig  *datastore.CryptConfig
+	pendingPayload     bool
+	pendingSourceStart uint64
+	pendingSourceEnd   uint64
+	pendingTargetStart uint64
+	opts               CopyOption
 }
 
-type plannedPayload struct {
-	source      *pxar.Entry
-	targetStart uint64
+func (e *copyEmitter) mapping(mapping PathMapping) error {
+	sourcePath, err := cleanArchivePath(mapping.Src)
+	if err != nil {
+		return fmt.Errorf("invalid source path %q: %w", mapping.Src, err)
+	}
+	destinationPath := mapping.Dst
+	if destinationPath == "" {
+		destinationPath = sourcePath
+	}
+	destinationPath, err = cleanArchivePath(destinationPath)
+	if err != nil {
+		return fmt.Errorf("invalid destination path %q: %w", mapping.Dst, err)
+	}
+	source, err := e.source.Lookup(sourcePath)
+	if err != nil {
+		return fmt.Errorf("lookup %q in source: %w", sourcePath, err)
+	}
+	if !source.IsDir() && destinationPath == "/" {
+		return fmt.Errorf("cannot map non-directory %q to archive root", sourcePath)
+	}
+	if source.IsDir() && destinationPath == "/" {
+		return e.source.ListDirectory(int64(source.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
+			return e.stream(cloneEntry(child, path.Join(destinationPath, child.FileName())), child)
+		})
+	}
+
+	parts := pxar.SplitPath(destinationPath)
+	parentDepth := max(len(parts)-1, 0)
+	for _, name := range parts[:parentDepth] {
+		meta := pxar.DirMetadata(0o755).Build()
+		if err := e.destination.BeginDirectory(name, &meta); err != nil {
+			return fmt.Errorf("begin destination parent %q: %w", name, err)
+		}
+	}
+	if err := e.stream(cloneEntry(source, destinationPath), source); err != nil {
+		return err
+	}
+	for range parentDepth {
+		if err := e.destination.EndDirectory(); err != nil {
+			return fmt.Errorf("end destination parent: %w", err)
+		}
+	}
+	return nil
+}
+
+func (e *copyEmitter) stream(entry, source *pxar.Entry) error {
+	if entry.IsDir() {
+		if err := e.destination.BeginDirectory(entry.FileName(), &entry.Metadata); err != nil {
+			return fmt.Errorf("begin directory %q: %w", entry.Path, err)
+		}
+		if err := e.source.ListDirectory(int64(source.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
+			return e.stream(cloneEntry(child, path.Join(entry.Path, child.FileName())), child)
+		}); err != nil {
+			return err
+		}
+		if err := e.destination.EndDirectory(); err != nil {
+			return fmt.Errorf("end directory %q: %w", entry.Path, err)
+		}
+		return nil
+	}
+	node := copyNode{entry: entry, source: source}
+	if entry.IsHardlink() {
+		return e.hardlink(&node)
+	}
+	if entry.IsRegularFile() {
+		return e.regular(entry, source)
+	}
+	if err := e.destination.WriteEntry(entry, nil); err != nil {
+		return fmt.Errorf("write %q: %w", entry.Path, err)
+	}
+	return nil
 }
 
 func (e *copyEmitter) children(parent *copyNode) error {
@@ -286,18 +419,15 @@ func (e *copyEmitter) node(node *copyNode) error {
 func (e *copyEmitter) hardlink(node *copyNode) error {
 	if node.source.FileOffset >= node.source.LinkOffset {
 		targetSourceOffset := node.source.FileOffset - node.source.LinkOffset
-		if targetNode := e.selectedTargets[targetSourceOffset]; targetNode != nil {
-			if targetOffset, ok := e.targetOffsets[targetSourceOffset]; ok {
-				target := strings.TrimPrefix(targetNode.entry.Path, "/")
-				writer, ok := e.destination.(interface {
-					WriteHardlink(string, string, encoder.LinkOffset) error
-				})
-				if ok {
-					if err := writer.WriteHardlink(node.entry.FileName(), target, targetOffset); err != nil {
-						return fmt.Errorf("write hardlink %q: %w", node.entry.Path, err)
-					}
-					return nil
+		if target, ok := e.targetOffsets[targetSourceOffset]; ok {
+			writer, ok := e.destination.(interface {
+				WriteHardlink(string, string, encoder.LinkOffset) error
+			})
+			if ok {
+				if err := writer.WriteHardlink(node.entry.FileName(), strings.TrimPrefix(target.path, "/"), target.offset); err != nil {
+					return fmt.Errorf("write hardlink %q: %w", node.entry.Path, err)
 				}
+				return nil
 			}
 		}
 	}
@@ -332,13 +462,27 @@ func (e *copyEmitter) regular(entry, source *pxar.Entry) error {
 		if err != nil {
 			return fmt.Errorf("file %q: %w", source.Path, err)
 		}
-		if e.nextPayload > math.MaxUint64-span {
-			return fmt.Errorf("target payload offset overflow")
+		if e.nextPayload > math.MaxUint64-span || source.PayloadOffset > math.MaxUint64-span {
+			return fmt.Errorf("payload range for %q overflows", source.Path)
+		}
+		sourceEnd := source.PayloadOffset + span
+		contiguous := e.pendingPayload && source.PayloadOffset == e.pendingSourceEnd && e.nextPayload == e.pendingTargetStart+(e.pendingSourceEnd-e.pendingSourceStart)
+		if e.pendingPayload && !contiguous {
+			if err := e.flushPayload(); err != nil {
+				return err
+			}
 		}
 		if err := e.destination.WriteEntryRef(entry, e.nextPayload); err != nil {
 			return fmt.Errorf("write payload reference %q: %w", entry.Path, err)
 		}
-		e.payloads = append(e.payloads, plannedPayload{source: source, targetStart: e.nextPayload})
+		if contiguous {
+			e.pendingSourceEnd = sourceEnd
+		} else {
+			e.pendingPayload = true
+			e.pendingSourceStart = source.PayloadOffset
+			e.pendingSourceEnd = sourceEnd
+			e.pendingTargetStart = e.nextPayload
+		}
 		e.nextPayload += span
 	}
 
@@ -347,7 +491,7 @@ func (e *copyEmitter) regular(entry, source *pxar.Entry) error {
 			LastEntryOffset() (encoder.LinkOffset, bool)
 		}); ok {
 			if offset, ok := offsetWriter.LastEntryOffset(); ok {
-				e.targetOffsets[source.FileOffset] = offset
+				e.targetOffsets[source.FileOffset] = copiedTarget{path: entry.Path, offset: offset}
 			}
 		}
 	}
@@ -391,55 +535,26 @@ func splitPayloadSource(reader ArchiveReader) (*datastore.DynamicIndexReader, da
 	}
 }
 
-func writePlannedPayloads(
-	index *datastore.DynamicIndexReader,
-	source datastore.ChunkSource,
-	destination rawPayloadWriter,
-	archiveWriter ArchiveWriter,
-	payloads []plannedPayload,
-	opts CopyOption,
-) error {
-	if len(payloads) == 0 {
+func (e *copyEmitter) flushPayload() error {
+	if !e.pendingPayload {
 		return nil
 	}
-
-	replay := cryptIdentityMatches(opts)
-	for i := 0; i < len(payloads); {
-		span, err := payloadSpanSize(payloads[i].source.FileSize)
-		if err != nil {
-			return err
-		}
-		sourceStart := payloads[i].source.PayloadOffset
-		if sourceStart > math.MaxUint64-span {
-			return fmt.Errorf("source payload range for %q overflows", payloads[i].source.Path)
-		}
-		sourceEnd := sourceStart + span
-		targetStart := payloads[i].targetStart
-
-		j := i + 1
-		for j < len(payloads) {
-			nextSpan, err := payloadSpanSize(payloads[j].source.FileSize)
-			if err != nil {
-				return err
-			}
-			if payloads[j].source.PayloadOffset != sourceEnd || payloads[j].targetStart != targetStart+(sourceEnd-sourceStart) {
-				break
-			}
-			if sourceEnd > math.MaxUint64-nextSpan {
-				return fmt.Errorf("source payload range overflows")
-			}
-			sourceEnd += nextSpan
-			j++
-		}
-
-		if archiveWriter.Encoder().PayloadPosition() != targetStart {
-			return fmt.Errorf("target payload position %d does not match planned offset %d", archiveWriter.Encoder().PayloadPosition(), targetStart)
-		}
-		if err := writePayloadRange(index, source, destination, archiveWriter, sourceStart, sourceEnd, replay, opts.SourceCryptConfig); err != nil {
-			return err
-		}
-		i = j
+	if e.destination.Encoder().PayloadPosition() != e.pendingTargetStart {
+		return fmt.Errorf("target payload position %d does not match planned offset %d", e.destination.Encoder().PayloadPosition(), e.pendingTargetStart)
 	}
+	if err := writePayloadRange(
+		e.payloadIndex,
+		e.chunkSource,
+		e.payloadDestination,
+		e.destination,
+		e.pendingSourceStart,
+		e.pendingSourceEnd,
+		cryptIdentityMatches(e.opts),
+		e.sourceCryptConfig,
+	); err != nil {
+		return err
+	}
+	e.pendingPayload = false
 	return nil
 }
 
@@ -484,7 +599,7 @@ func writePayloadRange(
 	}
 
 	written := uint64(0)
-	replayBatch := make([]backupproxy.KnownChunkRef, 0, replayChunkBatchSize)
+	var replayBatch []backupproxy.KnownChunkRef
 	flushReplay := func() error {
 		if len(replayBatch) == 0 {
 			return nil
@@ -515,7 +630,7 @@ func writePayloadRange(
 					return blob, nil
 				},
 			})
-			if len(replayBatch) == cap(replayBatch) {
+			if len(replayBatch) == replayChunkBatchSize {
 				if err := flushReplay(); err != nil {
 					return fmt.Errorf("replay source chunks: %w", err)
 				}

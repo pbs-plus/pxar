@@ -24,8 +24,6 @@
 //   - CryptModeSignOnly: no encryption, HMAC-SHA256 manifest signing
 //
 
-// # Extended Metadata
-//
 // Extended attributes, POSIX ACLs, and file capabilities are collected via
 // the FSAccessor/ClientProvider interfaces and encoded into archives.
 // Metadata change detection compares all fields (stat, xattrs, ACLs, fcaps)

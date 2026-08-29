@@ -112,8 +112,24 @@ func (cs *ChunkStore) InsertChunk(digest [32]byte, data []byte) (bool, int, erro
 	if err := os.Rename(tmpName, path); err != nil {
 		return false, 0, fmt.Errorf("rename chunk: %w", err)
 	}
+	if cs.sync {
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return false, 0, fmt.Errorf("sync chunk dir: %w", err)
+		}
+	}
 
 	return false, len(data), nil
+}
+
+// syncDir flushes directory metadata so a preceding rename survives a crash,
+// mirroring pbs-datastore's dir-fsync on chunk insert.
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 // StatChunk returns the stored chunk size, failing when missing or empty.

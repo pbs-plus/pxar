@@ -2,7 +2,6 @@
 package transfer
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 
@@ -112,8 +111,7 @@ func (r *FileReader) Close() error {
 
 // ChunkedReader reads from a chunked archive (.pxar.didx).
 // It lazily loads chunks on demand using a ReadSeeker, avoiding
-// full-stream-in-memory reconstruction. For small archives where full
-// reconstruction is acceptable, use NewChunkedReaderEager.
+// full-stream-in-memory reconstruction.
 type ChunkedReader struct {
 	source  datastore.ChunkSource
 	inner   *FileReader
@@ -159,33 +157,6 @@ func OpenChunkedReader(idxPath string, source datastore.ChunkSource) (*ChunkedRe
 	}, nil
 }
 
-// stream into memory upfront. Use this for small archives or when you need
-// guaranteed sequential access performance.
-func NewChunkedReaderEager(idxData []byte, source datastore.ChunkSource) (*ChunkedReader, error) {
-	idx, err := datastore.ParseDynamicIndex(idxData)
-	if err != nil {
-		return nil, fmt.Errorf("read dynamic index: %w", err)
-	}
-
-	// Reconstruct the full stream into a buffer
-	var buf bytes.Buffer
-	restorer := datastore.NewRestorer(source)
-	if err := restorer.RestoreFile(idx, &buf); err != nil {
-		return nil, fmt.Errorf("restore archive stream: %w", err)
-	}
-
-	reader := bytes.NewReader(buf.Bytes())
-	return &ChunkedReader{
-		inner:  NewFileReader(reader),
-		idx:    idx,
-		source: source,
-	}, nil
-}
-
-// ReaderAt returns the underlying io.ReaderAt for the archive stream.
-// Returns nil for eager readers backed by bytes.Reader (use the
-// FileReader directly if you need ReaderAt on those).
-// The returned ReaderAt is safe for concurrent use.
 func (r *ChunkedReader) ReaderAt() io.ReaderAt {
 	if r.lazy != nil {
 		return r.lazy
@@ -244,8 +215,7 @@ func (r *ChunkedReader) Close() error {
 
 // SplitReader reads from a split chunked archive (.mpxar.didx + .ppxar.didx).
 // It uses lazy on-demand chunk loading for both metadata and payload streams,
-// avoiding full-stream-in-memory reconstruction. For small archives, use
-// NewSplitReaderEager.
+// avoiding full-stream-in-memory reconstruction.
 type SplitReader struct {
 	source      datastore.ChunkSource
 	inner       *FileReader
@@ -331,48 +301,6 @@ func NewSplitReaderMetaOnly(metaIdxData []byte, source datastore.ChunkSource) (*
 	}, nil
 }
 
-// NewSplitReaderEager creates a reader that reconstructs both streams
-// into memory upfront. Use for small archives or when you need guaranteed
-// sequential access performance.
-func NewSplitReaderEager(metaIdxData, payloadIdxData []byte, source datastore.ChunkSource) (*SplitReader, error) {
-	metaIdx, err := datastore.ParseDynamicIndex(metaIdxData)
-	if err != nil {
-		return nil, fmt.Errorf("read metadata index: %w", err)
-	}
-
-	payloadIdx, err := datastore.ParseDynamicIndex(payloadIdxData)
-	if err != nil {
-		return nil, fmt.Errorf("read payload index: %w", err)
-	}
-
-	restorer := datastore.NewRestorer(source)
-
-	// Reconstruct metadata stream
-	var metaBuf bytes.Buffer
-	if err := restorer.RestoreFile(metaIdx, &metaBuf); err != nil {
-		return nil, fmt.Errorf("restore metadata stream: %w", err)
-	}
-
-	// Reconstruct payload stream
-	var payloadBuf bytes.Buffer
-	if err := restorer.RestoreFile(payloadIdx, &payloadBuf); err != nil {
-		return nil, fmt.Errorf("restore payload stream: %w", err)
-	}
-
-	metaReader := bytes.NewReader(metaBuf.Bytes())
-	payloadReader := bytes.NewReader(payloadBuf.Bytes())
-
-	return &SplitReader{
-		inner:      NewSplitFileReader(metaReader, payloadReader),
-		metaIdx:    metaIdx,
-		payloadIdx: payloadIdx,
-		source:     source,
-	}, nil
-}
-
-// PayloadReaderAt returns the underlying io.ReaderAt for the payload stream.
-// Returns nil for meta-only or eager readers that don't use a ReadSeeker.
-// The returned ReaderAt is safe for concurrent use.
 func (r *SplitReader) PayloadReaderAt() io.ReaderAt {
 	if r.payloadLazy != nil {
 		return r.payloadLazy

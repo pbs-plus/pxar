@@ -207,122 +207,6 @@ func TestReadSeekerCaching(t *testing.T) {
 	}
 }
 
-func TestReadSeekerMatchesEager(t *testing.T) {
-	store, idxData := createChunkedArchive(t, map[string]string{
-		"file1.txt": "content one",
-		"file2.txt": "content two",
-	})
-	source := datastore.NewChunkStoreSource(store)
-
-	// Eager reconstruction
-	eagerReader, err := transfer.NewChunkedReaderEager(idxData, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer eagerReader.Close()
-
-	// Lazy reconstruction
-	lazyReader, err := transfer.NewChunkedReader(idxData, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lazyReader.Close()
-
-	// Both should find the same files
-	entry1, err := eagerReader.Lookup("/file1.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry2, err := lazyReader.Lookup("/file1.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r1, err := eagerReader.ReadFileContentReader(entry1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r1.Close()
-	content1, err := io.ReadAll(r1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2, err := lazyReader.ReadFileContentReader(entry2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r2.Close()
-	content2, err := io.ReadAll(r2)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if string(content1) != string(content2) {
-		t.Errorf("eager = %q, lazy = %q", content1, content2)
-	}
-	if string(content1) != "content one" {
-		t.Errorf("content = %q, want %q", content1, "content one")
-	}
-}
-
-// --- SplitReader lazy tests ---
-
-func TestSplitReaderLazyMatchesEager(t *testing.T) {
-	store, metaIdxData, payloadIdxData := createSplitChunkedArchive(t, map[string]string{
-		"data.bin": "payload data",
-	})
-	source := datastore.NewChunkStoreSource(store)
-
-	eagerReader, err := transfer.NewSplitReaderEager(metaIdxData, payloadIdxData, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer eagerReader.Close()
-
-	lazyReader, err := transfer.NewSplitReader(metaIdxData, payloadIdxData, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lazyReader.Close()
-
-	eagerEntry, err := eagerReader.Lookup("/data.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lazyEntry, err := lazyReader.Lookup("/data.bin")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r3, err := eagerReader.ReadFileContentReader(eagerEntry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r3.Close()
-	eagerContent, err := io.ReadAll(r3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r4, err := lazyReader.ReadFileContentReader(lazyEntry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r4.Close()
-	lazyContent, err := io.ReadAll(r4)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if string(eagerContent) != string(lazyContent) {
-		t.Errorf("eager = %q, lazy = %q", eagerContent, lazyContent)
-	}
-	if string(eagerContent) != "payload data" {
-		t.Errorf("content = %q, want %q", eagerContent, "payload data")
-	}
-}
-
-// --- DedupWriter tests ---
-
 func TestDedupWriterRoundTrip(t *testing.T) {
 	store, _, payloadIdxData := createSplitChunkedArchive(t, map[string]string{
 		"file.txt": "original content",
@@ -509,14 +393,12 @@ func TestComputeContentDigestCorrectness(t *testing.T) {
 		"file.txt": "hello world",
 	})
 
-	// Read file content from the split archive using eager reader
-	// to get the ground truth
 	source := datastore.NewChunkStoreSource(store)
 	metaIdxData, _ := createSplitChunkedArchiveMeta(t, store, map[string]string{
 		"file.txt": "hello world",
 	})
 
-	reader, err := transfer.NewSplitReaderEager(metaIdxData, payloadIdxData, source)
+	reader, err := transfer.NewSplitReader(metaIdxData, payloadIdxData, source)
 	if err != nil {
 		t.Fatal(err)
 	}

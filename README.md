@@ -362,7 +362,7 @@ content, _ := io.ReadAll(cr)
 cr.Close()
 ```
 
-`ChunkedReader` and `SplitReader` use this by default. For eager loading, use `NewChunkedReaderEager` and `NewSplitReaderEager`.
+`ChunkedReader` and `SplitReader` use this lazy path for all chunked archives.
 
 #### Payload Chunk Utilities
 
@@ -555,11 +555,11 @@ result, err := srv.RunMetadataBackup(ctx, "/root", backupproxy.BackupConfig{
 
 The library supports three crypt modes:
 
-| Mode                | Description                                                                |
-| ------------------- | -------------------------------------------------------------------------- |
-| `CryptModeNone`     | No encryption or signing (default)                                         |
-| `CryptModeEncrypt`  | AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing         |
-| `CryptModeSign`     | No encryption, but HMAC-SHA256 manifest signing for integrity verification |
+| Mode               | Description                                                                |
+| ------------------ | -------------------------------------------------------------------------- |
+| `CryptModeNone`    | No encryption or signing (default)                                         |
+| `CryptModeEncrypt` | AES-256-GCM encryption of chunk data; HMAC-SHA256 manifest signing         |
+| `CryptModeSign`    | No encryption, but HMAC-SHA256 manifest signing for integrity verification |
 
 Encryption uses AES-256-GCM with a random 16-byte IV (matching PBS/OpenSSL; empty AAD) for chunk encryption. Encrypted key files are protected with scrypt (the PBS default) or PBKDF2; the signing/namespace `id_key` is derived from the 32-byte encryption key via PBKDF2-HMAC-SHA256. Manifests are always signed (HMAC-SHA256 over canonical JSON) when a `CryptConfig` is provided — they are never encrypted, since PBS must be able to read the manifest. Chunk digests in encrypted mode use `SHA-256(data || id_key)` to prevent cross-key collisions.
 
@@ -766,8 +766,9 @@ target, _ := sess.Readlink(symlinkInode)
 **`LinkOffset`** — opaque file position token returned by `AddFile`/`AddPayloadRef`, passed to `AddHardlink`
 
 **`FileWriter`** — `io.Writer` for streaming file content
-  - `Write(data)`, `WriteAll(data)`, `Close()` — finalize entry
-  - `FileOffset()` → `LinkOffset` — position token for hardlink targets
+
+- `Write(data)`, `WriteAll(data)`, `Close()` — finalize entry
+- `FileOffset()` → `LinkOffset` — position token for hardlink targets
 
 ### `decoder` — Archive Reader
 
@@ -793,12 +794,11 @@ target, _ := sess.Readlink(symlinkInode)
 - **`ArchiveWriter`** — unified write interface (Begin, WriteEntry, WriteEntryRef, WriteEntryReader, BeginDirectory, EndDirectory, Finish, Close)
 - **`FileReader`** — reads from standalone .pxar files
   - `NewFileReader(reader)`, `NewSplitFileReader(metaReader, payloadReader)`
-- **`ChunkedReader`** — lazy on-demand chunk loading from .didx
-  - `NewChunkedReader(idxData, source)`, `NewChunkedReaderEager(idxData, source)`
-- **`SplitReader`** — reads from .mpxar.didx + .ppxar.didx
-  - `NewSplitReader(metaIdxData, payloadIdxData, source)` — lazy
-  - `NewSplitReaderEager(metaIdxData, payloadIdxData, source)` — eager
-  - `NewSplitReaderMetaOnly(metaIdxData, source)` — metadata only, no payload
+- **`ChunkedReader`** - lazy on-demand chunk loading from .didx
+  - `NewChunkedReader(idxData, source)`
+- **`SplitReader`** - lazy reads from .mpxar.didx + .ppxar.didx
+  - `NewSplitReader(metaIdxData, payloadIdxData, source)`
+  - `NewSplitReaderMetaOnly(metaIdxData, source)` - metadata only, no payload
 - **`PBSReader`** — reads from PBS remote via H2 reader protocol
   - `NewPBSReader(ctx, cfg)` — `PBSReaderConfig` holds backup ref + PBS config
 - **`DecryptingReader`** — wraps any ArchiveReader, delegates with optional decryption layer

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -45,11 +46,18 @@ func TestRemoteDedupWriterAbandonNoLeak(t *testing.T) {
 	if err := w.Begin(rootMeta, Options{}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	metaPath := w.metaPath
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Fatalf("metadata spool: %v", err)
+	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+		t.Fatalf("metadata spool remains after close: %v", err)
 	}
 }
 
@@ -173,10 +181,14 @@ func TestRemoteDedupWriterFinishNoLeak(t *testing.T) {
 	if err := w.Begin(rootMeta, Options{}); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	metaPath := w.metaPath
 	if err := w.Finish(); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+		t.Fatalf("metadata spool remains after finish: %v", err)
 	}
 }

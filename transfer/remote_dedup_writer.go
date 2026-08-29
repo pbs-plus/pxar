@@ -2,11 +2,11 @@ package transfer
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"sync"
 
 	pxar "github.com/pbs-plus/pxar"
@@ -30,7 +30,9 @@ type RemoteDedupWriter struct {
 	inner       *StreamWriter
 	metaName    string
 	payloadName string
-	metaBuf     bytes.Buffer
+	metaFile    *os.File
+	metaPath    string
+	metaBuf     *bufio.Writer
 	dirDepth    int
 	lastRefOff  *uint64
 	requiredEnd uint64
@@ -70,7 +72,13 @@ func NewRemoteDedupWriter(
 }
 
 func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
-	w.metaBuf.Reset()
+	metaFile, err := os.CreateTemp("", "pxar-metadata-*.pxar")
+	if err != nil {
+		return fmt.Errorf("create metadata spool: %w", err)
+	}
+	w.metaFile = metaFile
+	w.metaPath = metaFile.Name()
+	w.metaBuf = bufio.NewWriterSize(metaFile, 256<<10)
 	w.dirDepth = 1
 	w.lastRefOff = nil
 	w.requiredEnd = 0
@@ -79,16 +87,16 @@ func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 	w.payloadPipe = payloadpipe.New()
 	w.injectCh = make(chan backupproxy.InjectChunks, 64)
 	w.uploadRes = make(chan uploadResult, 1)
-
-	// bufio.Writer(256 KiB) reduces the number of pipe writes and gives the
-	// encoder a larger atomic write unit, matching Rust's encoder behaviour.
 	w.payloadBuf = bufio.NewWriterSize(w.payloadPipe, 256<<10)
-	w.inner = NewSplitStreamWriter(&w.metaBuf, w.payloadBuf)
+	w.inner = NewSplitStreamWriter(w.metaBuf, w.payloadBuf)
 
 	go w.uploadPayload()
 	w.started = true
-
-	return w.inner.Begin(rootMeta, opts)
+	if err := w.inner.Begin(rootMeta, opts); err != nil {
+		w.cleanup(err)
+		return err
+	}
+	return nil
 }
 
 func (w *RemoteDedupWriter) flushPayload() error {
@@ -96,6 +104,18 @@ func (w *RemoteDedupWriter) flushPayload() error {
 		return nil
 	}
 	return w.payloadBuf.Flush()
+}
+
+func (w *RemoteDedupWriter) cleanupMetadata() {
+	if w.metaFile != nil {
+		_ = w.metaFile.Close()
+		w.metaFile = nil
+	}
+	if w.metaPath != "" {
+		_ = os.Remove(w.metaPath)
+		w.metaPath = ""
+	}
+	w.metaBuf = nil
 }
 
 // uploadPayload runs in a goroutine. It reads raw payload bytes from the pipe
@@ -238,6 +258,7 @@ func (w *RemoteDedupWriter) EndDirectory() error {
 }
 
 func (w *RemoteDedupWriter) cleanup(abort error) {
+	w.cleanupMetadata()
 	if !w.started {
 		return
 	}
@@ -274,6 +295,10 @@ func (w *RemoteDedupWriter) Finish() error {
 		w.cleanup(err)
 		return err
 	}
+	if err := w.metaBuf.Flush(); err != nil {
+		w.cleanup(err)
+		return fmt.Errorf("flush metadata: %w", err)
+	}
 	w.payloadPipe.CloseWithError(nil)
 	close(w.injectCh)
 
@@ -292,7 +317,12 @@ func (w *RemoteDedupWriter) Finish() error {
 		return fmt.Errorf("payload references end at %d but upload ends at %d", w.requiredEnd, res.result.Size)
 	}
 
-	_, err := w.session.UploadArchive(w.ctx, w.metaName, bytes.NewReader(w.metaBuf.Bytes()))
+	if _, err := w.metaFile.Seek(0, io.SeekStart); err != nil {
+		w.cleanupMetadata()
+		return fmt.Errorf("rewind metadata: %w", err)
+	}
+	_, err := w.session.UploadArchive(w.ctx, w.metaName, w.metaFile)
+	w.cleanupMetadata()
 	if err != nil {
 		return fmt.Errorf("upload metadata: %w", err)
 	}

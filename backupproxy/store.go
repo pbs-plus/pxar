@@ -271,31 +271,30 @@ type localSession struct {
 	syncWrites    bool
 }
 
-func (s *localSession) writeSnapshotFile(name string, data []byte) error {
+func (s *localSession) createSnapshotTemp(name string) (*os.File, string, error) {
 	if filepath.Base(name) != name || name == "." || name == "" {
-		return fmt.Errorf("invalid snapshot filename %q", name)
+		return nil, "", fmt.Errorf("invalid snapshot filename %q", name)
 	}
-	path := filepath.Join(s.baseDir, name)
 	tmp, err := os.CreateTemp(s.baseDir, "."+name+".tmp-*")
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
 	if err := tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close()
-		return err
+		_ = os.Remove(tmp.Name())
+		return nil, "", err
 	}
 	if s.uid >= 0 || s.gid >= 0 {
 		if err := tmp.Chown(s.uid, s.gid); err != nil {
 			_ = tmp.Close()
-			return err
+			_ = os.Remove(tmp.Name())
+			return nil, "", err
 		}
 	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
+	return tmp, tmp.Name(), nil
+}
+
+func (s *localSession) publishSnapshotTemp(tmp *os.File, tmpName, name string) error {
 	if s.syncWrites {
 		if err := tmp.Sync(); err != nil {
 			_ = tmp.Close()
@@ -305,15 +304,39 @@ func (s *localSession) writeSnapshotFile(name string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	return os.Rename(tmpName, filepath.Join(s.baseDir, name))
+}
+
+func (s *localSession) writeSnapshotFile(name string, data []byte) error {
+	tmp, tmpName, err := s.createSnapshotTemp(name)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	return s.publishSnapshotTemp(tmp, tmpName, name)
 }
 
 func (s *localSession) UploadArchive(_ context.Context, name string, data io.Reader) (*UploadResult, error) {
+	tmp, tmpName, err := s.createSnapshotTemp(name)
+	if err != nil {
+		return nil, fmt.Errorf("create index: %w", err)
+	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
+	idx, err := datastore.NewDynamicIndexStreamWriter(tmp, time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
 	chunker := buzhash.NewChunker(data, s.chunkConfig)
-	idx := datastore.NewDynamicIndexWriter(time.Now().Unix())
-
 	var totalOffset uint64
-
 	for {
 		chunk, err := chunker.Next()
 		if err == io.EOF {
@@ -322,42 +345,33 @@ func (s *localSession) UploadArchive(_ context.Context, name string, data io.Rea
 		if err != nil {
 			return nil, fmt.Errorf("chunk: %w", err)
 		}
-
 		digest := chunkDigest(chunk, s.config.CryptConfig)
-
 		storeData, bp, err := borrowChunkBlob(chunk, s.compress, s.config.CryptConfig)
 		if err != nil {
 			return nil, err
 		}
-		_, _, insErr := s.store.InsertChunk(digest, storeData)
+		_, _, insertErr := s.store.InsertChunk(digest, storeData)
 		datastore.PutBlobBuf(bp)
-		if insErr != nil {
-			return nil, fmt.Errorf("store chunk: %w", insErr)
+		if insertErr != nil {
+			return nil, fmt.Errorf("store chunk: %w", insertErr)
 		}
-
 		totalOffset += uint64(len(chunk))
-		idx.Add(totalOffset, digest)
+		if err := idx.Add(totalOffset, digest); err != nil {
+			return nil, err
+		}
 	}
-
-	raw, err := idx.Finish()
+	indexDigest, indexSize, err := idx.Finish()
 	if err != nil {
 		return nil, fmt.Errorf("finish index: %w", err)
 	}
-
-	if err := s.writeSnapshotFile(name, raw); err != nil {
+	if indexSize != totalOffset {
+		return nil, fmt.Errorf("index size %d does not match archive size %d", indexSize, totalOffset)
+	}
+	if err := s.publishSnapshotTemp(tmp, tmpName, name); err != nil {
 		return nil, fmt.Errorf("write index: %w", err)
 	}
-
-	indexDigest := idx.Csum()
-
-	result := &UploadResult{
-		Filename: name,
-		Size:     totalOffset,
-		Digest:   indexDigest,
-	}
-
+	result := &UploadResult{Filename: name, Size: totalOffset, Digest: indexDigest}
 	addFileInfo(&s.files, name, totalOffset, indexDigest, string(s.config.CryptMode))
-
 	return result, nil
 }
 
@@ -405,30 +419,34 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 }
 
 func (s *localSession) UploadPayloadInterleaved(_ context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {
-	sink := &localPayloadSink{
-		session:    s,
-		idx:        datastore.NewDynamicIndexWriter(time.Now().Unix()),
-		localKnown: make(map[[32]byte]bool),
+	tmp, tmpName, err := s.createSnapshotTemp(name)
+	if err != nil {
+		return nil, fmt.Errorf("create index: %w", err)
 	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
+	idx, err := datastore.NewDynamicIndexStreamWriter(tmp, time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	sink := &localPayloadSink{session: s, idx: idx, localKnown: make(map[[32]byte]bool)}
 	totalSize, err := interleavePayload(s.chunkConfig, newData, injections, sink)
 	if err != nil {
 		return nil, err
 	}
-
-	raw, err := sink.idx.Finish()
+	indexDigest, indexSize, err := sink.idx.Finish()
 	if err != nil {
 		return nil, fmt.Errorf("finish index: %w", err)
 	}
-	if err := s.writeSnapshotFile(name, raw); err != nil {
+	if indexSize != totalSize {
+		return nil, fmt.Errorf("index size %d does not match payload size %d", indexSize, totalSize)
+	}
+	if err := s.publishSnapshotTemp(tmp, tmpName, name); err != nil {
 		return nil, fmt.Errorf("write index: %w", err)
 	}
-
-	indexDigest := sink.idx.Csum()
-	result := &UploadResult{
-		Filename: name,
-		Size:     totalSize,
-		Digest:   indexDigest,
-	}
+	result := &UploadResult{Filename: name, Size: totalSize, Digest: indexDigest}
 	addFileInfo(&s.files, name, totalSize, indexDigest, string(s.config.CryptMode))
 	return result, nil
 }
@@ -438,7 +456,7 @@ func (s *localSession) UploadPayloadInterleaved(_ context.Context, name string, 
 // DynamicIndexWriter, matching the PBS path's offset accounting.
 type localPayloadSink struct {
 	session    *localSession
-	idx        *datastore.DynamicIndexWriter
+	idx        *datastore.DynamicIndexStreamWriter
 	localKnown map[[32]byte]bool
 	progress   UploadProgress
 }
@@ -463,7 +481,9 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 		s.localKnown[digest] = true
 	}
 	endOffset := offset + uint64(len(raw))
-	s.idx.Add(endOffset, digest)
+	if err := s.idx.Add(endOffset, digest); err != nil {
+		return err
+	}
 	s.reportProgress(uint64(len(raw)), uploadedSize)
 	return nil
 }
@@ -489,7 +509,9 @@ func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 			}
 		}
 		s.localKnown[c.Digest] = true
-		s.idx.Add(cur+c.Size, c.Digest)
+		if err := s.idx.Add(cur+c.Size, c.Digest); err != nil {
+			return err
+		}
 		cur += c.Size
 		s.reportProgress(c.Size, uploadedSize)
 	}

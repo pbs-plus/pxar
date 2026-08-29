@@ -46,7 +46,7 @@ type payloadSink interface {
 // Raw data is force-split at each injection boundary so the injected chunks start
 // exactly at offset == inj.Boundary; empty raw splits are skipped (matching
 // InjectReusedChunksQueue's `if raw.is_empty() => continue`).
-func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan InjectChunks, sink payloadSink) (totalSize uint64, err error) {
+func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan InjectChunks, suggestions <-chan uint64, sink payloadSink) (totalSize uint64, err error) {
 	putInjection := func(offset uint64, injection InjectChunks) error {
 		err := sink.putInjection(offset, injection)
 		if injection.Processed != nil {
@@ -88,8 +88,25 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 	defer chunkBufPool.Put(bp)
 	var bufStart, bufEnd int // valid unconsumed data = backing[bufStart:bufEnd]
 
-	var scanner buzhash.Scanner
-	scanner.Config = cfg
+	scanner := buzhash.NewSuggestedScanner(cfg)
+	suggestClosed := false
+	peekSuggestion := func() {
+		if suggestions == nil || suggestClosed {
+			return
+		}
+		for {
+			select {
+			case off, ok := <-suggestions:
+				if !ok {
+					suggestClosed = true
+					return
+				}
+				scanner.Suggest(off)
+			default:
+				return
+			}
+		}
+	}
 
 	var (
 		scanPos    int
@@ -163,6 +180,7 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 
 	for {
 		peekInjection()
+		peekSuggestion()
 
 		// Snapshot the valid (unconsumed) window into the reusable backing slab.
 		// All chunk slices handed to the sink reference this slab; the sink must
@@ -174,7 +192,7 @@ func interleavePayload(cfg buzhash.Config, newData io.Reader, injections <-chan 
 		// as a full-stream offset (totalSize + position within valid).
 		pos := 0
 		if scanPos < len(valid) {
-			pos = scanner.Scan(valid[scanPos:])
+			pos = scanner.Scan(totalSize, totalSize+uint64(scanPos), valid[scanPos:])
 		}
 		var chunkBoundary uint64
 		if pos == 0 {

@@ -137,7 +137,7 @@ func (s *Server) RunBackup(ctx context.Context, root string, config BackupConfig
 	result := &BackupResult{}
 	var catBuf bytes.Buffer
 	catBuilder := newCatalogBuilder(&catBuf)
-	if err := s.walkDir(ctx, root, enc, nil, catBuilder, result); err != nil {
+	if err := s.walkDir(ctx, root, enc, nil, catBuilder, nil, result); err != nil {
 		pipeWriter.CloseWithError(err)
 		<-uploadErrCh
 		return nil, err
@@ -201,7 +201,7 @@ func (s *Server) RunSplitBackup(ctx context.Context, root string, config BackupC
 	result := &BackupResult{}
 	var catBuf bytes.Buffer
 	catBuilder := newCatalogBuilder(&catBuf)
-	if err := s.walkDir(ctx, root, enc, nil, catBuilder, result); err != nil {
+	if err := s.walkDir(ctx, root, enc, nil, catBuilder, nil, result); err != nil {
 		return nil, err
 	}
 
@@ -307,9 +307,17 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 	payloadPipe := payloadpipe.New()
 	payloadBuf := bufio.NewWriterSize(payloadPipe, 256<<10)
 	injectCh := make(chan InjectChunks, 64)
+	suggestCh := make(chan uint64, 64)
+	suggest := func(off uint64) {
+		select {
+		case suggestCh <- off:
+		case <-payloadPipe.Done():
+		case <-ctx.Done():
+		}
+	}
 	payloadUploadCh := make(chan uploadResult, 1)
 	go func() {
-		result, err := sess.UploadPayloadInterleaved(ctx, "root.ppxar.didx", payloadPipe, injectCh)
+		result, err := sess.UploadPayloadInterleaved(ctx, "root.ppxar.didx", payloadPipe, injectCh, suggestCh)
 		if err != nil {
 			payloadPipe.CloseWithError(err)
 		}
@@ -321,6 +329,7 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 			cause = payloadBuf.Flush()
 		}
 		close(injectCh)
+		close(suggestCh)
 		payloadPipe.CloseWithError(cause)
 		upload := <-payloadUploadCh
 		if cause != nil {
@@ -375,7 +384,7 @@ func (s *Server) RunMetadataBackup(ctx context.Context, root string, config Back
 	}
 	var catBuf bytes.Buffer
 	catBuilder := newCatalogBuilder(&catBuf)
-	if err := s.walkDir(ctx, root, enc, mw, catBuilder, result); err != nil {
+	if err := s.walkDir(ctx, root, enc, mw, catBuilder, suggest, result); err != nil {
 		_, _ = finishPayload(err)
 		return nil, err
 	}
@@ -534,7 +543,7 @@ func (mw *metadataWalker) injectChunks(enc *encoder.Encoder, plan datastore.Chun
 	return nil
 }
 
-func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encoder, mw *metadataWalker, catBuilder *catalogBuilder, result *BackupResult) error {
+func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encoder, mw *metadataWalker, catBuilder *catalogBuilder, suggest func(uint64), result *BackupResult) error {
 	entries, err := s.client.ReadDir(ctx, dirPath)
 	if err != nil {
 		return fmt.Errorf("readdir %q: %w", dirPath, err)
@@ -581,7 +590,7 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 			if err := enc.CreateDirectory(entry.Name, meta); err != nil {
 				return fmt.Errorf("create dir %q: %w", entry.Name, err)
 			}
-			if err := s.walkDir(ctx, fullPath, enc, mw, catBuilder, result); err != nil {
+			if err := s.walkDir(ctx, fullPath, enc, mw, catBuilder, suggest, result); err != nil {
 				return err
 			}
 			if err := enc.Finish(); err != nil {
@@ -603,7 +612,7 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 					return fmt.Errorf("flush reused payload: %w", err)
 				}
 			}
-			if err := s.encodeFile(ctx, enc, entry.Name, fullPath, meta); err != nil {
+			if err := s.encodeFile(ctx, enc, entry.Name, fullPath, meta, suggest); err != nil {
 				return fmt.Errorf("file %q: %w", entry.Name, err)
 			}
 
@@ -647,7 +656,7 @@ func (s *Server) walkDir(ctx context.Context, dirPath string, enc *encoder.Encod
 	return nil
 }
 
-func (s *Server) encodeFile(ctx context.Context, enc *encoder.Encoder, name, fullPath string, meta *pxar.Metadata) error {
+func (s *Server) encodeFile(ctx context.Context, enc *encoder.Encoder, name, fullPath string, meta *pxar.Metadata, suggest func(uint64)) error {
 	r, size, err := s.client.OpenFile(ctx, fullPath)
 	if err != nil {
 		return err
@@ -661,5 +670,11 @@ func (s *Server) encodeFile(ctx context.Context, enc *encoder.Encoder, name, ful
 		fw.Close()
 		return err
 	}
-	return fw.Close()
+	if err := fw.Close(); err != nil {
+		return err
+	}
+	if suggest != nil {
+		suggest(enc.PayloadPosition())
+	}
+	return nil
 }

@@ -390,7 +390,7 @@ func (s *pbsSession) UploadArchive(ctx context.Context, name string, data io.Rea
 	return result, nil
 }
 
-func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {
+func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks, suggestions <-chan uint64) (*UploadResult, error) {
 	if s.knownChunks == nil {
 		s.knownChunks = make(map[[32]byte]bool, 16)
 	}
@@ -418,7 +418,7 @@ func (s *pbsSession) UploadPayloadInterleaved(ctx context.Context, name string, 
 	}
 	go sink.appendWorker()
 
-	totalSize, err := interleavePayload(s.chunkCfg, newData, injections, sink)
+	totalSize, err := interleavePayload(s.chunkCfg, newData, injections, suggestions, sink)
 	close(sink.appendCh)
 	workerErr := <-sink.appendDone
 	if err != nil {

@@ -42,6 +42,10 @@ type RemoteDedupWriter struct {
 	// Injection channel for dedup boundary markers.
 	injectCh chan backupproxy.InjectChunks
 
+	// Suggested chunk boundaries (payload stream file ends), mirroring the
+	// Rust encoder's suggested_boundaries channel.
+	suggestCh chan uint64
+
 	// Result from the upload goroutine.
 	uploadRes chan uploadResult
 
@@ -86,6 +90,7 @@ func (w *RemoteDedupWriter) Begin(rootMeta *pxar.Metadata, opts Options) error {
 
 	w.payloadPipe = payloadpipe.New()
 	w.injectCh = make(chan backupproxy.InjectChunks, 64)
+	w.suggestCh = make(chan uint64, 64)
 	w.uploadRes = make(chan uploadResult, 1)
 	w.payloadBuf = bufio.NewWriterSize(w.payloadPipe, 256<<10)
 	w.inner = NewSplitStreamWriter(w.metaBuf, w.payloadBuf)
@@ -129,6 +134,7 @@ func (w *RemoteDedupWriter) uploadPayload() {
 		w.payloadName,
 		w.payloadPipe,
 		w.injectCh,
+		w.suggestCh,
 	)
 	if err != nil {
 		w.payloadPipe.CloseWithError(err)
@@ -200,11 +206,58 @@ func (w *RemoteDedupWriter) InjectChunks(chunks []backupproxy.KnownChunkRef) err
 }
 
 func (w *RemoteDedupWriter) WriteEntry(entry *pxar.Entry, content []byte) error {
-	return w.inner.WriteEntry(entry, content)
+	before := w.payloadPosition()
+	if err := w.inner.WriteEntry(entry, content); err != nil {
+		return err
+	}
+	w.suggestFileEnd(before)
+	return nil
 }
 
 func (w *RemoteDedupWriter) WriteEntryReader(entry *pxar.Entry, r io.Reader, size uint64) error {
-	return w.inner.WriteEntryReader(entry, r, size)
+	before := w.payloadPosition()
+	if err := w.inner.WriteEntryReader(entry, r, size); err != nil {
+		return err
+	}
+	w.suggestFileEnd(before)
+	return nil
+}
+
+// payloadPosition returns the encoder's current payload stream offset, or 0
+// before Begin.
+func (w *RemoteDedupWriter) payloadPosition() uint64 {
+	if enc := w.inner.Encoder(); enc != nil {
+		return enc.PayloadPosition()
+	}
+	return 0
+}
+
+// suggestFileEnd hints a chunk boundary at the payload offset reached after a
+// file's content was fully written (any payload advanced past before).
+func (w *RemoteDedupWriter) suggestFileEnd(before uint64) {
+	after := w.payloadPosition()
+	if after <= before || w.suggestCh == nil {
+		return
+	}
+	select {
+	case w.suggestCh <- after:
+	case <-w.payloadPipe.Done():
+	case <-w.ctx.Done():
+	}
+}
+
+// SuggestBoundary hints a chunk boundary at the current payload position, for
+// callers that frame file payload with WritePayload and know a file just
+// ended.
+func (w *RemoteDedupWriter) SuggestBoundary() {
+	if w.suggestCh == nil {
+		return
+	}
+	select {
+	case w.suggestCh <- w.payloadPosition():
+	case <-w.payloadPipe.Done():
+	case <-w.ctx.Done():
+	}
 }
 
 func (w *RemoteDedupWriter) WriteEntryRef(entry *pxar.Entry, payloadOffset uint64) error {
@@ -265,6 +318,7 @@ func (w *RemoteDedupWriter) cleanup(abort error) {
 	w.started = false
 	w.payloadPipe.CloseWithError(abort)
 	close(w.injectCh)
+	close(w.suggestCh)
 	<-w.uploadRes
 }
 
@@ -301,6 +355,7 @@ func (w *RemoteDedupWriter) Finish() error {
 	}
 	w.payloadPipe.CloseWithError(nil)
 	close(w.injectCh)
+	close(w.suggestCh)
 
 	res := <-w.uploadRes
 	w.started = false

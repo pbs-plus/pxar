@@ -20,7 +20,7 @@ type replayBatchSession struct {
 	batches []int
 }
 
-func (s *replayBatchSession) UploadPayloadInterleaved(_ context.Context, _ string, newData io.Reader, injections <-chan backupproxy.InjectChunks) (*backupproxy.UploadResult, error) {
+func (s *replayBatchSession) UploadPayloadInterleaved(_ context.Context, _ string, newData io.Reader, injections <-chan backupproxy.InjectChunks, _ <-chan uint64) (*backupproxy.UploadResult, error) {
 	type copyResult struct {
 		n   int64
 		err error

@@ -17,7 +17,7 @@ import (
 
 type drainSession struct{}
 
-func (drainSession) UploadPayloadInterleaved(_ context.Context, _ string, newData io.Reader, injections <-chan backupproxy.InjectChunks) (*backupproxy.UploadResult, error) {
+func (drainSession) UploadPayloadInterleaved(_ context.Context, _ string, newData io.Reader, injections <-chan backupproxy.InjectChunks, _ <-chan uint64) (*backupproxy.UploadResult, error) {
 	n, _ := io.Copy(io.Discard, newData)
 	size := uint64(n)
 	for injection := range injections {

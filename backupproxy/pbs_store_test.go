@@ -179,7 +179,7 @@ func TestPBSUploadPayloadInterleavedProgress(t *testing.T) {
 	}
 	close(injections)
 
-	result, err := sess.UploadPayloadInterleaved(context.Background(), "root.ppxar.didx", nil, injections)
+	result, err := sess.UploadPayloadInterleaved(context.Background(), "root.ppxar.didx", nil, injections, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestPBSReplayUploadsUnknownChunkOnce(t *testing.T) {
 			Size:   uint64(len(raw)),
 		}
 		close(injections)
-		result, err := sess.UploadPayloadInterleaved(context.Background(), name, nil, injections)
+		result, err := sess.UploadPayloadInterleaved(context.Background(), name, nil, injections, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

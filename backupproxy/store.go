@@ -148,7 +148,7 @@ type BackupSession interface {
 	UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error)
 	UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error)
 	UploadBlob(ctx context.Context, name string, data []byte) error
-	UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error)
+	UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks, suggestions <-chan uint64) (*UploadResult, error)
 	Finish(ctx context.Context) (*datastore.Manifest, error)
 	Close() error
 }
@@ -489,7 +489,7 @@ func (s *localSession) PublishDynamicIndex(ctx context.Context, name, sourcePath
 	return result, nil
 }
 
-func (s *localSession) UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {
+func (s *localSession) UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks, suggestions <-chan uint64) (*UploadResult, error) {
 	tmp, tmpName, err := s.createSnapshotTemp(name)
 	if err != nil {
 		return nil, fmt.Errorf("create index: %w", err)
@@ -508,7 +508,7 @@ func (s *localSession) UploadPayloadInterleaved(ctx context.Context, name string
 		localKnown: newDigestCache(localChunkCacheCapacity),
 		ctx:        ctx,
 	}
-	totalSize, err := interleavePayload(s.chunkConfig, newData, injections, sink)
+	totalSize, err := interleavePayload(s.chunkConfig, newData, injections, suggestions, sink)
 	if err != nil {
 		return nil, err
 	}

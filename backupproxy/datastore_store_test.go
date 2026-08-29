@@ -65,7 +65,7 @@ func TestDatastoreStorePublishesManifestLastWithoutLoadingReusedChunks(t *testin
 		},
 	}}, Size: uint64(len(payload))}
 	close(injections)
-	if _, err := session.UploadPayloadInterleaved(context.Background(), "target.ppxar.didx", bytes.NewReader(nil), injections); err != nil {
+	if _, err := session.UploadPayloadInterleaved(context.Background(), "target.ppxar.didx", bytes.NewReader(nil), injections, nil); err != nil {
 		t.Fatal(err)
 	}
 	if loaded {
@@ -160,7 +160,7 @@ func TestDatastoreStoreRejectsMissingReusedChunk(t *testing.T) {
 	injections := make(chan InjectChunks, 1)
 	injections <- InjectChunks{Chunks: []KnownChunkRef{{Digest: missing, Size: 4}}}
 	close(injections)
-	if _, err := session.UploadPayloadInterleaved(context.Background(), "target.ppxar.didx", bytes.NewReader(nil), injections); err == nil {
+	if _, err := session.UploadPayloadInterleaved(context.Background(), "target.ppxar.didx", bytes.NewReader(nil), injections, nil); err == nil {
 		t.Fatal("expected missing reused chunk to be rejected")
 	}
 }

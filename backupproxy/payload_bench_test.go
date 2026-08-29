@@ -66,7 +66,7 @@ func BenchmarkInterleavePayloadNewData(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		injections := make(chan InjectChunks)
 		close(injections)
-		if _, err := interleavePayload(cfg, bytes.NewReader(data), injections, noopSink{}); err != nil {
+		if _, err := interleavePayload(cfg, bytes.NewReader(data), injections, nil, noopSink{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -105,7 +105,7 @@ func BenchmarkInterleavePayloadMixed(b *testing.B) {
 			}
 		}
 		close(injections)
-		if _, err := interleavePayload(cfg, bytes.NewReader(full), injections, noopSink{}); err != nil {
+		if _, err := interleavePayload(cfg, bytes.NewReader(full), injections, nil, noopSink{}); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -208,7 +208,7 @@ func BenchmarkUploadPayloadInterleavedEndToEnd(b *testing.B) {
 		}
 		injections := make(chan InjectChunks)
 		close(injections)
-		if _, err := sess.UploadPayloadInterleaved(context.Background(), "bench.ppxar.didx", bytes.NewReader(data), injections); err != nil {
+		if _, err := sess.UploadPayloadInterleaved(context.Background(), "bench.ppxar.didx", bytes.NewReader(data), injections, nil); err != nil {
 			b.Fatal(err)
 		}
 	}

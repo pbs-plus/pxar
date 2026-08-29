@@ -125,7 +125,7 @@ func TestUploadPayloadInterleavedContiguousOffsets(t *testing.T) {
 	injections <- InjectChunks{Chunks: []KnownChunkRef{{Digest: injectedDigest2, Size: injectedSize2}}, Size: injectedSize2, Boundary: expectOffsetAfterB}
 	close(injections)
 
-	result, err := sess.UploadPayloadInterleaved(context.Background(), "test.ppxar.didx", newData, injections)
+	result, err := sess.UploadPayloadInterleaved(context.Background(), "test.ppxar.didx", newData, injections, nil)
 	if err != nil {
 		t.Fatalf("UploadPayloadInterleaved failed: %v", err)
 	}
@@ -201,8 +201,51 @@ func TestUploadPayloadInterleavedContiguousOffsets(t *testing.T) {
 	}
 }
 
-// TestInterleavePayloadLeadingInjection verifies the exact reported failure:
-// an injection with NO new data preceding it (boundary == 0), followed by new
+// TestInterleavePayloadSuggestedBoundary verifies a fitting suggestion cuts
+// the chunk exactly at the file-end offset, mirroring PayloadChunker.
+func TestInterleavePayloadSuggestedBoundary(t *testing.T) {
+	cfg, err := buzhash.NewConfig(4 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := make([]byte, 32*1024)
+	for i := range data {
+		data[i] = byte(i * 31)
+	}
+
+	injections := make(chan InjectChunks)
+	close(injections)
+
+	suggested := uint64(8 * 1024)
+	suggestions := make(chan uint64, 1)
+	suggestions <- suggested
+	close(suggestions)
+
+	var rawCuts []uint64
+	sink := &captureSink{onRaw: func(off uint64, raw []byte) {
+		rawCuts = append(rawCuts, off+uint64(len(raw)))
+	}}
+
+	if _, err := interleavePayload(cfg, bytes.NewReader(data), injections, suggestions, sink); err != nil {
+		t.Fatal(err)
+	}
+	if len(rawCuts) == 0 || rawCuts[0] != suggested {
+		t.Fatalf("first raw cut = %v, want [%d]", rawCuts, suggested)
+	}
+
+	rawCuts = nil
+	sink2 := &captureSink{onRaw: func(off uint64, raw []byte) {
+		rawCuts = append(rawCuts, off+uint64(len(raw)))
+	}}
+	if _, err := interleavePayload(cfg, bytes.NewReader(data), injections, nil, sink2); err != nil {
+		t.Fatal(err)
+	}
+	if rawCuts[0] == suggested {
+		t.Fatalf("suggestion changed nothing: first cut %d both ways", suggested)
+	}
+}
+
 // data. Previously the producer started offsets at 0 while the server had
 // already advanced past the injected size, yielding the "strange chunk offset"
 // error.
@@ -237,7 +280,7 @@ func TestInterleavePayloadLeadingInjection(t *testing.T) {
 		}
 	}}
 
-	total, err := interleavePayload(cfg, newData, injections, sink)
+	total, err := interleavePayload(cfg, newData, injections, nil, sink)
 	if err != nil {
 		t.Fatalf("interleavePayload: %v", err)
 	}
@@ -294,7 +337,7 @@ func TestInterleavePayloadDrainsBoundedInjectionsWithoutData(t *testing.T) {
 		err   error
 	}, 1)
 	go func() {
-		total, err := interleavePayload(cfg, pipe, injections, &captureSink{})
+		total, err := interleavePayload(cfg, pipe, injections, nil, &captureSink{})
 		result <- struct {
 			total uint64
 			err   error
@@ -381,7 +424,7 @@ func TestInterleavePayloadBackToBackInjections(t *testing.T) {
 		}
 	}}
 
-	total, err := interleavePayload(cfg, newData, injections, sink)
+	total, err := interleavePayload(cfg, newData, injections, nil, sink)
 	if err != nil {
 		t.Fatalf("interleavePayload: %v", err)
 	}

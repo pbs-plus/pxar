@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"unsafe"
@@ -62,6 +63,9 @@ type ListOption struct {
 	// metadata. Only stat basics (mode, uid, gid, times) are populated.
 	// Significantly reduces per-entry decode cost.
 	Minimal bool
+
+	// FileOffsetOrder emits entries in ascending FileOffset order.
+	FileOffsetOrder bool
 }
 
 // NewAccessor creates an accessor for random access to a pxar archive.
@@ -406,6 +410,18 @@ func (a *Accessor) listDirectoryStream(dirOffset int64, opts ListOption, fn func
 		*itemsPtr = items
 		goodbyeItemPool.Put(itemsPtr)
 		return err
+	}
+	if opts.FileOffsetOrder {
+		slices.SortFunc(items, func(a, b format.GoodbyeItem) int {
+			switch {
+			case a.Offset > b.Offset:
+				return -1
+			case a.Offset < b.Offset:
+				return 1
+			default:
+				return 0
+			}
+		})
 	}
 
 	for _, item := range items {

@@ -354,25 +354,7 @@ func (e *copyEmitter) mapping(mapping PathMapping) error {
 }
 
 func (e *copyEmitter) eachSourceChild(source *pxar.Entry, fn func(*pxar.Entry) error) error {
-	children := make([]pxar.Entry, 0)
-	if err := e.source.ListDirectory(int64(source.ContentOffset), accessor.ListOption{}, func(child *pxar.Entry) error {
-		children = append(children, *child)
-		return nil
-	}); err != nil {
-		return err
-	}
-	sort.Slice(children, func(i, j int) bool {
-		if children[i].FileOffset != children[j].FileOffset {
-			return children[i].FileOffset < children[j].FileOffset
-		}
-		return children[i].FileName() < children[j].FileName()
-	})
-	for i := range children {
-		if err := fn(&children[i]); err != nil {
-			return err
-		}
-	}
-	return nil
+	return e.source.ListDirectory(int64(source.ContentOffset), accessor.ListOption{FileOffsetOrder: true}, fn)
 }
 
 func (e *copyEmitter) stream(entry, source *pxar.Entry) error {

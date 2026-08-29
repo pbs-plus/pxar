@@ -100,6 +100,41 @@ func TestAccessorListDirectory(t *testing.T) {
 	}
 }
 
+func TestAccessorListDirectoryFileOffsetOrder(t *testing.T) {
+	var buf bytes.Buffer
+	enc := encoder.NewEncoder(&buf, nil, dirMetadata(0o755), nil)
+	names := []string{
+		"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+		"india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+	}
+	for _, name := range names {
+		_, _ = enc.AddFile(fileMetadata(0o644, 1000, 1000), name, []byte(name))
+	}
+	enc.Close()
+
+	acc := NewAccessor(bytes.NewReader(buf.Bytes()))
+	rootOffset, err := acc.getRootContentOffset()
+	if err != nil {
+		t.Fatalf("getRootContentOffset: %v", err)
+	}
+
+	var got []string
+	if err := acc.ListDirectory(rootOffset, ListOption{FileOffsetOrder: true}, func(entry *pxar.Entry) error {
+		got = append(got, entry.FileName())
+		return nil
+	}); err != nil {
+		t.Fatalf("ListDirectory: %v", err)
+	}
+	if len(got) != len(names) {
+		t.Fatalf("got %d entries, want %d", len(got), len(names))
+	}
+	for i, name := range names {
+		if got[i] != name {
+			t.Fatalf("entry %d = %q, want %q", i, got[i], name)
+		}
+	}
+}
+
 func TestAccessorReadFileContent(t *testing.T) {
 	content := []byte("This is the file content!")
 	archive := encodeSimpleArchive(t, "data.bin", content)

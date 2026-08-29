@@ -241,3 +241,35 @@ func TestCatalogEncodeNegativeMtime(t *testing.T) {
 		}
 	}
 }
+
+// TestCatalogWriterRustGolden pins the exact bytes Rust pbs-datastore
+// catalog.rs produces for the same tree, derived from DirInfo::encode and
+// catalog_encode_i64: magic, then child dir blocks bottom-up (table-length
+// varint, entry count, entries), root block, and the little-endian root start.
+func TestCatalogWriterRustGolden(t *testing.T) {
+	var buf bytes.Buffer
+	cw := NewCatalogWriter(&buf)
+
+	cw.StartDirectory("")
+	cw.AddFile("a.txt", 5, -2)
+	cw.StartDirectory("sub")
+	cw.AddFile("b", 1, 3)
+	cw.EndDirectory()
+	cw.AddSymlink("l")
+	if err := cw.Finish(); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	want := []byte{
+		0x91, 0xfd, 0x60, 0xf9, 0xc4, 0x67, 0x58, 0xd5, // magic
+		0x06, 0x01, 'f', 0x01, 'b', 0x01, 0x03,
+		0x14, 0x03, // root block at 15: table len 20, 3 entries
+		'f', 0x05, 'a', '.', 't', 'x', 't', 0x05, 0x82, 0x00, // a.txt size 5, mtime -2
+		'd', 0x03, 's', 'u', 'b', 0x07, // sub at 8, root at 15
+		'l', 0x01, 'l',
+		0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // root start 15 LE
+	}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("bytes differ:\n got  %x\n want %x", buf.Bytes(), want)
+	}
+}

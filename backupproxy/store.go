@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pbs-plus/pxar/buzhash"
@@ -418,7 +420,7 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 	return nil
 }
 
-func (s *localSession) UploadPayloadInterleaved(_ context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {
+func (s *localSession) UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {
 	tmp, tmpName, err := s.createSnapshotTemp(name)
 	if err != nil {
 		return nil, fmt.Errorf("create index: %w", err)
@@ -431,7 +433,12 @@ func (s *localSession) UploadPayloadInterleaved(_ context.Context, name string, 
 	if err != nil {
 		return nil, err
 	}
-	sink := &localPayloadSink{session: s, idx: idx, localKnown: make(map[[32]byte]bool)}
+	sink := &localPayloadSink{
+		session:    s,
+		idx:        idx,
+		localKnown: newDigestCache(localChunkCacheCapacity),
+		ctx:        ctx,
+	}
 	totalSize, err := interleavePayload(s.chunkConfig, newData, injections, sink)
 	if err != nil {
 		return nil, err
@@ -454,10 +461,52 @@ func (s *localSession) UploadPayloadInterleaved(_ context.Context, name string, 
 // localPayloadSink implements payloadSink for a local chunk store. New chunks
 // are stored via the ChunkStore and every chunk is recorded in one shared
 // DynamicIndexWriter, matching the PBS path's offset accounting.
+const (
+	localChunkCacheCapacity     = 64 << 10
+	localChunkValidationWorkers = 20
+)
+
+type digestCache struct {
+	items    map[[32]byte]struct{}
+	ring     [][32]byte
+	capacity int
+	next     int
+}
+
+func newDigestCache(capacity int) *digestCache {
+	capacity = max(capacity, 1)
+	initial := min(capacity, 256)
+	return &digestCache{
+		items:    make(map[[32]byte]struct{}, initial),
+		ring:     make([][32]byte, 0, initial),
+		capacity: capacity,
+	}
+}
+
+func (c *digestCache) contains(digest [32]byte) bool {
+	_, ok := c.items[digest]
+	return ok
+}
+
+func (c *digestCache) add(digest [32]byte) {
+	if c.contains(digest) {
+		return
+	}
+	if len(c.ring) < c.capacity {
+		c.ring = append(c.ring, digest)
+	} else {
+		delete(c.items, c.ring[c.next])
+		c.ring[c.next] = digest
+		c.next = (c.next + 1) % len(c.ring)
+	}
+	c.items[digest] = struct{}{}
+}
+
 type localPayloadSink struct {
 	session    *localSession
 	idx        *datastore.DynamicIndexStreamWriter
-	localKnown map[[32]byte]bool
+	localKnown *digestCache
+	ctx        context.Context
 	progress   UploadProgress
 }
 
@@ -467,7 +516,7 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 	}
 	digest := chunkDigest(raw, s.session.config.CryptConfig)
 	uploadedSize := uint64(0)
-	if !s.localKnown[digest] {
+	if !s.localKnown.contains(digest) {
 		storeData, bp, err := borrowChunkBlob(raw, s.session.compress, s.session.config.CryptConfig)
 		if err != nil {
 			return err
@@ -478,7 +527,7 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 		if insErr != nil {
 			return fmt.Errorf("store chunk: %w", insErr)
 		}
-		s.localKnown[digest] = true
+		s.localKnown.add(digest)
 	}
 	endOffset := offset + uint64(len(raw))
 	if err := s.idx.Add(endOffset, digest); err != nil {
@@ -489,31 +538,82 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 }
 
 func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
+	if s.session.reuseExisting {
+		if err := s.validateReused(inj.Chunks); err != nil {
+			return err
+		}
+	}
 	cur := offset
 	for _, c := range inj.Chunks {
 		uploadedSize := uint64(0)
-		if !s.localKnown[c.Digest] {
-			if s.session.reuseExisting {
-				if _, err := s.session.store.StatChunk(c.Digest); err != nil {
-					return fmt.Errorf("verify reused chunk: %w", err)
-				}
-			} else if c.LoadEncodedBlob != nil {
-				blob, err := c.LoadEncodedBlob()
-				if err != nil {
-					return fmt.Errorf("load replayed chunk: %w", err)
-				}
-				uploadedSize = uint64(len(blob))
-				if _, _, err := s.session.store.InsertChunk(c.Digest, blob); err != nil {
-					return fmt.Errorf("store replayed chunk: %w", err)
-				}
+		if !s.localKnown.contains(c.Digest) && c.LoadEncodedBlob != nil {
+			blob, err := c.LoadEncodedBlob()
+			if err != nil {
+				return fmt.Errorf("load replayed chunk: %w", err)
+			}
+			uploadedSize = uint64(len(blob))
+			if _, _, err := s.session.store.InsertChunk(c.Digest, blob); err != nil {
+				return fmt.Errorf("store replayed chunk: %w", err)
 			}
 		}
-		s.localKnown[c.Digest] = true
+		s.localKnown.add(c.Digest)
 		if err := s.idx.Add(cur+c.Size, c.Digest); err != nil {
 			return err
 		}
 		cur += c.Size
 		s.reportProgress(c.Size, uploadedSize)
+	}
+	return nil
+}
+
+func (s *localPayloadSink) validateReused(chunks []KnownChunkRef) error {
+	unique := make([][32]byte, 0, len(chunks))
+	seen := make(map[[32]byte]struct{}, len(chunks))
+	for _, chunk := range chunks {
+		if s.localKnown.contains(chunk.Digest) {
+			continue
+		}
+		if _, ok := seen[chunk.Digest]; ok {
+			continue
+		}
+		seen[chunk.Digest] = struct{}{}
+		unique = append(unique, chunk.Digest)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	workers := min(localChunkValidationWorkers, len(unique))
+	var next atomic.Uint64
+	var firstErr error
+	var errOnce sync.Once
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Go(func() {
+			for {
+				if err := s.ctx.Err(); err != nil {
+					errOnce.Do(func() { firstErr = err })
+					return
+				}
+				index := int(next.Add(1) - 1)
+				if index >= len(unique) {
+					return
+				}
+				digest := unique[index]
+				if _, err := s.session.store.StatChunk(digest); err != nil {
+					errOnce.Do(func() {
+						firstErr = fmt.Errorf("verify reused chunk %x: %w", digest[:8], err)
+					})
+					return
+				}
+			}
+		})
+	}
+	wait.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	for _, digest := range unique {
+		s.localKnown.add(digest)
 	}
 	return nil
 }

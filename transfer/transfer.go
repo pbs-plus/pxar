@@ -464,6 +464,8 @@ func cryptIdentityMatches(opts CopyOption) bool {
 	return opts.SourceCryptConfig.Fingerprint() == opts.TargetCryptConfig.Fingerprint()
 }
 
+const replayChunkBatchSize = 64
+
 func writePayloadRange(
 	index *datastore.DynamicIndexReader,
 	source datastore.ChunkSource,
@@ -482,6 +484,17 @@ func writePayloadRange(
 	}
 
 	written := uint64(0)
+	replayBatch := make([]backupproxy.KnownChunkRef, 0, replayChunkBatchSize)
+	flushReplay := func() error {
+		if len(replayBatch) == 0 {
+			return nil
+		}
+		if err := archiveWriter.InjectChunks(replayBatch); err != nil {
+			return err
+		}
+		replayBatch = replayBatch[:0]
+		return nil
+	}
 	for chunkIndex := first; chunkIndex < index.Count(); chunkIndex++ {
 		info, ok := index.ChunkInfo(chunkIndex)
 		if !ok || info.Start >= end {
@@ -491,21 +504,26 @@ func writePayloadRange(
 		overlapEnd := min(end, info.End)
 		if overlapStart == info.Start && overlapEnd == info.End && replay {
 			digest := info.Digest
-			loader := func() ([]byte, error) {
-				blob, err := source.GetChunk(digest)
-				if err != nil {
-					return nil, fmt.Errorf("load source chunk %x: %w", digest[:8], err)
+			replayBatch = append(replayBatch, backupproxy.KnownChunkRef{
+				Digest: digest,
+				Size:   info.End - info.Start,
+				LoadEncodedBlob: func() ([]byte, error) {
+					blob, err := source.GetChunk(digest)
+					if err != nil {
+						return nil, fmt.Errorf("load source chunk %x: %w", digest[:8], err)
+					}
+					return blob, nil
+				},
+			})
+			if len(replayBatch) == cap(replayBatch) {
+				if err := flushReplay(); err != nil {
+					return fmt.Errorf("replay source chunks: %w", err)
 				}
-				return blob, nil
-			}
-			if err := archiveWriter.InjectChunks([]backupproxy.KnownChunkRef{{
-				Digest:          digest,
-				Size:            info.End - info.Start,
-				LoadEncodedBlob: loader,
-			}}); err != nil {
-				return fmt.Errorf("replay source chunk %x: %w", digest[:8], err)
 			}
 		} else {
+			if err := flushReplay(); err != nil {
+				return fmt.Errorf("replay source chunks: %w", err)
+			}
 			blob, err := source.GetChunk(info.Digest)
 			if err != nil {
 				return fmt.Errorf("load source chunk %x: %w", info.Digest[:8], err)
@@ -524,6 +542,9 @@ func writePayloadRange(
 			}
 		}
 		written += overlapEnd - overlapStart
+	}
+	if err := flushReplay(); err != nil {
+		return fmt.Errorf("replay source chunks: %w", err)
 	}
 	if written != end-start {
 		return fmt.Errorf("wrote %d payload bytes, want %d", written, end-start)

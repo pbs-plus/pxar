@@ -376,25 +376,23 @@ The transfer package provides utilities for working with source payload chunks w
 #### Walking Archives
 
 ```go
-// Walk all entries with content reading
-transfer.WalkTree(reader, "/", func(entry *pxar.Entry, content []byte) error {
-    fmt.Println(entry.Path)
-    return nil
-})
-
-// Walk with options (metadata only, filters, skip count)
-transfer.WalkTreeWith(reader, "/", transfer.WalkOption{
-    MetaOnly: true,
-    Filter:   transfer.WalkFiles,
-}, func(entry *pxar.Entry, content []byte) error {
-    return nil
-})
-
-// Walk metadata only with type filter
-transfer.WalkTreeMetadata(reader, "/", transfer.WalkFiles, func(entry *pxar.Entry) error {
-    fmt.Printf("%s: %v\n", entry.Path, entry.Kind)
-    return nil
-})
+walker := transfer.NewTreeWalker(reader, transfer.WalkFiles)
+if err := walker.Init("/"); err != nil {
+    return err
+}
+for walker.Next() {
+    entry := walker.Entry()
+    content, err := reader.ReadFileContentReader(entry)
+    if err != nil {
+        return err
+    }
+    _, err = io.Copy(output, content)
+    content.Close()
+    if err != nil {
+        return err
+    }
+}
+return walker.Err()
 ```
 
 #### CLI Commands
@@ -821,18 +819,15 @@ target, _ := sess.Readlink(symlinkInode)
 - **`DecryptSource`** — wraps ChunkSource for encrypted chunks
   - `NewDecryptSource(inner, cc)`, `GetChunk(digest)`
 - **`TreeWalker`** — iterator-based archive walking
-  - `NewTreeWalker(reader, opts)`, `Next()`, `Entry()`, `Err()`
+  - `NewTreeWalker(reader, filter)`, `Next()`, `Entry()`, `Err()`
 - `Copy(src, dst, mappings, opts)` — copy specific paths between archives
 - `CopyTree(src, dst, srcPath, dstPath, opts)` — copy entire directory tree
-- `WalkTree(reader, path, fn)` — walk all entries with content reading
-- `WalkTreeWith(reader, path, opts, fn)` — walk with options (MetaOnly, Filter, SkipCount)
-- `WalkTreeMetadata(reader, path, filter, fn)` — metadata-only walk with type filter
 - `RecordMax(last, offset)` — monotonic offset guard for dedup writers
 - `MapFileToPayloadChunks(idx, offset, size)` → `[]ChunkRange` — map file to payload chunk ranges
 - `ReadChunkedFile(source, idx, offset, size)` → `([]byte, error)` — read from specific chunks
 - `ComputeContentDigest(source, idx, offset, size)` → `([32]byte, error)` — SHA-256 without full reconstruction
 
-**Types**: `PathMapping{Src, Dst}`, `CopyOption{}`, `Options{Format}`, `WalkOption{MetaOnly, Filter, SkipCount}`, `WalkFilter` bitmask (`WalkFiles`, `WalkDirs`, etc.), `WalkFunc`, `MetadataWalkFunc`, `CatalogEntry{Path, ParentPath, Kind, FileSize}`, `ChunkRange{StartChunk, EndChunk, StartOffset, EndOffset}`
+**Types**: `PathMapping{Src, Dst}`, `CopyOption{}`, `Options{Format}`, `WalkFilter` bitmask (`WalkFiles`, `WalkDirs`, etc.), `CatalogEntry{Path, ParentPath, Kind, FileSize}`, `ChunkRange{StartChunk, EndChunk, StartOffset, EndOffset}`
 
 ### `buzhash` — Content-Defined Chunking
 

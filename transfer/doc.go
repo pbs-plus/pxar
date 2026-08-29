@@ -26,11 +26,10 @@
 // Copy copies specific paths between archives with optional path mapping.
 // CopyTree copies entire directory trees.
 //
-// # Walk Functions
+// # Tree Walking
 //
-// WalkTree visits every entry with optional content reading.
-// WalkTreeWith supports metadata-only mode, type filters, and skip counts.
-// WalkTreeMetadata performs metadata-only traversal with a type filter.
+// TreeWalker provides pull-based metadata traversal with type filtering.
+// File content remains available through ArchiveReader.ReadFileContentReader.
 //
 // # Dedup Utilities
 //

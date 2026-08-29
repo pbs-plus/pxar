@@ -36,7 +36,6 @@ type ArchiveReader interface {
 	// ReadCatalog streams the full directory tree via a callback with
 	// minimal decoding. For each entry, fn is called. If fn returns a
 	// non-nil error, iteration stops and the error is returned.
-	// Significantly faster than WalkTree for indexing.
 	ReadCatalog(fn func(CatalogEntry) error) error
 
 	// Close releases resources.

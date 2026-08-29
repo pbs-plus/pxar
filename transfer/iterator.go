@@ -13,16 +13,12 @@ type walkFrame struct {
 	idx     int
 }
 
-// TreeWalker provides a pull-based iterator for walking a pxar archive tree.
-// It reuses a single Entry across all Next() calls, producing zero heap
-// allocations per iteration.
+// TreeWalker provides a pull-based metadata iterator for a pxar archive tree.
+// It reuses a single Entry across Next calls and never reads file content.
 //
 // Example:
 //
-//	walker := transfer.NewTreeWalker(reader, transfer.WalkOption{
-//	    MetaOnly: true,
-//	    Filter:   transfer.WalkFiles | transfer.WalkDirs,
-//	})
+//	walker := transfer.NewTreeWalker(reader, transfer.WalkFiles|transfer.WalkDirs)
 //	if err := walker.Init("/"); err != nil { ... }
 //	for walker.Next() {
 //	    entry := walker.Entry()
@@ -34,15 +30,15 @@ type TreeWalker struct {
 	err    error
 	stack  []walkFrame
 	entry  pxar.Entry
-	opts   WalkOption
+	filter WalkFilter
 }
 
 // NewTreeWalker creates a pull-based walker for the archive.
 // Call Init to set the root path before calling Next.
-func NewTreeWalker(reader ArchiveReader, opts WalkOption) *TreeWalker {
+func NewTreeWalker(reader ArchiveReader, filter WalkFilter) *TreeWalker {
 	return &TreeWalker{
 		reader: reader,
-		opts:   opts,
+		filter: filter,
 	}
 }
 
@@ -63,7 +59,7 @@ func (w *TreeWalker) Init(rootPath string) error {
 	// Apply filter to root — if root doesn't match and isn't a dir, nothing to do.
 	// If root is a dir that doesn't match the filter, we still push it so its
 	// children can be visited.
-	if w.opts.Filter != 0 && !w.opts.Filter.matches(root.Kind) && root.Kind != pxar.KindDirectory {
+	if w.filter != 0 && !w.filter.matches(root.Kind) && root.Kind != pxar.KindDirectory {
 		return nil
 	}
 
@@ -93,7 +89,7 @@ func (w *TreeWalker) Next() bool {
 		// Directories are always descended into to find matching children.
 		// Non-directory entries that don't match the filter are skipped.
 		if src.Kind != pxar.KindDirectory {
-			if w.opts.Filter != 0 && !w.opts.Filter.matches(src.Kind) {
+			if w.filter != 0 && !w.filter.matches(src.Kind) {
 				continue
 			}
 		}
@@ -126,7 +122,7 @@ func (w *TreeWalker) Next() bool {
 
 			// If the directory itself doesn't match the filter, don't yield it.
 			// We already pushed its children above so they'll still be visited.
-			if w.opts.Filter != 0 && !w.opts.Filter.matches(src.Kind) {
+			if w.filter != 0 && !w.filter.matches(src.Kind) {
 				continue
 			}
 		}

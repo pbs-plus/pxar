@@ -3,7 +3,6 @@ package transfer_test
 import (
 	"bytes"
 	"io"
-	"slices"
 	"strings"
 	"testing"
 
@@ -200,58 +199,6 @@ func TestFileReaderNestedDirectory(t *testing.T) {
 	}
 	if string(content) != "deep" {
 		t.Errorf("content = %q, want %q", content, "deep")
-	}
-}
-
-func TestWalkTree(t *testing.T) {
-	data := createTestArchive(t)
-	reader := transfer.NewFileReader(bytes.NewReader(data))
-	defer reader.Close()
-
-	var paths []string
-	err := transfer.WalkTree(reader, "/", func(entry *pxar.Entry, content []byte) error {
-		paths = append(paths, entry.Path)
-		if entry.IsRegularFile() && len(content) == 0 {
-			t.Error("file content is empty")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkTree: %v", err)
-	}
-
-	// Should have root dir, hello.txt, link, subdir, nested.txt
-	expectedPaths := []string{"/", "/hello.txt", "/link", "/subdir", "/subdir/nested.txt"}
-	for _, p := range expectedPaths {
-		found := slices.Contains(paths, p)
-		if !found {
-			t.Errorf("expected path %q in walk, got %v", p, paths)
-		}
-	}
-}
-
-func TestWalkTreeSkipDir(t *testing.T) {
-	data := createNestedArchive(t)
-	reader := transfer.NewFileReader(bytes.NewReader(data))
-	defer reader.Close()
-
-	var paths []string
-	err := transfer.WalkTree(reader, "/", func(entry *pxar.Entry, content []byte) error {
-		paths = append(paths, entry.Path)
-		if entry.Path == "a" {
-			return transfer.ErrSkipDir
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkTree: %v", err)
-	}
-
-	// Should not have any paths under "a"
-	for _, p := range paths {
-		if p == "deep.txt" || p == "mid.txt" || p == "b" {
-			t.Errorf("walked into skipped directory, found %q", p)
-		}
 	}
 }
 
@@ -728,141 +675,12 @@ func symlinkMeta(mode uint64, uid, gid uint32) *pxar.Metadata {
 	}
 }
 
-// --- Tests for new walk features ---
-
-func TestWalkTreeMetaOnly(t *testing.T) {
-	data := createTestArchive(t)
-	reader := transfer.NewFileReader(bytes.NewReader(data))
-	defer reader.Close()
-
-	var paths []string
-	err := transfer.WalkTreeWith(reader, "/", transfer.WalkMetadataOnly, func(entry *pxar.Entry, content []byte) error {
-		if content != nil {
-			t.Errorf("content should be nil in MetaOnly mode, got %d bytes for %q", len(content), entry.Path)
-		}
-		paths = append(paths, entry.Path)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkTreeWith MetaOnly: %v", err)
-	}
-
-	expectedPaths := []string{"/", "/hello.txt", "/link", "/subdir", "/subdir/nested.txt"}
-	for _, p := range expectedPaths {
-		found := slices.Contains(paths, p)
-		if !found {
-			t.Errorf("expected path %q in walk, got %v", p, paths)
-		}
-	}
-}
-
-func TestWalkTreeMetaFunc(t *testing.T) {
-	data := createTestArchive(t)
-	reader := transfer.NewFileReader(bytes.NewReader(data))
-	defer reader.Close()
-
-	var paths []string
-	err := transfer.WalkTreeMetadata(reader, "/", transfer.WalkAll, func(entry *pxar.Entry) error {
-		paths = append(paths, entry.Path)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkTreeMetadata: %v", err)
-	}
-
-	if len(paths) != 5 {
-		t.Errorf("expected 5 entries, got %d: %v", len(paths), paths)
-	}
-}
-
-func TestWalkFilterMask(t *testing.T) {
-	data := createTestArchive(t)
-	reader := transfer.NewFileReader(bytes.NewReader(data))
-	defer reader.Close()
-
-	// Only files
-	err := transfer.WalkTreeMetadata(reader, "/", transfer.WalkFiles, func(entry *pxar.Entry) error {
-		if entry.Kind != pxar.KindFile {
-			t.Errorf("expected only files, got kind %d for %q", entry.Kind, entry.Path)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkTreeMetadata with WalkFiles: %v", err)
-	}
-
-	// Only dirs
-	reader2 := transfer.NewFileReader(bytes.NewReader(data))
-	defer reader2.Close()
-	err = transfer.WalkTreeMetadata(reader2, "/", transfer.WalkDirs, func(entry *pxar.Entry) error {
-		if entry.Kind != pxar.KindDirectory {
-			t.Errorf("expected only dirs, got kind %d for %q", entry.Kind, entry.Path)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkTreeMetadata with WalkDirs: %v", err)
-	}
-
-	// Files + symlinks
-	reader3 := transfer.NewFileReader(bytes.NewReader(data))
-	defer reader3.Close()
-	kinds := make(map[pxar.EntryKind]int)
-	err = transfer.WalkTreeMetadata(reader3, "/", transfer.WalkFiles|transfer.WalkSymlinks, func(entry *pxar.Entry) error {
-		if entry.Kind != pxar.KindFile && entry.Kind != pxar.KindSymlink {
-			t.Errorf("expected files or symlinks, got kind %d", entry.Kind)
-		}
-		kinds[entry.Kind]++
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkTreeMetadata with WalkFiles|WalkSymlinks: %v", err)
-	}
-}
-
-func TestWalkFilterSkipsDirDescent(t *testing.T) {
-	data := createNestedArchive(t)
-	reader := transfer.NewFileReader(bytes.NewReader(data))
-	defer reader.Close()
-
-	// Walk only files — should still descend into dirs to find files
-	var paths []string
-	err := transfer.WalkTreeMetadata(reader, "/", transfer.WalkFiles, func(entry *pxar.Entry) error {
-		if entry.Kind != pxar.KindFile {
-			t.Errorf("expected only files, got kind %d for %q", entry.Kind, entry.Path)
-		}
-		paths = append(paths, entry.Path)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkTreeMetadata with WalkFiles: %v", err)
-	}
-
-	// Should have found files but NOT dirs in the callback
-	for _, p := range paths {
-		if p == "/a" || p == "/a/b" {
-			t.Errorf("directory %q should have been filtered out", p)
-		}
-	}
-
-	// But should still have found nested files
-	found := false
-	for _, p := range paths {
-		if p == "/a/b/deep.txt" || p == "/a/mid.txt" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected to find nested files, got %v", paths)
-	}
-}
-
 func TestTreeWalker(t *testing.T) {
 	data := createTestArchive(t)
 	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
-	walker := transfer.NewTreeWalker(reader, transfer.WalkOption{MetaOnly: true})
+	walker := transfer.NewTreeWalker(reader, 0)
 	if err := walker.Init("/"); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -887,10 +705,7 @@ func TestTreeWalkerWithFilter(t *testing.T) {
 	reader := transfer.NewFileReader(bytes.NewReader(data))
 	defer reader.Close()
 
-	walker := transfer.NewTreeWalker(reader, transfer.WalkOption{
-		MetaOnly: true,
-		Filter:   transfer.WalkFiles,
-	})
+	walker := transfer.NewTreeWalker(reader, transfer.WalkFiles)
 	if err := walker.Init("/"); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

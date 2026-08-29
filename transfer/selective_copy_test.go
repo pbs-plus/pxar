@@ -68,6 +68,67 @@ func TestCopyPlansOverlappingSelectionsInSourceOrder(t *testing.T) {
 	}
 }
 
+func TestCopyStreamsSingleDirectoryInSourceOrder(t *testing.T) {
+	var sourceData bytes.Buffer
+	sourceWriter := NewStreamWriter(&sourceData)
+	root := pxar.DirMetadata(0o755).Build()
+	if err := sourceWriter.Begin(&root, Options{Format: format.FormatVersion1}); err != nil {
+		t.Fatal(err)
+	}
+	dirMeta := pxar.DirMetadata(0o755).Build()
+	if err := sourceWriter.BeginDirectory("selected", &dirMeta); err != nil {
+		t.Fatal(err)
+	}
+	fileMeta := pxar.FileMetadata(0o644).Build()
+	names := []string{
+		"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+		"india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+	}
+	for _, name := range names {
+		if err := sourceWriter.WriteEntry(&pxar.Entry{
+			Path:     name,
+			Kind:     pxar.KindFile,
+			Metadata: fileMeta,
+			FileSize: uint64(len(name)),
+		}, []byte(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sourceWriter.EndDirectory(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceWriter.Finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	source := NewFileReader(bytes.NewReader(sourceData.Bytes()))
+	defer source.Close()
+	var targetData bytes.Buffer
+	target := NewStreamWriter(&targetData)
+	if err := target.Begin(&root, Options{Format: format.FormatVersion1}); err != nil {
+		t.Fatal(err)
+	}
+	copied := make([]string, 0, len(names))
+	if err := Copy(source, target, []PathMapping{{Src: "/selected", Dst: "/selected"}}, CopyOption{
+		OnProgress: func(sourcePath string, _ uint64) {
+			copied = append(copied, filepath.Base(sourcePath))
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != len(names) {
+		t.Fatalf("copied %d files, want %d", len(copied), len(names))
+	}
+	for i, name := range names {
+		if copied[i] != name {
+			t.Fatalf("copied file %d = %q, want %q", i, copied[i], name)
+		}
+	}
+}
+
 func TestCopyPreservesOrMaterializesHardlinks(t *testing.T) {
 	var sourceData bytes.Buffer
 	meta := pxar.DirMetadata(0o755).Build()
@@ -252,18 +313,23 @@ func TestCopyReplaysInteriorChunksWithoutLeakingBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	spanEnd := sourceEntry.PayloadOffset + format.HeaderSize + sourceEntry.FileSize
-	reusable := make(map[[32]byte]bool)
+	reusable := make(map[[32]byte]int)
+	sourceDigests := make(map[[32]byte]bool)
 	for i := range sourceIndex.Count() {
 		info, _ := sourceIndex.ChunkInfo(i)
+		sourceDigests[info.Digest] = true
 		if info.Start >= sourceEntry.PayloadOffset && info.End <= spanEnd {
-			reusable[info.Digest] = true
+			reusable[info.Digest]++
 		}
 	}
-	reused := false
+	newChunks := 0
 	for i := range targetIndex.Count() {
 		info, _ := targetIndex.ChunkInfo(i)
-		if reusable[info.Digest] {
-			reused = true
+		if reusable[info.Digest] > 0 {
+			reusable[info.Digest]--
+		}
+		if !sourceDigests[info.Digest] {
+			newChunks++
 		}
 		blob, err := targetChunks.GetChunk(info.Digest)
 		if err != nil {
@@ -277,8 +343,13 @@ func TestCopyReplaysInteriorChunksWithoutLeakingBoundaries(t *testing.T) {
 			t.Fatalf("target payload chunk %x contains unselected boundary data", info.Digest[:8])
 		}
 	}
-	if !reused {
-		t.Fatal("target payload did not reuse any complete source chunk")
+	for digest, remaining := range reusable {
+		if remaining != 0 {
+			t.Fatalf("target omitted %d complete source chunk(s) with digest %x", remaining, digest[:8])
+		}
+	}
+	if newChunks > 2 {
+		t.Fatalf("target created %d boundary chunks, want at most 2", newChunks)
 	}
 }
 

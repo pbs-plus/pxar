@@ -139,6 +139,11 @@ type KnownChunkRef struct {
 	LoadEncodedBlob func() ([]byte, error)
 }
 
+// DynamicIndexPublisher provides an index-preserving fast path for immutable local snapshots.
+type DynamicIndexPublisher interface {
+	PublishDynamicIndex(ctx context.Context, name, sourcePath string) (*UploadResult, error)
+}
+
 type BackupSession interface {
 	UploadArchive(ctx context.Context, name string, data io.Reader) (*UploadResult, error)
 	UploadSplitArchive(ctx context.Context, metadataName string, metadataData io.Reader, payloadName string, payloadData io.Reader) (*SplitArchiveResult, error)
@@ -418,6 +423,70 @@ func (s *localSession) UploadBlob(_ context.Context, name string, data []byte) e
 	addFileInfo(&s.files, name, uint64(len(blobData)), digest, string(s.config.CryptMode))
 
 	return nil
+}
+
+func (s *localSession) PublishDynamicIndex(ctx context.Context, name, sourcePath string) (*UploadResult, error) {
+	if !s.reuseExisting {
+		return nil, fmt.Errorf("dynamic index publication requires a shared datastore chunk store")
+	}
+	index, err := datastore.OpenDynamicIndex(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("open source index: %w", err)
+	}
+	defer func() { _ = index.Close() }()
+	indexDigest, totalSize := index.ComputeCsum()
+	if indexDigest != index.IndexCsum() {
+		return nil, fmt.Errorf("source index checksum mismatch")
+	}
+	validator := localPayloadSink{
+		session:    s,
+		localKnown: newDigestCache(localChunkCacheCapacity),
+		ctx:        ctx,
+	}
+	const validationBatchSize = 1024
+	for start := 0; start < index.Count(); start += validationBatchSize {
+		end := min(start+validationBatchSize, index.Count())
+		chunks := make([]KnownChunkRef, 0, end-start)
+		for position := start; position < end; position++ {
+			info, ok := index.ChunkInfo(position)
+			if !ok {
+				return nil, fmt.Errorf("source index entry %d is unavailable", position)
+			}
+			chunks = append(chunks, KnownChunkRef{Digest: info.Digest, Size: info.End - info.Start})
+		}
+		if err := validator.validateReused(chunks); err != nil {
+			return nil, err
+		}
+		for _, chunk := range chunks {
+			validator.reportProgress(chunk.Size, 0)
+		}
+	}
+
+	tmp, tmpName, err := s.createSnapshotTemp(name)
+	if err != nil {
+		return nil, fmt.Errorf("create target index: %w", err)
+	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("open source index data: %w", err)
+	}
+	if err := cloneFile(tmp, source); err != nil {
+		_ = source.Close()
+		return nil, fmt.Errorf("clone source index: %w", err)
+	}
+	if err := source.Close(); err != nil {
+		return nil, err
+	}
+	if err := s.publishSnapshotTemp(tmp, tmpName, name); err != nil {
+		return nil, fmt.Errorf("publish target index: %w", err)
+	}
+	result := &UploadResult{Filename: name, Size: totalSize, Digest: indexDigest}
+	addFileInfo(&s.files, name, totalSize, indexDigest, string(s.config.CryptMode))
+	return result, nil
 }
 
 func (s *localSession) UploadPayloadInterleaved(ctx context.Context, name string, newData io.Reader, injections <-chan InjectChunks) (*UploadResult, error) {

@@ -111,6 +111,110 @@ func TestScannerBoundariesMatchRust(t *testing.T) {
 	t.Logf("verified %d chunker cases against rust reference", checked)
 }
 
+// scanSuggestedBoundaries mirrors the Rust probe's suggested_boundaries
+// loop: buffer-fed scanning with Context{base: consumed, total: buf.len()} and
+// upfront-queued suggestions.
+func scanSuggestedBoundaries(data []byte, avg, feed int, suggestions []uint64) []int {
+	cfg, err := buzhash.NewConfig(avg)
+	if err != nil {
+		panic(err)
+	}
+	ss := buzhash.NewSuggestedScanner(cfg)
+	for _, s := range suggestions {
+		ss.Suggest(s)
+	}
+	var out []int
+	var buf []byte
+	consumed := 0
+	scanPos := 0
+	for consumed+scanPos < len(data) || scanPos < len(buf) {
+		if scanPos >= len(buf) {
+			if consumed+len(buf) >= len(data) {
+				break
+			}
+			end := min(consumed+len(buf)+feed, len(data))
+			buf = append(buf, data[consumed+len(buf):end]...)
+		}
+		pos := 0
+		if scanPos < len(buf) {
+			pos = ss.Scan(uint64(consumed), uint64(consumed+scanPos), buf[scanPos:])
+		}
+		if pos == 0 {
+			scanPos = len(buf)
+			continue
+		}
+		cut := consumed + scanPos + pos
+		out = append(out, cut)
+		buf = buf[scanPos+pos:]
+		consumed = cut
+		scanPos = 0
+	}
+	return out
+}
+
+// TestSuggestedBoundariesMatchRust verifies the suggested-boundary decision
+// table against the Rust PayloadChunker probe output.
+func TestSuggestedBoundariesMatchRust(t *testing.T) {
+	dir := interopDir(t)
+	f, err := os.Open(filepath.Join(dir, "rust_suggested_chunks.txt"))
+	if err != nil {
+		t.Skipf("rust_suggested_chunks.txt not found: %v", err)
+	}
+	defer f.Close()
+
+	cases := chunkCases()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	checked := 0
+	for sc.Scan() {
+		line := sc.Text()
+		var name string
+		var avg, feed, n, sum int
+		var suggField string
+		fields := strings.SplitN(line, " ", 7)
+		if len(fields) < 7 {
+			t.Fatalf("bad line: %q", line)
+		}
+		name = fields[0]
+		if _, err := fmt.Sscanf(strings.Join(fields[1:5], " "), "avg=%d feed=%d s=%s", &avg, &feed, &suggField); err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		if _, err := fmt.Sscanf(fields[4], "n=%d", &n); err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		if _, err := fmt.Sscanf(fields[5], "sum=%d", &sum); err != nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		data, ok := cases[name]
+		if !ok {
+			t.Fatalf("unknown case %q", name)
+		}
+		var sugg []uint64
+		for s := range strings.SplitSeq(strings.TrimPrefix(suggField, "s="), ",") {
+			var v uint64
+			fmt.Sscanf(s, "%d", &v)
+			sugg = append(sugg, v)
+		}
+		got := scanSuggestedBoundaries(data, avg, feed, sugg)
+		gotSum := 0
+		for _, b := range got {
+			gotSum += b
+		}
+		if len(got) != n || gotSum != sum {
+			t.Fatalf("%s avg=%d feed=%d: go n=%d sum=%d, rust n=%d sum=%d\nfirst go: %v",
+				name, avg, feed, len(got), gotSum, n, sum, got[:min(10, len(got))])
+		}
+		checked++
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if checked == 0 {
+		t.Fatal("no cases checked")
+	}
+	t.Logf("verified %d suggested-chunker cases against rust reference", checked)
+}
+
 func TestChunkerMatchesScanner(t *testing.T) {
 	for name, data := range chunkCases() {
 		for _, avg := range []int{64 * 1024, 128 * 1024} {

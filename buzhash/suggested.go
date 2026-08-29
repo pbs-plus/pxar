@@ -64,8 +64,8 @@ func (s *SuggestedScanner) Scan(base, pos uint64, data []byte) int {
 				s.queue = s.queue[1:]
 				continue
 			}
-			s.queue = s.queue[1:]
 			if chunkSize <= uint64(s.sc.Config.MaxChunkSize) {
+				s.queue = s.queue[1:]
 				length := boundary - pos
 				if length == 0 {
 					return s.sc.Scan(data)

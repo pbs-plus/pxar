@@ -164,7 +164,27 @@ func TestSuggestedMultipleQueued(t *testing.T) {
 	}
 }
 
-// TestSuggestedForcedReset covers Reset semantics directly: hash state clears
+// TestSuggestedTooBigThenFitting pins the bug the rust differential caught:
+// a suggestion too large for the current chunk must stay queued while hash
+// cuts advance the base, then cut exactly when it comes into range.
+func TestSuggestedTooBigThenFitting(t *testing.T) {
+	cfg, err := NewConfig(1 << 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := testData(100_000)
+	got := runSuggested(cfg, data, []uint64{90_000}, 100_000)
+	found := false
+	for _, c := range got {
+		if c == 90_000 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("suggestion 90000 not honored: cuts = %v", got)
+	}
+}
+
 // and a still-future suggestion survives to cut against the new chunk.
 func TestSuggestedForcedReset(t *testing.T) {
 	cfg, err := NewConfig(64 << 10)

@@ -39,13 +39,12 @@ edition = "2021"
 name = "chunker-probe"
 path = "src/main.rs"
 TOML
-sed -n '1,232p' "$PBS_DIR/pbs-datastore/src/chunker.rs" \
-  | sed '/^pub struct PayloadChunker/,/^}/d' \
-  | sed 's/^use std::sync::mpsc::Receiver;//' >"$CP/src/chunker.rs"
-echo '}' >>"$CP/src/chunker.rs"
+sed '/#\[cfg(test)\]/,$d' "$PBS_DIR/pbs-datastore/src/chunker.rs" \
+  | perl -0pe 's/log::debug!\(.*?\);\n//gs' >"$CP/src/chunker.rs"
 cat >"$CP/src/main.rs" <<'RUST'
 mod chunker;
-use chunker::{Chunker, ChunkerImpl, Context};
+use chunker::{Chunker, ChunkerImpl, Context, PayloadChunker};
+use std::sync::mpsc::channel;
 fn lcg_data(len: usize, seed: u64) -> Vec<u8> {
     let mut v = Vec::with_capacity(len); let mut x = seed;
     for _ in 0..len { x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); v.push((x >> 33) as u8); }
@@ -64,7 +63,33 @@ fn boundaries(data: &[u8], avg: usize, feed: usize) -> Vec<usize> {
     }
     out
 }
+fn suggested_boundaries(data: &[u8], avg: usize, feed: usize, sugg: &[u64]) -> Vec<usize> {
+    let (tx, rx) = channel();
+    for s in sugg { tx.send(*s).unwrap(); }
+    let mut c = PayloadChunker::new(avg, rx);
+    let mut out = Vec::new();
+    let mut consumed = 0usize;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut scan_pos = 0usize;
+    while consumed + scan_pos < data.len() || scan_pos < buf.len() {
+        if scan_pos >= buf.len() {
+            if consumed + buf.len() >= data.len() { break; }
+            let end = std::cmp::min(consumed + buf.len() + feed, data.len());
+            buf.extend_from_slice(&data[consumed + buf.len()..end]);
+        }
+        let ctx = Context { base: consumed as u64, total: buf.len() as u64 };
+        let pos = if scan_pos < buf.len() { c.scan(&buf[scan_pos..], &ctx) } else { 0 };
+        if pos == 0 { scan_pos = buf.len(); continue; }
+        let cut = consumed + scan_pos + pos;
+        out.push(cut);
+        buf.drain(..scan_pos + pos);
+        consumed = cut;
+        scan_pos = 0;
+    }
+    out
+}
 fn main() {
+    let suggested_mode = std::env::args().nth(1).as_deref() == Some("--suggested");
     let cases: Vec<(Vec<u8>, &str)> = vec![
         (lcg_data(1<<22, 1), "lcg-4m-seed1"), (lcg_data(3<<20, 42), "lcg-3m-seed42"),
         (vec![0u8; 1<<21], "zeros-2m"),
@@ -74,8 +99,16 @@ fn main() {
     for (data, name) in &cases {
         for avg in [64*1024usize, 128*1024] {
             for feed in [data.len(), 4096, 61, 256*1024] {
-                let b = boundaries(data, avg, feed); let sum: usize = b.iter().sum();
-                println!("{} avg={} feed={} n={} sum={} first10={:?}", name, avg, feed, b.len(), sum, &b[..std::cmp::min(10, b.len())]);
+                if suggested_mode {
+                    let len = data.len() as u64;
+                    let sugg = vec![1000, len/7, len/3, len/2, 2*len/3, len - 1000];
+                    let b = suggested_boundaries(data, avg, feed, &sugg); let sum: usize = b.iter().sum();
+                    let s: Vec<String> = sugg.iter().map(|s| s.to_string()).collect();
+                    println!("{} avg={} feed={} s={} n={} sum={} first10={:?}", name, avg, feed, s.join(","), b.len(), sum, &b[..std::cmp::min(10, b.len())]);
+                } else {
+                    let b = boundaries(data, avg, feed); let sum: usize = b.iter().sum();
+                    println!("{} avg={} feed={} n={} sum={} first10={:?}", name, avg, feed, b.len(), sum, &b[..std::cmp::min(10, b.len())]);
+                }
             }
         }
     }
@@ -83,6 +116,7 @@ fn main() {
 RUST
 ( cd "$CP" && cargo build --release ) >/dev/null
 "$CP/target/release/chunker-probe" >"$OUT/rust_chunks.txt"
+"$CP/target/release/chunker-probe" --suggested >"$OUT/rust_suggested_chunks.txt"
 
 echo ">> building catalog probe"
 CAT=/tmp/pxar-catalog-probe

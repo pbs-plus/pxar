@@ -590,11 +590,13 @@ func (s *localPayloadSink) putRaw(offset uint64, raw []byte) error {
 		if err != nil {
 			return err
 		}
-		uploadedSize = uint64(len(storeData))
-		_, _, insErr := s.session.store.InsertChunk(digest, storeData)
+		exists, _, insErr := s.session.store.InsertChunk(digest, storeData)
 		datastore.PutBlobBuf(bp)
 		if insErr != nil {
 			return fmt.Errorf("store chunk: %w", insErr)
+		}
+		if !exists {
+			uploadedSize = uint64(len(storeData))
 		}
 		s.localKnown.add(digest)
 	}
@@ -620,9 +622,12 @@ func (s *localPayloadSink) putInjection(offset uint64, inj InjectChunks) error {
 			if err != nil {
 				return fmt.Errorf("load replayed chunk: %w", err)
 			}
-			uploadedSize = uint64(len(blob))
-			if _, _, err := s.session.store.InsertChunk(c.Digest, blob); err != nil {
+			exists, _, err := s.session.store.InsertChunk(c.Digest, blob)
+			if err != nil {
 				return fmt.Errorf("store replayed chunk: %w", err)
+			}
+			if !exists {
+				uploadedSize = uint64(len(blob))
 			}
 		}
 		s.localKnown.add(c.Digest)

@@ -12,6 +12,61 @@ import (
 	"github.com/pbs-plus/pxar/datastore"
 )
 
+func TestDatastoreStoreDoesNotCountExistingRawChunkAsUploaded(t *testing.T) {
+	root := t.TempDir()
+	chunkStore, err := datastore.NewChunkStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("existing raw payload chunk")
+	digest := sha256.Sum256(payload)
+	blob, err := datastore.EncodeBlob(nil, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := chunkStore.InsertChunk(digest, blob); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotDir := filepath.Join(root, "host", "target", "2026-08-28T16:00:00Z")
+	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := buzhash.NewConfig(4 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewDatastoreStore(root, snapshotDir, cfg, DatastoreStoreOptions{UID: -1, GID: -1, SyncWrites: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var progress UploadProgress
+	session, err := store.StartSession(context.Background(), BackupConfig{
+		BackupType: datastore.BackupHost,
+		BackupID:   "target",
+		BackupTime: 1787932800,
+		CryptMode:  datastore.CryptModeNone,
+		OnUploadProgress: func(current UploadProgress) {
+			progress = current
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	injections := make(chan InjectChunks)
+	close(injections)
+	suggestions := make(chan uint64)
+	close(suggestions)
+	if _, err := session.UploadPayloadInterleaved(context.Background(), "existing.ppxar.didx", bytes.NewReader(payload), injections, suggestions); err != nil {
+		t.Fatal(err)
+	}
+	if progress.ProcessedChunks != 1 || progress.ProcessedBytes != uint64(len(payload)) || progress.UploadedChunks != 0 || progress.UploadedBytes != 0 {
+		t.Fatalf("unexpected existing raw chunk progress: %+v", progress)
+	}
+}
+
 func TestDatastoreStorePublishesManifestLastWithoutLoadingReusedChunks(t *testing.T) {
 	root := t.TempDir()
 	chunkStore, err := datastore.NewChunkStore(root)

@@ -226,7 +226,7 @@ func TestIntegration_FullBackupRoundTrip(t *testing.T) {
 
 	// Download the config blob back from PBS and verify byte-perfect match
 	downloaded := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "config.blob")
-	decoded, err := datastore.DecodeBlob(downloaded)
+	decoded, err := datastore.DecodeBlob(nil, downloaded)
 	if err != nil {
 		t.Fatalf("decode downloaded blob: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestIntegration_BlobUploadDownload(t *testing.T) {
 
 	// Download the blob back from PBS
 	downloaded := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "test-config.blob")
-	decoded, err := datastore.DecodeBlob(downloaded)
+	decoded, err := datastore.DecodeBlob(nil, downloaded)
 	if err != nil {
 		t.Fatalf("decode downloaded blob: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestIntegration_CompressedBlobRoundTrip(t *testing.T) {
 
 	// Download and verify blob
 	downloaded := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "config.blob")
-	decoded, err := datastore.DecodeBlob(downloaded)
+	decoded, err := datastore.DecodeBlob(nil, downloaded)
 	if err != nil {
 		t.Fatalf("decode blob: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestIntegration_ManifestRoundTrip(t *testing.T) {
 
 	// Download and parse the manifest blob from PBS
 	manifestBlobData := pbsDownload(t, pbsCfg, cfg.BackupType.String(), cfg.BackupID, cfg.BackupTime, "index.json.blob")
-	decoded, err := datastore.DecodeBlob(manifestBlobData)
+	decoded, err := datastore.DecodeBlob(nil, manifestBlobData)
 	if err != nil {
 		t.Fatalf("decode manifest blob: %v", err)
 	}
@@ -1276,7 +1276,7 @@ func TestIntegration_ChunkedDidxRestoreFile(t *testing.T) {
 		}
 
 		// Decode the blob wrapper
-		decoded, err := datastore.DecodeBlob(chunkBlob)
+		decoded, err := datastore.DecodeBlob(nil, chunkBlob)
 		if err != nil {
 			t.Fatalf("decode chunk %d: %v", i, err)
 		}

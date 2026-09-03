@@ -29,6 +29,10 @@ type Decoder struct {
 	payloadSize          uint64
 	payloadStartChecked  bool
 
+	pos        uint64
+	headerPos  uint64
+	entryStart uint64
+
 	statScratch [40]byte
 	nameScratch []byte
 	drainBuf    [8192]byte
@@ -64,14 +68,15 @@ func (lr *limitedReader) Read(p []byte) (int, error) {
 }
 
 func NewDecoder(input io.Reader, payloadReader io.Reader) *Decoder {
-	return &Decoder{
-		input:        input,
+	d := &Decoder{
 		payloadInput: payloadReader,
 		state:        stateBegin,
 		version:      format.FormatVersion1,
 		path:         "/",
 		fixedBuf:     make([]byte, 64),
 	}
+	d.input = &countingReader{reader: input, count: &d.pos}
+	return d
 }
 
 func (d *Decoder) checkPayloadStartMarker() error {
@@ -203,6 +208,7 @@ func (d *Decoder) readBegin() (*pxar.Entry, error) {
 			}
 			d.header = h3
 
+			d.entryStart = d.headerPos
 			rootEntry, err := d.readEntryFromCurrentHeader()
 			if err != nil {
 				return nil, err
@@ -210,11 +216,11 @@ func (d *Decoder) readBegin() (*pxar.Entry, error) {
 			if d.state == stateBegin {
 				d.state = stateDefault
 			}
-			// Buffer prelude and root, return version first
 			d.pending = append(d.pending, preludeEntry, rootEntry)
 			return verEntry, nil
 		}
 
+		d.entryStart = d.headerPos
 		rootEntry, err := d.readEntryFromCurrentHeader()
 		if err != nil {
 			return nil, err
@@ -226,7 +232,7 @@ func (d *Decoder) readBegin() (*pxar.Entry, error) {
 		return verEntry, nil
 	}
 
-	// No version header, read root entry directly
+	d.entryStart = d.headerPos
 	entry, err := d.readEntryFromCurrentHeader()
 	if err != nil {
 		return nil, err
@@ -253,6 +259,7 @@ func (d *Decoder) handleDirectory() (*pxar.Entry, error) {
 func (d *Decoder) processDirectoryItem(h format.Header) (*pxar.Entry, error) {
 	switch h.Type {
 	case format.PXARFilename:
+		d.entryStart = d.headerPos
 		return d.handleFilename()
 	case format.PXARGoodbye:
 		d.state = stateInGoodbyeTable
@@ -389,6 +396,7 @@ func (d *Decoder) readHardlinkEntry() (*pxar.Entry, error) {
 		Path:       d.path,
 		LinkTarget: string(target),
 		LinkOffset: offset,
+		FileOffset: d.entryStart,
 	}, nil
 }
 
@@ -425,8 +433,9 @@ func (d *Decoder) readEntryV1() (*pxar.Entry, error) {
 // ("unexpected EOF in entry"), matching the Rust sequential decoder.
 func (d *Decoder) finishEntry(stat format.Stat) (*pxar.Entry, error) {
 	entry := &pxar.Entry{
-		Path:     d.path,
-		Metadata: pxar.Metadata{Stat: stat},
+		Path:       d.path,
+		Metadata:   pxar.Metadata{Stat: stat},
+		FileOffset: d.entryStart,
 	}
 	// Cache base name from path to avoid filepath.Base allocations
 	// when FileName() is called by consumers (e.g., VFS ReadDir).
@@ -722,7 +731,9 @@ func (d *Decoder) readHeaderRequired() (format.Header, error) {
 	return h, err
 }
 
+// readHeader reads the next metadata header, recording where it begins so entries can report FileOffset.
 func (d *Decoder) readHeader() (format.Header, error) {
+	d.headerPos = d.pos
 	return d.readHeaderFrom(d.input)
 }
 
